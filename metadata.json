@@ -1,0 +1,5 @@
+{
+  "name": "Glitch Pulse",
+  "description": "A high-performance MIDI-controlled video effects engine for live performance.",
+  "requestFramePermissions": ["midi"]
+}
