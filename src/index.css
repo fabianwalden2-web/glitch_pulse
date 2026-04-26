@@ -1,1 +1,49 @@
 @import "tailwindcss";
+
+/* Minimalist Range Sliders */
+input[type=range] {
+  -webkit-appearance: none; /* Hides the slider so that custom slider can be made */
+  appearance: none;
+  width: 100%; /* Specific width is required for Firefox. */
+  background: transparent; /* Otherwise white in Chrome */
+}
+
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 12px;
+  width: 12px;
+  border-radius: 0;
+  background: #ffffff;
+  cursor: pointer;
+  margin-top: -5px; /* You need to specify a margin in Chrome, but in Firefox and IE it is automatic */
+  border: 1px solid #000;
+}
+
+/* Red thumb for some accent */
+input[type=range].accent-red::-webkit-slider-thumb {
+  background: #ff0000;
+}
+
+input[type=range]::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 2px;
+  cursor: pointer;
+  background: #333333;
+  border: none;
+}
+
+input[type=range]:focus {
+  outline: none;
+}
+
+/* Minimalist Scrollbar */
+.custom-scrollbar::-webkit-scrollbar { width: 4px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: #333; border-radius: 0px; }
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #fff; }
+
+/* Global overrides for minimalist feel */
+body {
+  background-color: #000;
+  color: #fff;
+}

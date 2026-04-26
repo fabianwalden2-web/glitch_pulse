@@ -32,8 +32,26 @@ import {
   Menu
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
+import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition } from './lib/generatives';
+import { engine, AudioStemNode } from './lib/audioEngine';
+import { AudioSpectrogram } from './components/AudioSpectrogram';
+import { Waves } from './components/Waves';
+import { createNoise2D } from 'simplex-noise';
+import { StepSequencer } from './components/StepSequencer';
 
 // --- Types ---
+
+export interface AudioMapping {
+  enabled: boolean;
+  stemId: string;
+  freqRange: [number, number];
+  threshold: number;
+  attack: number;
+  release: number;
+  smoothing?: number;
+  cooldownMs?: number;
+  target: 'trigger' | 'opacity';
+}
 
 interface LayerTriggerMapping {
   channels: number[];
@@ -42,12 +60,20 @@ interface LayerTriggerMapping {
   noteSettings: NoteSettings;
   activeUntil: number | null;
   velocity: number;
+  triggerBehavior: 'momentary' | 'toggle';
+}
+
+interface RhythmMapping {
+  enabled: boolean;
+  pattern: string;
+  bpm: number;
+  customPattern: boolean[];
 }
 
 interface Layer {
   id: string;
   name: string;
-  type: 'video' | 'image';
+  type: 'video' | 'image' | 'generative';
   src: string | null;
   opacity: number;
   blendMode: GlobalCompositeOperation;
@@ -57,8 +83,21 @@ interface Layer {
   isActive?: boolean;
   midiMode: boolean; // True = MIDI triggered only, False = Visible by default
   midiCC?: number; // CC to control opacity
+  videoStart?: number;
+  videoEnd?: number;
+  videoDuration?: number;
+  videoTriggerMode?: 'restart' | 'continuous';
+  generativeId?: string;
+  generativeSettings?: Record<string, number>;
+  generativeTriggerActive?: Record<string, boolean>;
+  generativeTriggerAmount?: Record<string, number>;
   triggerMapping: LayerTriggerMapping;
-  mappings: EffectMapping[]; // Per-layer effects
+  mappings: EffectMapping[];
+  missingMedia?: boolean;
+  audioMapping?: AudioMapping;
+  rhythmMapping?: RhythmMapping;
+  isMuted: boolean;
+  isSoloed: boolean;
 }
 
 interface Scene {
@@ -72,6 +111,7 @@ interface Scene {
     filterSettings: Record<string, any>;
   }[];
   midiNote?: number; // Note to trigger scene
+  triggerBehavior?: 'momentary' | 'toggle';
 }
 
 interface MidiDevice {
@@ -111,6 +151,7 @@ interface EffectMapping {
   noteSettings: NoteSettings;
   activeUntil: number | null;
   velocity: number;
+  triggerBehavior: 'momentary' | 'toggle';
 }
 
 interface EffectDefinition {
@@ -270,7 +311,23 @@ const DEFAULT_NOTE_SETTINGS: NoteSettings = {
   subdivision: '1/4',
   bpm: 120,
   useFixedVelocity: false,
-  fixedVelocity: 100
+  fixedVelocity: 100,
+};
+
+const DEFAULT_TRIGGER_TYPE: 'momentary' | 'toggle' = 'momentary';
+
+
+
+export const DEFAULT_AUDIO_MAPPING: AudioMapping = {
+  enabled: false,
+  stemId: '',
+  freqRange: [20, 20000],
+  threshold: 0.1,
+  attack: 0.0,
+  release: 0.2,
+  smoothing: 0.1,
+  cooldownMs: 50,
+  target: 'trigger'
 };
 
 const DEFAULT_TRIGGER_MAPPING: LayerTriggerMapping = {
@@ -279,7 +336,8 @@ const DEFAULT_TRIGGER_MAPPING: LayerTriggerMapping = {
   noteEnd: 127,
   noteSettings: { ...DEFAULT_NOTE_SETTINGS },
   activeUntil: null,
-  velocity: 0
+  velocity: 0,
+  triggerBehavior: DEFAULT_TRIGGER_TYPE
 };
 
 const INITIAL_MAPPINGS: EffectMapping[] = [
@@ -297,22 +355,25 @@ const INITIAL_MAPPINGS: EffectMapping[] = [
     settings: { distance: 20, saturation: 100, jitter: 10 },
     noteSettings: { ...DEFAULT_NOTE_SETTINGS },
     activeUntil: null,
-    velocity: 0
+    velocity: 0,
+    triggerBehavior: DEFAULT_TRIGGER_TYPE
   },
 ];
 
 // --- Components ---
 
-function Knob({ value, min, max, onChange, label, type = 'continuous' }: {
+function Knob({ value, min, max, onChange, label, type = 'continuous', id }: {
   value: number,
   min: number,
   max: number,
   onChange: (val: number) => void,
   label: string,
   type?: 'continuous' | 'binary',
+  id?: string,
   key?: any
 }) {
   const [isDragging, setIsDragging] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
   const startY = useRef(0);
   const startX = useRef(0);
   const startVal = useRef(0);
@@ -333,7 +394,7 @@ function Knob({ value, min, max, onChange, label, type = 'continuous' }: {
     const delta = deltaY + deltaX;
     
     const range = max - min;
-    const sensitivity = 200; // Pixels for full range
+    const sensitivity = 200;
     const step = range / sensitivity;
     let newVal = startVal.current + delta * step;
     
@@ -390,36 +451,145 @@ function Knob({ value, min, max, onChange, label, type = 'continuous' }: {
   const percentage = ((value - min) / (max - min)) * 100;
   const rotation = (percentage / 100) * 270 - 135;
 
+  // Format value for display
+  const range = max - min;
+  const displayVal = range < 5 ? value.toFixed(2) : range < 20 ? value.toFixed(1) : Math.round(value).toString();
+
   return (
     <div className="flex flex-col items-center gap-2 group select-none">
-      <div 
-        className={`relative w-12 h-12 cursor-pointer touch-none transition-transform ${isDragging ? 'scale-110' : ''}`}
-        onMouseDown={handleMouseDown}
-        onTouchStart={handleTouchStart}
-      >
-        <svg viewBox="0 0 100 100" className="w-full h-full">
-          <circle 
-            cx="50" cy="50" r="40" 
-            fill="none" stroke="currentColor" strokeWidth="2" 
-            className="text-white/10"
-          />
-          <circle 
-            cx="50" cy="50" r="40" 
-            fill="none" stroke="currentColor" strokeWidth="4" 
-            strokeDasharray="251.2"
-            strokeDashoffset={251.2 - (percentage / 100) * 188.4} // 3/4 circle
-            transform="rotate(135 50 50)"
-            className="text-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"
-          />
-          <line 
-            x1="50" y1="50" x2="50" y2="20" 
-            stroke="currentColor" strokeWidth="4" strokeLinecap="round"
-            transform={`rotate(${rotation} 50 50)`}
-            className="text-white"
-          />
-        </svg>
+      <div className="relative">
+        <div 
+          className={`relative w-12 h-12 cursor-pointer touch-none transition-transform ${isDragging ? 'scale-110' : ''}`}
+          onMouseDown={handleMouseDown}
+          onTouchStart={handleTouchStart}
+          onMouseEnter={() => setIsHovered(true)}
+          onMouseLeave={() => setIsHovered(false)}
+        >
+          <svg viewBox="0 0 100 100" className="w-full h-full">
+            <circle 
+              cx="50" cy="50" r="40" 
+              fill="none" stroke="currentColor" strokeWidth="2" 
+              className="text-white/10"
+            />
+            <circle 
+              id={id ? `knob-circle-${id}` : undefined}
+              cx="50" cy="50" r="40" 
+              fill="none" stroke="currentColor" strokeWidth="4" 
+              strokeDasharray="251.2"
+              strokeDashoffset={251.2 - (percentage / 100) * 188.4}
+              transform="rotate(135 50 50)"
+              className="text-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"
+              style={{ transition: 'stroke-dashoffset 0.05s linear' }}
+            />
+            <line 
+              id={id ? `knob-line-${id}` : undefined}
+              x1="50" y1="50" x2="50" y2="20" 
+              stroke="currentColor" strokeWidth="4" strokeLinecap="round"
+              transform={`rotate(${rotation} 50 50)`}
+              className="text-white"
+              style={{ transition: 'transform 0.05s linear' }}
+            />
+          </svg>
+        </div>
+        {(isHovered || isDragging) && (
+          <div className="absolute -top-7 left-1/2 -translate-x-1/2 bg-black border border-white/20 rounded px-1.5 py-0.5 text-[9px] font-mono text-white whitespace-nowrap pointer-events-none z-50 shadow-lg">
+            {displayVal}
+          </div>
+        )}
       </div>
       <span className="text-[8px] uppercase tracking-widest font-bold opacity-40 group-hover:opacity-100 transition-opacity whitespace-nowrap">{label}</span>
+    </div>
+  );
+}
+
+function RangeSlider({ min, max, start, end, onChange, label }: {
+  min: number,
+  max: number,
+  start: number,
+  end: number,
+  onChange: (start: number, end: number) => void,
+  label: string
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex justify-between items-center">
+        <label className="text-[8px] uppercase tracking-widest opacity-40">{label}</label>
+        <span className="text-[9px] font-mono opacity-60">{start.toFixed(1)}s - {end.toFixed(1)}s</span>
+      </div>
+      <div className="relative h-6 flex items-center">
+        <div className="absolute w-full h-1 bg-white/10 rounded-full" />
+        <div 
+          className="absolute h-1 bg-red-600 rounded-full" 
+          style={{ 
+            left: `${((start - min) / (max - min)) * 100}%`,
+            right: `${100 - ((end - min) / (max - min)) * 100}%`
+          }}
+        />
+        <input 
+          type="range" min={min} max={max} step={0.1} value={start}
+          onChange={(e) => onChange(Math.min(parseFloat(e.target.value), end - 0.1), end)}
+          className="absolute w-full h-1 bg-transparent appearance-none pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:appearance-none"
+        />
+        <input 
+          type="range" min={min} max={max} step={0.1} value={end}
+          onChange={(e) => onChange(start, Math.max(parseFloat(e.target.value), start + 0.1))}
+          className="absolute w-full h-1 bg-transparent appearance-none pointer-events-none [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:bg-red-500 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:appearance-none"
+        />
+      </div>
+    </div>
+  );
+}
+
+function AspectRatioControl({ value, onChange }: { value: number, onChange: (v: number) => void }) {
+  let ratio = 1.0;
+  if (value < 50) {
+    const t = value / 50;
+    ratio = 0.5625 + t * (1.0 - 0.5625);
+  } else {
+    const t = (value - 50) / 50;
+    ratio = 1.0 + t * (1.7777 - 1.0);
+  }
+
+  const label = ratio < 0.8 ? "Portrait" : ratio > 1.2 ? "Landscape" : "Square";
+  const ratioLabel = ratio < 1 ? `${(9 * ratio/0.5625).toFixed(0)} : 16` : `16 : ${(9 / (ratio/1.7777)).toFixed(0)}`;
+  // Simplified ratio label for display
+  const displayRatio = ratio < 0.9 ? "9 : 16" : ratio > 1.1 ? "16 : 9" : "1 : 1";
+
+  return (
+    <div className="p-4 bg-black/40 border border-white/5 space-y-6">
+      <div className="flex items-center justify-between">
+        <label className="text-[10px] uppercase tracking-widest opacity-40">Aspect Ratio</label>
+        <span className="text-[10px] font-mono text-red-500">{displayRatio}</span>
+      </div>
+      
+      <div className="flex items-center gap-8 py-4">
+        {/* Reference Image */}
+        <div className="w-24 h-24 flex items-center justify-center border border-white/10 rounded bg-black/20 relative">
+          <div className="absolute inset-0 border border-dashed border-white/5 scale-90" />
+          <motion.div 
+            animate={{ 
+              width: ratio > 1 ? '100%' : `${ratio * 100}%`,
+              height: ratio > 1 ? `${(1/ratio) * 100}%` : '100%'
+            }}
+            className="border-2 border-white rounded-sm flex items-center justify-center bg-white/5"
+          >
+            <span className="text-[8px] font-bold opacity-30">{displayRatio}</span>
+          </motion.div>
+        </div>
+
+        <div className="flex-1 space-y-4">
+           <div className="flex justify-between text-[8px] uppercase tracking-widest opacity-40">
+              <button title="Click to set ratio" onClick={() => onChange(15)} className={value < 30 ? 'text-red-500 font-bold opacity-100 hover:text-white transition-colors' : 'hover:opacity-100 hover:text-white transition-colors'}>Portrait</button>
+              <button title="Click to set ratio" onClick={() => onChange(50)} className={value > 40 && value < 60 ? 'text-red-500 font-bold opacity-100 hover:text-white transition-colors' : 'hover:opacity-100 hover:text-white transition-colors'}>Square</button>
+              <button title="Click to set ratio" onClick={() => onChange(85)} className={value > 70 ? 'text-red-500 font-bold opacity-100 hover:text-white transition-colors' : 'hover:opacity-100 hover:text-white transition-colors'}>Landscape</button>
+           </div>
+           <input 
+             type="range" min="0" max="100" value={value}
+             onChange={(e) => onChange(parseInt(e.target.value))}
+             className="w-full h-1 bg-white/10 rounded-full appearance-none accent-red-600"
+           />
+        </div>
+      </div>
     </div>
   );
 }
@@ -452,51 +622,9 @@ function HelpIcon({ text }: { text: string }) {
   );
 }
 
-function MidiConfigUI({ label, mapping, onUpdate, onUpdateNote, onToggleChannel, onSetAllChannels, onSetNoChannels }: {
-  label: string,
-  mapping: LayerTriggerMapping | EffectMapping,
-  onUpdate: (field: string, val: any) => void,
-  onUpdateNote: (field: string, val: any) => void,
-  onToggleChannel: (ch: number) => void,
-  onSetAllChannels: () => void,
-  onSetNoChannels: () => void,
-}) {
-  const ns = mapping.noteSettings;
+function NoteSettingsConfigUI({ ns, onUpdateNote }: { ns: NoteSettings, onUpdateNote: (field: string, val: any) => void }) {
   return (
     <div className="space-y-4 pt-6 border-t border-white/5">
-      <label className="text-[10px] uppercase tracking-widest opacity-40">{label}</label>
-      
-      <div className="space-y-3">
-        <div className="flex justify-between items-center">
-          <label className="text-[8px] uppercase opacity-30">Channels</label>
-          <div className="flex gap-2">
-            <button onClick={onSetAllChannels} className="text-[8px] uppercase tracking-widest bg-white/5 px-2 py-0.5 rounded hover:bg-white/10 transition-colors">All</button>
-            <button onClick={onSetNoChannels} className="text-[8px] uppercase tracking-widest bg-white/5 px-2 py-0.5 rounded hover:bg-white/10 transition-colors">None</button>
-          </div>
-        </div>
-        <div className="grid grid-cols-4 gap-1">
-          {Array.from({length: 16}).map((_, i) => {
-            const isSelected = mapping.channels.includes(i);
-            return (
-              <button key={i} onClick={() => onToggleChannel(i)} className={`h-8 rounded text-[10px] font-mono transition-all border ${isSelected ? 'bg-red-600 border-red-500 text-white shadow-[0_0_10px_rgba(239,68,68,0.3)]' : 'bg-black/40 border-white/5 text-white/40 hover:border-white/20'}`}>
-                {i + 1}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="space-y-1">
-        <label className="text-[8px] uppercase opacity-30">Note Range</label>
-        <div className="flex items-center gap-1">
-          <input type="number" min="0" max="127" value={mapping.noteStart} onChange={(e) => onUpdate('noteStart', parseInt(e.target.value))} className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none" />
-          <span className="opacity-30">-</span>
-          <input type="number" min="0" max="127" value={mapping.noteEnd} onChange={(e) => onUpdate('noteEnd', parseInt(e.target.value))} className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none" />
-        </div>
-      </div>
-
-      {/* Notes Settings */}
-      <div className="space-y-4 pt-6 border-t border-white/5">
         <label className="text-[10px] uppercase tracking-widest opacity-40">Notes Settings</label>
         <div className="space-y-3">
           <div className="flex items-center justify-between">
@@ -530,14 +658,162 @@ function MidiConfigUI({ label, mapping, onUpdate, onUpdateNote, onToggleChannel,
           </div>
           {ns.useFixedVelocity && (
             <motion.div initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} className="flex items-center gap-2">
-              <input type="range" min="0" max="127" value={ns.fixedVelocity} onChange={(e) => onUpdateNote('fixedVelocity', parseInt(e.target.value))} className="flex-1 accent-red-500" />
+              <input type="range" min="0" max="127" value={ns.fixedVelocity} onChange={(e) => onUpdateNote('fixedVelocity', parseInt(e.target.value))} className="flex-1 accent-red-600" />
               <span className="text-[10px] font-mono w-6">{ns.fixedVelocity}</span>
             </motion.div>
           )}
         </div>
       </div>
+  );
+}
+
+function MidiConfigUI({ label, mapping, onUpdate, onUpdateNote, onToggleChannel, onSetAllChannels, onSetNoChannels, isLearnActive, onToggleLearn }: {
+  label: string,
+  mapping: LayerTriggerMapping | EffectMapping,
+  onUpdate: (field: string, val: any) => void,
+  onUpdateNote: (field: string, val: any) => void,
+  onToggleChannel: (ch: number) => void,
+  onSetAllChannels: () => void,
+  onSetNoChannels: () => void,
+  isLearnActive?: { field: 'noteStart' | 'noteEnd' } | false,
+  onToggleLearn?: (field: 'noteStart' | 'noteEnd') => void,
+}) {
+  const ns = mapping.noteSettings;
+  return (
+    <div className="space-y-4 pt-6 border-t border-white/5">
+      <div className="flex justify-between items-center">
+        <label className="text-[10px] uppercase tracking-widest opacity-40">{label}</label>
+        <div className="flex bg-black/40 border border-white/10 rounded p-0.5">
+           <button 
+             onClick={() => onUpdate('triggerBehavior', 'momentary')}
+             className={`px-2 py-0.5 text-[8px] uppercase tracking-tighter rounded-sm transition-all ${mapping.triggerBehavior === 'momentary' ? 'bg-red-600 text-white' : 'opacity-40'}`}
+           >
+             Momentary
+           </button>
+           <button 
+             onClick={() => onUpdate('triggerBehavior', 'toggle')}
+             className={`px-2 py-0.5 text-[8px] uppercase tracking-tighter rounded-sm transition-all ${mapping.triggerBehavior === 'toggle' ? 'bg-red-600 text-white' : 'opacity-40'}`}
+           >
+             Toggle
+           </button>
+        </div>
+      </div>
+      
+      <div className="space-y-3">
+        <div className="flex justify-between items-center">
+          <label className="text-[8px] uppercase opacity-30">Channels</label>
+          <div className="flex gap-2">
+            <button onClick={onSetAllChannels} className="text-[8px] uppercase tracking-widest bg-transparent px-2 py-0.5 rounded hover:border border-white hover:bg-white hover:text-black transition-colors">All</button>
+            <button onClick={onSetNoChannels} className="text-[8px] uppercase tracking-widest bg-transparent px-2 py-0.5 rounded hover:border border-white hover:bg-white hover:text-black transition-colors">None</button>
+          </div>
+        </div>
+        <div className="grid grid-cols-4 gap-1">
+          {Array.from({length: 16}).map((_, i) => {
+            const isSelected = mapping.channels.includes(i);
+            return (
+              <button key={i} onClick={() => onToggleChannel(i)} className={`h-8 rounded text-[10px] font-mono transition-all border ${isSelected ? 'bg-red-600 border-red-500 text-white shadow-[0_0_10px_rgba(239,68,68,0.3)]' : 'bg-black/40 border-white/5 text-white/40 hover:border-white/20'}`}>
+                {i + 1}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        <label className="text-[8px] uppercase opacity-30">Note Range</label>
+        <div className="flex items-center gap-1">
+          <div className="relative w-full flex items-center group">
+            <input type="number" min="0" max="127" value={mapping.noteStart} onChange={(e) => onUpdate('noteStart', parseInt(e.target.value))} className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none pr-6" />
+            {onToggleLearn && (
+              <button 
+                onClick={() => onToggleLearn('noteStart')} 
+                className={`absolute right-1 p-1 rounded transition-colors ${isLearnActive && isLearnActive.field === 'noteStart' ? 'text-red-500 bg-red-500/10 animate-pulse' : 'text-white/30 hover:text-white'}`}
+                title="MIDI Learn Start"
+              >
+                <Zap size={10} />
+              </button>
+            )}
+          </div>
+          <span className="opacity-30">-</span>
+          <div className="relative w-full flex items-center group">
+            <input type="number" min="0" max="127" value={mapping.noteEnd} onChange={(e) => onUpdate('noteEnd', parseInt(e.target.value))} className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none pr-6" />
+            {onToggleLearn && (
+              <button 
+                onClick={() => onToggleLearn('noteEnd')} 
+                className={`absolute right-1 p-1 rounded transition-colors ${isLearnActive && isLearnActive.field === 'noteEnd' ? 'text-red-500 bg-red-500/10 animate-pulse' : 'text-white/30 hover:text-white'}`}
+                title="MIDI Learn End"
+              >
+                <Zap size={10} />
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <NoteSettingsConfigUI ns={mapping.noteSettings} onUpdateNote={onUpdateNote} />
     </div>
   );
+}
+
+// --- Topography Utils ---
+const perm=new Uint8Array(512),p=new Uint8Array(256);
+for(let i=0;i<256;i++)p[i]=i;
+for(let i=255;i>0;i--){const j=Math.floor(Math.random()*(i+1));[p[i],p[j]]=[p[j],p[i]];}
+for(let i=0;i<512;i++)perm[i]=p[i&255];
+function fade(t: number){return t*t*t*(t*(t*6-15)+10);}
+function lerp(a: number,b: number,t: number){return a+(b-a)*t;}
+function grad(h: number,x: number,y: number){h&=3;const u=h<2?x:y,v=h<2?y:x;return((h&1)?-u:u)+((h&2)?-v:v);}
+function noise2(x: number,y: number){
+  const X=Math.floor(x)&255,Y=Math.floor(y)&255;
+  x-=Math.floor(x);y-=Math.floor(y);
+  const u=fade(x),v=fade(y),a=perm[X]+Y,b=perm[X+1]+Y;
+  return lerp(lerp(grad(perm[a],x,y),grad(perm[b],x-1,y),u),lerp(grad(perm[a+1],x,y-1),grad(perm[b+1],x-1,y-1),u),v);
+}
+function fbm(x: number,y: number,oct: number){
+  let v=0,a=0.5,fx=x,fy=y;
+  for(let i=0;i<oct;i++){v+=a*noise2(fx,fy);a*=0.5;fx*=2.1;fy*=2.1;}
+  return v;
+}
+
+// --- Particle Sphere Utils ---
+function hash3(x: number,y: number,z: number){
+  let h = Math.sin(x*127.1 + y*311.7 + z*74.7)*43758.5453;
+  return h - Math.floor(h);
+}
+function snoise3d(x: number,y: number,z: number){
+  const ix=Math.floor(x),iy=Math.floor(y),iz=Math.floor(z);
+  const fx=x-ix,fy=y-iy,fz=z-iz;
+  const ux=fx*fx*(3-2*fx),uy=fy*fy*(3-2*fy),uz=fz*fz*(3-2*fz);
+  const v000=hash3(ix,iy,iz),     v100=hash3(ix+1,iy,iz);
+  const v010=hash3(ix,iy+1,iz),   v110=hash3(ix+1,iy+1,iz);
+  const v001=hash3(ix,iy,iz+1),   v101=hash3(ix+1,iy,iz+1);
+  const v011=hash3(ix,iy+1,iz+1), v111=hash3(ix+1,iy+1,iz+1);
+  return (v000*(1-ux)+v100*ux)*(1-uy)*(1-uz)
+        +(v010*(1-ux)+v110*ux)*uy*(1-uz)
+        +(v001*(1-ux)+v101*ux)*(1-uy)*uz
+        +(v011*(1-ux)+v111*ux)*uy*uz;
+}
+
+interface SphereParticle {
+  nx: number; ny: number; nz: number;
+  phase: number; freq: number;
+}
+function buildSphereParticles(count: number): SphereParticle[] {
+  const pts: SphereParticle[] = [];
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < count; i++) {
+    const y = 1 - (i / (count - 1)) * 2;
+    const r = Math.sqrt(1 - y * y);
+    const theta = golden * i;
+    pts.push({
+      nx: Math.cos(theta) * r,
+      ny: y,
+      nz: Math.sin(theta) * r,
+      phase: Math.random() * Math.PI * 2,
+      freq: 0.8 + Math.random() * 0.8,
+    });
+  }
+  return pts;
 }
 
 export default function App() {
@@ -557,14 +833,30 @@ export default function App() {
       midiMode: false,
       triggerMapping: { ...DEFAULT_TRIGGER_MAPPING },
       mappings: INITIAL_MAPPINGS,
+      rhythmMapping: { 
+        enabled: false, 
+        pattern: '4-on-the-Floor', 
+        bpm: 120, 
+        customPattern: new Array(16).fill(false),
+        noteSettings: {
+          useFixedDuration: false,
+          subdivision: '1/4',
+          bpm: 120,
+          useFixedVelocity: false,
+          fixedVelocity: 127
+        }
+      },
+      isMuted: false,
+      isSoloed: false,
     }
   ]);
   const [activeLayerId, setActiveLayerId] = useState<string | null>('layer-1');
   const [scenes, setScenes] = useState<Scene[]>([]);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(true);
   const [midiAccess, setMidiAccess] = useState<MIDIAccess | null>(null);
   const [midiDevices, setMidiDevices] = useState<MidiDevice[]>([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
+  const [midiLearnTarget, setMidiLearnTarget] = useState<{layerId: string, effectId?: string, field: 'noteStart' | 'noteEnd'} | null>(null);
   const [midiLogs, setMidiLogs] = useState<MidiLogEntry[]>([]);
   
   // UI State
@@ -573,10 +865,14 @@ export default function App() {
   const [selectedEffectId, setSelectedEffectId] = useState<string | null>(null);
   const [selectedLayerForEffect, setSelectedLayerForEffect] = useState<string | null>(null);
   const [showEffectBrowser, setShowEffectBrowser] = useState(false);
+  const [showGenerativeBrowser, setShowGenerativeBrowser] = useState(false);
   const [status, setStatus] = useState('STANDBY');
   const [showRoutingGuide, setShowRoutingGuide] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
+  const [compositionLayout, setCompositionLayout] = useState<'stack' | 'split-vertical' | 'split-horizontal' | 'grid-2x2' | 'grid-3x3' | 'grid-4x4'>('stack');
+  const [aspectRatioValue, setAspectRatioValue] = useState(60); // 0 = 9:16, 100 = 16:9, ~50 = 1:1
   const [resolutionScale, setResolutionScale] = useState(0.5); // Default to 50% for improved latency
+  const [sidebarTab, setSidebarTab] = useState<'config' | 'triggers'>('config');
   const [isRecording, setIsRecording] = useState(false);
   const [isPanic, setIsPanic] = useState(false);
 
@@ -599,6 +895,80 @@ export default function App() {
   const bufferCtxRef = useRef<CanvasRenderingContext2D | null>(null);
   const asciiAtlasRef = useRef<HTMLCanvasElement | null>(null);
   const asciiDownsampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const generativesRef = useRef<GenerativeDefinition[]>(parseGeneratives());
+  const audioTrackersRef = useRef<Record<string, { state: 'idle' | 'attack' | 'release', value: number, lastUpdate: number, lastTriggerTime: number }>>({});
+  const parameterEasingRef = useRef<Record<string, number>>({});
+  const wavesCanvasRef = useRef<Record<string, HTMLCanvasElement>>({}); 
+  const wavesNoiseRef = useRef<any>(null);
+  const topographyCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const sphereCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const sphereParticlesRef = useRef<Record<string, { count: number, particles: SphereParticle[] }>>({});
+  const stickinessCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const stickinessCirclesRef = useRef<Record<string, { count: number, circles: any[] }>>({});
+  const [audioStems, setAudioStems] = useState<{ id: string, name: string, fileUrl: string, isMuted: boolean, isSoloed: boolean }[]>([]);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const [audioTime, setAudioTime] = useState(0);
+  const [audioDuration, setAudioDuration] = useState(0);
+
+  useEffect(() => {
+    if (!audioPlaying) return;
+    const interval = setInterval(() => {
+      setAudioTime(engine.getCurrentTime());
+      setAudioDuration(engine.getMaxDuration());
+    }, 100);
+    return () => clearInterval(interval);
+  }, [audioPlaying]);
+
+  const handleAddAudioStem = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files) return;
+    const newStems = [...audioStems];
+    for (let i = 0; i < e.target.files.length; i++) {
+      const file = e.target.files[i];
+      const url = URL.createObjectURL(file);
+      const id = Math.random().toString();
+      await engine.addStem(id, file.name, url);
+      newStems.push({ id, name: file.name, fileUrl: url, isMuted: false, isSoloed: false });
+    }
+    setAudioStems(newStems);
+  };
+
+  const toggleAudioPlay = () => {
+    if (audioPlaying) { engine.stopAll(); setAudioPlaying(false); }
+    else { engine.playAll(); setAudioPlaying(true); }
+  };
+
+  const toggleStemMute = (id: string) => {
+    engine.toggleMute(id);
+    setAudioStems(prev => prev.map(s => s.id === id ? { ...s, isMuted: !s.isMuted } : s));
+  };
+
+  const toggleStemSolo = (id: string) => {
+    engine.toggleSolo(id);
+    setAudioStems(prev => prev.map(s => s.id === id ? { ...s, isSoloed: !s.isSoloed } : s));
+  };
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const time = parseFloat(e.target.value);
+    engine.seek(time);
+    setAudioTime(time);
+  };
+
+  const formatTime = (seconds: number) => {
+    if (isNaN(seconds)) return "00:00";
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const removeAudioStem = (id: string) => {
+    engine.removeStem(id);
+    setAudioStems(prev => prev.filter(s => s.id !== id));
+  };
+
+  const webglRendererRef = useRef<WebGLGenerativeRenderer | null>(null);
+  if (typeof window !== 'undefined' && !webglRendererRef.current) {
+    webglRendererRef.current = new WebGLGenerativeRenderer(1920, 1080);
+  }
 
   // --- Recording Logic ---
 
@@ -680,7 +1050,7 @@ export default function App() {
           });
           console.log("MIDI devices found:", devices);
           setMidiDevices(devices);
-          if (devices.length > 0 && !selectedDeviceId) setSelectedDeviceId(devices[0].id);
+          setSelectedDeviceIds(prev => prev.length === 0 ? devices.map(d => d.id) : prev.filter(id => devices.some(d => d.id === id)));
         };
         updateDevices();
         access.onstatechange = updateDevices;
@@ -690,7 +1060,7 @@ export default function App() {
     } else {
       console.warn("Web MIDI API not supported in this browser.");
     }
-  }, [selectedDeviceId]);
+  }, []);
 
   useEffect(() => {
     requestMidiAccess();
@@ -704,6 +1074,18 @@ export default function App() {
     // Note On (9) or Note Off (8)
     if (type === 9 || type === 8) {
       const isDown = type === 9 && velocity > 0;
+      
+      if (isDown && midiLearnTarget) {
+        setLayers(prev => prev.map(l => {
+          if (l.id !== midiLearnTarget.layerId) return l;
+          if (midiLearnTarget.effectId) {
+             return { ...l, mappings: l.mappings.map(m => m.id === midiLearnTarget.effectId ? { ...m, [midiLearnTarget.field]: note } : m) };
+          }
+          return { ...l, triggerMapping: { ...l.triggerMapping, [midiLearnTarget.field]: note } };
+        }));
+        setMidiLearnTarget(null);
+        return;
+      }
       
       const log: MidiLogEntry = {
         id: ++lastMidiId.current,
@@ -741,10 +1123,17 @@ export default function App() {
       setLayers(prev => prev.map(layer => {
         if (!layer.triggerMapping) return layer;
         const tr = layer.triggerMapping;
-        if (tr.channels.includes(channel) && note >= tr.noteStart && note <= tr.noteEnd) {
+          if (tr.channels.includes(channel) && note >= tr.noteStart && note <= tr.noteEnd) {
           let activeUntil = null;
           const finalVelocity = tr.noteSettings.useFixedVelocity ? tr.noteSettings.fixedVelocity : velocity;
           
+          if (tr.triggerBehavior === 'toggle') {
+            if (isDown) {
+              return { ...layer, isActive: !layer.isActive, triggerMapping: { ...tr, velocity: layer.isActive ? 0 : finalVelocity } };
+            }
+            return layer;
+          }
+
           if (tr.noteSettings.useFixedDuration) {
             const bpm = tr.noteSettings.bpm;
             const subdivision = tr.noteSettings.subdivision;
@@ -762,6 +1151,9 @@ export default function App() {
             return { ...layer, isActive: false, triggerMapping: { ...tr, activeUntil: null, velocity: 0 } };
           }
           if (isDown) {
+            if (layer.videoTriggerMode === 'restart' && layer.type === 'video' && videoRefs.current[layer.id]) {
+              videoRefs.current[layer.id]!.currentTime = layer.videoStart || 0;
+            }
             return { ...layer, isActive: true, triggerMapping: { ...tr, activeUntil, velocity: finalVelocity } };
           }
           if (!isDown && tr.noteSettings.useFixedDuration) {
@@ -771,16 +1163,21 @@ export default function App() {
         return layer;
       }));
 
-      // 3. Check Effect Mappings
+      // 3. Check Effect & Generative Mappings
       setLayers(prevLayers => prevLayers.map(layer => {
         let changed = false;
-        const newMappings = layer.mappings.map(m => {
+        
+        const processMapping = (m: any) => {
           if (m.channels.includes(channel) && note >= m.noteStart && note <= m.noteEnd) {
             changed = true;
             if (isDown) {
-              let activeUntil = null;
               const finalVelocity = m.noteSettings.useFixedVelocity ? m.noteSettings.fixedVelocity : velocity;
               
+              if (m.triggerBehavior === 'toggle') {
+                return { ...m, active: !m.active, velocity: m.active ? 0 : finalVelocity };
+              }
+
+              let activeUntil = null;
               if (m.noteSettings.useFixedDuration) {
                 const bpm = m.noteSettings.bpm;
                 const subdivision = m.noteSettings.subdivision;
@@ -796,13 +1193,17 @@ export default function App() {
               }
               return { ...m, active: true, activeUntil, velocity: finalVelocity };
             } else {
-              if (m.noteSettings.useFixedDuration) return m;
+              if (m.triggerBehavior === 'toggle' || m.noteSettings.useFixedDuration) return m;
               return { ...m, active: false, activeUntil: null, velocity: 0 };
             }
           }
           return m;
-        });
-        return changed ? { ...layer, mappings: newMappings } : layer;
+        };
+
+        const newMappings = layer.mappings.map(processMapping);
+        const newGenMappings = layer.generativeMappings?.map(processMapping);
+        
+        return changed ? { ...layer, mappings: newMappings, generativeMappings: newGenMappings } : layer;
       }));
     }
 
@@ -826,16 +1227,21 @@ export default function App() {
         return l;
       }));
     }
-  }, [layers, scenes]);
+  }, [layers, scenes, midiLearnTarget]);
 
   useEffect(() => {
-    if (!midiAccess || !selectedDeviceId) return;
-    const input = midiAccess.inputs.get(selectedDeviceId);
-    if (input) {
-      input.onmidimessage = handleMidiMessage;
-      return () => { input.onmidimessage = null; };
-    }
-  }, [midiAccess, selectedDeviceId, handleMidiMessage]);
+    if (!midiAccess || selectedDeviceIds.length === 0) return;
+    selectedDeviceIds.forEach(id => {
+      const input = midiAccess.inputs.get(id);
+      if (input) input.onmidimessage = handleMidiMessage;
+    });
+    return () => {
+      selectedDeviceIds.forEach(id => {
+        const input = midiAccess.inputs.get(id);
+        if (input) input.onmidimessage = null;
+      });
+    };
+  }, [midiAccess, selectedDeviceIds, handleMidiMessage]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -851,13 +1257,17 @@ export default function App() {
           if (layer.triggerMapping?.activeUntil && now >= layer.triggerMapping.activeUntil) {
             anyNeedsUpdate = true;
           }
+          if (layer.generativeMappings?.some(m => m.activeUntil && now >= m.activeUntil)) {
+            anyNeedsUpdate = true;
+          }
         }
         
         if (!anyNeedsUpdate) return prevLayers;
         
         return prevLayers.map(layer => {
           let layerNeedsUpdate = layer.mappings.some(m => m.activeUntil && now >= m.activeUntil) || 
-                                 (layer.triggerMapping?.activeUntil && now >= layer.triggerMapping.activeUntil);
+                                 (layer.triggerMapping?.activeUntil && now >= layer.triggerMapping.activeUntil) ||
+                                 (layer.generativeMappings?.some(m => m.activeUntil && now >= m.activeUntil));
           if (!layerNeedsUpdate) return layer;
           
           let newLayer = { ...layer };
@@ -871,6 +1281,14 @@ export default function App() {
             }
             return m;
           });
+          if (newLayer.generativeMappings) {
+            newLayer.generativeMappings = newLayer.generativeMappings.map(m => {
+              if (m.activeUntil && now >= m.activeUntil) {
+                return { ...m, active: false, activeUntil: null, velocity: 0 };
+              }
+              return m;
+            });
+          }
           return newLayer;
         });
       });
@@ -909,9 +1327,23 @@ export default function App() {
       return;
     }
 
-    // Fixed composition dimensions so moving layers doesn't randomly resize the canvas
-    const targetW = Math.floor(1920 * resolutionScale);
-    const targetH = Math.floor(1080 * resolutionScale);
+    // Dynamic aspect ratio calculation (0 = 9:16, 50 = 1:1, 100 = 16:9)
+    let ratio = 1.0;
+    if (aspectRatioValue < 50) {
+      const t = aspectRatioValue / 50;
+      ratio = 0.5625 + t * (1.0 - 0.5625);
+    } else {
+      const t = (aspectRatioValue - 50) / 50;
+      ratio = 1.0 + t * (1.7777 - 1.0);
+    }
+
+    // Stabilize base dimensions (maintaining a 1080p-ish area)
+    const baseArea = 1920 * 1080;
+    let baseW = Math.sqrt(baseArea * ratio);
+    let baseH = baseW / ratio;
+
+    const targetW = Math.floor(baseW * resolutionScale);
+    const targetH = Math.floor(baseH * resolutionScale);
 
     if (mainCanvas.width !== targetW) {
       mainCanvas.width = targetW;
@@ -949,7 +1381,7 @@ export default function App() {
       bufferCtxRef.current.clearRect(0, 0, targetW, targetH);
     }
 
-    const now = Date.now();
+    const now = performance.now();
     const deltaTime = now - lastFrameTimeRef.current;
     lastFrameTimeRef.current = now;
 
@@ -957,39 +1389,564 @@ export default function App() {
     // but the user asked drag and drop to make top cover bottom.
     // If Reorder.Group puts index 0 at top visually, then rendering index N then index 0 is what we want.
     // So we will reverse the `layers` array to render bottom visuals first.)
-    const layersToDraw = [...layers].reverse();
+    const anySolo = layers.some(l => l.isSoloed);
+    const layersToDraw = [...layers].reverse().filter(l => {
+      if (l.isMuted) return false;
+      if (anySolo && !l.isSoloed) return false;
+      return true;
+    });
 
     layersToDraw.forEach(layer => {
-      const hasActiveEffect = layer.mappings.some(m => (m.active || m.manualActive) && !m.isMuted);
-      const isVisibleNormally = layer.midiMode ? layer.isActive : layer.isVisible;
-      
-      if (!(isVisibleNormally || hasActiveEffect) || !layer.src) return;
+      let audioVisualOpacity = 1.0;
+      let audioIsActive = false;
+      let audioIntensity = 0.0;
 
-      const element = layer.type === 'video' 
-        ? videoRefs.current[layer.id] 
-        : imageRefs.current[layer.id];
+      // --- HIGH SPEED AUDIO POLLING ---
+      if (layer.audioMapping?.enabled && layer.audioMapping.stemId) {
+          if (!audioTrackersRef.current[layer.id]) {
+            audioTrackersRef.current[layer.id] = { state: 'idle', value: 0, lastUpdate: now, lastTriggerTime: 0 };
+          }
+          const tracker = audioTrackersRef.current[layer.id];
+          const dt = (now - tracker.lastUpdate) / 1000.0; // Seconds
+          tracker.lastUpdate = now;
+
+          const mode = layer.audioMapping.mode || 'smooth';
+          const { intensity, flux } = engine.getBandIntensity(layer.audioMapping.stemId, layer.audioMapping.freqRange || [20, 20000]);
+          
+          if (mode === 'smooth') {
+              const attackSecs = layer.audioMapping.attack ?? 0.05;
+              const releaseSecs = layer.audioMapping.release ?? 0.2;
+
+              if (intensity >= layer.audioMapping.threshold) {
+                 tracker.state = 'attack';
+              }
+
+              if (tracker.state === 'attack') {
+                 tracker.value += attackSecs > 0.001 ? (dt / attackSecs) : 1.0;
+                 if (tracker.value >= 1.0) {
+                     tracker.value = 1.0;
+                     tracker.state = 'release';
+                 }
+              } else {
+                 tracker.state = 'release';
+                 tracker.value -= releaseSecs > 0.001 ? (dt / releaseSecs) : 1.0;
+                 if (tracker.value <= 0.0) {
+                     tracker.value = 0.0;
+                     tracker.state = 'idle';
+                 }
+              }
+
+              audioVisualOpacity = Math.max(0, Math.min(1, tracker.value));
+              if (layer.audioMapping.target === 'opacity') {
+                  audioIsActive = audioVisualOpacity > 0.01;
+              } else {
+                  audioIsActive = tracker.value > 0.01;
+                  audioVisualOpacity = 1.0; 
+              }
+              audioIntensity = Math.max(0, Math.min(1, tracker.value));
+          } else {
+              // Classical Fast Mode
+              if (intensity >= layer.audioMapping.threshold) {
+                 const cooldown = layer.audioMapping.cooldownMs ?? 50;
+                 if (now - tracker.lastTriggerTime > cooldown) {
+                    tracker.lastTriggerTime = now;
+                 }
+              }
+              const isRawTriggered = (now - tracker.lastTriggerTime) < 50; 
+              const targetVal = isRawTriggered ? 1.0 : intensity;
+              const smoothing = layer.audioMapping.smoothing !== undefined ? layer.audioMapping.smoothing : 0.8;
+              tracker.value = tracker.value + (targetVal - tracker.value) * (1.0 - smoothing);
+
+              audioIsActive = tracker.value > layer.audioMapping.threshold || isRawTriggered;
+              
+              if (layer.audioMapping.target === 'opacity') {
+                  audioVisualOpacity = Math.max(0, Math.min(1, tracker.value));
+                  audioIsActive = audioVisualOpacity > 0.01;
+              } else {
+                  audioVisualOpacity = 1.0;
+              }
+              audioIntensity = Math.max(0, Math.min(1, tracker.value));
+          }
+      }
+      let rhythmVisualOpacity = 1.0;
+      let rhythmIsActive = false;
+      let rhythmTrackerValue = 0.0;
+      
+      if (layer.rhythmMapping?.enabled) {
+          const bpm = layer.rhythmMapping.bpm || 120;
+          const beatTime = (now / 1000.0) * (bpm / 60.0);
+          const pattern = layer.rhythmMapping.pattern;
+          
+          let isTriplet = pattern === 'Eighth-Note Triplets' || pattern === 'Quarter-Note Triplets';
+          
+          if (isTriplet) {
+              let fraction = 0;
+              if (pattern === 'Eighth-Note Triplets') fraction = (beatTime * 3.0) % 1.0;
+              else fraction = (beatTime * 1.5) % 1.0;
+              
+              fraction = ((fraction % 1.0) + 1.0) % 1.0;
+              
+              const ns = layer.rhythmMapping.noteSettings;
+              const fixedVel = ns?.useFixedVelocity ? (ns.fixedVelocity / 127) : 1.0;
+              
+              if (ns?.useFixedDuration) {
+                  let holdBeats = 1.0;
+                  if (ns.subdivision === '1/2') holdBeats = 2.0;
+                  if (ns.subdivision === '1') holdBeats = 4.0;
+                  if (ns.subdivision === '1/8') holdBeats = 0.5;
+                  if (ns.subdivision === '1/16') holdBeats = 0.25;
+                  
+                  const tripletStepLen = pattern === 'Eighth-Note Triplets' ? (1/3) : (2/3);
+                  const beatsElapsed = fraction * tripletStepLen;
+                  rhythmTrackerValue = beatsElapsed < holdBeats ? fixedVel : 0.0;
+              } else {
+                  rhythmTrackerValue = Math.exp(-20.0 * fraction) * fixedVel;
+              }
+          } else {
+              let activePattern = new Array(16).fill(false);
+              if (pattern === 'Custom') {
+                  activePattern = layer.rhythmMapping.customPattern || activePattern;
+              } else {
+                  switch (pattern) {
+                      case '4-on-the-Floor':
+                          activePattern[0] = activePattern[4] = activePattern[8] = activePattern[12] = true;
+                          break;
+                      case 'Backbeat':
+                          activePattern[4] = activePattern[12] = true;
+                          break;
+                      case 'Off-Beat':
+                          activePattern[2] = activePattern[6] = activePattern[10] = activePattern[14] = true;
+                          break;
+                      case 'Straight Eighths':
+                          for (let i = 0; i < 16; i += 2) activePattern[i] = true;
+                          break;
+                      case 'Straight Sixteenths':
+                          activePattern.fill(true);
+                          break;
+                      case 'The "One"':
+                          activePattern[0] = true;
+                          break;
+                  }
+              }
+
+              const stepsElapsed = beatTime * 4;
+              let currentStepIdx = Math.floor(stepsElapsed);
+              let lastHitStepIdx = -1;
+              
+              for (let i = 0; i < 16; i++) {
+                  const checkIdx = currentStepIdx - i;
+                  if (checkIdx < 0) continue;
+                  const patternIdx = checkIdx % 16;
+                  if (activePattern[patternIdx]) {
+                      lastHitStepIdx = checkIdx;
+                      break;
+                  }
+              }
+
+              if (lastHitStepIdx !== -1) {
+                  const stepsSinceHit = stepsElapsed - lastHitStepIdx;
+                  const beatsSinceHit = stepsSinceHit * 0.25;
+
+                  const ns = layer.rhythmMapping.noteSettings;
+                  const fixedVel = ns?.useFixedVelocity ? (ns.fixedVelocity / 127) : 1.0;
+                  
+                  if (ns?.useFixedDuration) {
+                      let holdBeats = 1.0;
+                      if (ns.subdivision === '1/2') holdBeats = 2.0;
+                      if (ns.subdivision === '1') holdBeats = 4.0;
+                      if (ns.subdivision === '1/8') holdBeats = 0.5;
+                      if (ns.subdivision === '1/16') holdBeats = 0.25;
+                      
+                      rhythmTrackerValue = beatsSinceHit < holdBeats ? fixedVel : 0.0;
+                  } else {
+                      rhythmTrackerValue = Math.exp(-20.0 * beatsSinceHit) * fixedVel;
+                  }
+              } else {
+                  rhythmTrackerValue = 0.0;
+              }
+          }
+
+          rhythmVisualOpacity = rhythmTrackerValue;
+          rhythmIsActive = rhythmVisualOpacity > 0.01;
+      }
+
+      const hasActiveEffect = layer.mappings.some(m => (m.active || m.manualActive) && !m.isMuted);
+      let isVisibleNormally = layer.isVisible;
+      if (layer.midiMode) {
+          if (layer.audioMapping?.enabled) isVisibleNormally = audioIsActive;
+          else if (layer.rhythmMapping?.enabled) isVisibleNormally = rhythmIsActive;
+          else isVisibleNormally = !!layer.isActive;
+      }
+      
+      // We still process the layer even if hidden if it has effects that could be drawing something (e.g. generative)
+      // or if it's midi-triggered but currently silent, we still need to process its parameters.
+      if (!(isVisibleNormally || hasActiveEffect || layer.midiMode)) return;
+      if (layer.type !== 'generative' && !layer.src) return;
+
+      let element: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement | null | undefined = null;
+      if (layer.type === 'generative' && layer.generativeId && webglRendererRef.current) {
+        const def = generativesRef.current.find(g => g.uuid === layer.generativeId);
+        if (def) {
+          const nowSec = performance.now() / 1000;
+          
+          let unifiedTriggerValue = 0.0;
+          if (layer.audioMapping?.enabled) unifiedTriggerValue = audioVisualOpacity;
+          else if (layer.rhythmMapping?.enabled) unifiedTriggerValue = rhythmVisualOpacity;
+          else if (layer.midiMode) unifiedTriggerValue = layer.isActive ? 1.0 : 0.0;
+
+          let modifiedSettings = { ...(layer.generativeSettings || {}) };
+          if (def.parameters) {
+              for (const p of def.parameters) {
+                  const baseVal = modifiedSettings[p.name] !== undefined ? modifiedSettings[p.name] : p.default;
+                  const pMap = layer.generativeMappings?.find(m => m.id === p.name);
+                  
+                  let activeMagnitude = 0.0;
+                  if (pMap?.audioMapping?.enabled && pMap.audioMapping.stemId) {
+                      const trackerId = layer.id + '-' + pMap.id + '-audio';
+                      if (!audioTrackersRef.current[trackerId]) {
+                        audioTrackersRef.current[trackerId] = { state: 'idle', value: 0, lastUpdate: now, lastTriggerTime: 0 };
+                      }
+                      const tracker = audioTrackersRef.current[trackerId];
+                      const dt = (now - tracker.lastUpdate) / 1000.0;
+                      tracker.lastUpdate = now;
+
+                      const mode = pMap.audioMapping.mode || 'smooth';
+                      const { intensity } = engine.getBandIntensity(pMap.audioMapping.stemId, pMap.audioMapping.freqRange || [20, 20000]);
+                      
+                      if (mode === 'smooth') {
+                          const attackSecs = pMap.audioMapping.attack ?? 0.05;
+                          const releaseSecs = pMap.audioMapping.release ?? 0.2;
+
+                          if (intensity >= pMap.audioMapping.threshold) tracker.state = 'attack';
+
+                          if (tracker.state === 'attack') {
+                             tracker.value += attackSecs > 0.001 ? (dt / attackSecs) : 1.0;
+                             if (tracker.value >= 1.0) { tracker.value = 1.0; tracker.state = 'release'; }
+                          } else {
+                             tracker.state = 'release';
+                             tracker.value -= releaseSecs > 0.001 ? (dt / releaseSecs) : 1.0;
+                             if (tracker.value <= 0.0) { tracker.value = 0.0; tracker.state = 'idle'; }
+                          }
+                          activeMagnitude = Math.max(0, Math.min(1, tracker.value));
+                      } else {
+                          if (intensity >= pMap.audioMapping.threshold && (now - tracker.lastTriggerTime > 100)) {
+                             tracker.value = 1.0;
+                             tracker.lastTriggerTime = now;
+                          }
+                          const decay = pMap.audioMapping.smoothing ?? 0.5;
+                          tracker.value *= decay;
+                          activeMagnitude = tracker.value;
+                      }
+                  } else if (pMap?.active || pMap?.manualActive) {
+                      activeMagnitude = pMap.active ? 1.0 : 0.0;
+                  } else if (layer.generativeTriggerActive?.[p.name]) {
+                      activeMagnitude = unifiedTriggerValue;
+                  }
+                  
+                  let targetVal = baseVal;
+                  if (activeMagnitude > 0) {
+                      const amount = layer.generativeTriggerAmount?.[p.name] || 0;
+                      targetVal = baseVal + amount * activeMagnitude * (p.max - p.min) * 0.5;
+                  }
+                  
+                  const easeKey = `${layer.id}-${p.name}`;
+                  const currentEased = parameterEasingRef.current[easeKey] !== undefined ? parameterEasingRef.current[easeKey] : baseVal;
+                  const finalVal = currentEased + (targetVal - currentEased) * 0.15;
+                  parameterEasingRef.current[easeKey] = finalVal;
+                  
+                  modifiedSettings[p.name] = finalVal;
+                  
+                  const knobId = `layer-${layer.id}-param-${p.name}`;
+                  const lineEl = document.getElementById(`knob-line-${knobId}`);
+                  const circleEl = document.getElementById(`knob-circle-${knobId}`);
+                  if (lineEl && circleEl) {
+                      const range = p.max - p.min;
+                      const pct = ((finalVal - p.min) / range) * 100;
+                      const rot = (pct / 100) * 270 - 135;
+                      circleEl.style.strokeDashoffset = (251.2 - (pct / 100) * 188.4).toString();
+                      lineEl.setAttribute("transform", `rotate(${rot} 50 50)`);
+                  }
+              }
+          }
+
+          // Using targetW and targetH for exact resolution without stretching
+          if (def.uuid === 'waves-canvas-gen-1') {
+              if (!wavesNoiseRef.current) wavesNoiseRef.current = createNoise2D();
+              if (!wavesCanvasRef.current[layer.id]) wavesCanvasRef.current[layer.id] = document.createElement('canvas');
+              
+              const canvas = wavesCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) {
+                  canvas.width = targetW;
+                  canvas.height = targetH;
+              }
+              const ctx = canvas.getContext('2d')!;
+              ctx.clearRect(0, 0, targetW, targetH);
+              ctx.fillStyle = '#000';
+              ctx.fillRect(0, 0, targetW, targetH);
+              ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+              ctx.lineWidth = 1;
+              ctx.lineJoin = 'round';
+              
+              const { speed, freq, amp, lines } = modifiedSettings;
+              const W = targetW;
+              const H = targetH;
+              const spacing = W / lines;
+              const Y_GAP = 6;
+              const totalY = Math.ceil((H + 40) / Y_GAP);
+              const yStart = (H - Y_GAP * totalY) / 2;
+              
+              const freqX = freq * 0.0008;
+              const freqY = freq * 0.0005;
+              const tX = nowSec * 1000 * 0.008 * (speed / 5);
+              const tY = nowSec * 1000 * 0.003 * (speed / 5);
+              
+              const noise2D = wavesNoiseRef.current;
+              
+              ctx.beginPath();
+              for (let i = 0; i <= lines; i++) {
+                 const bx = spacing * i;
+                 let isFirst = true;
+                 for (let j = 0; j < totalY; j++) {
+                     const by = yStart + Y_GAP * j;
+                     const n = noise2D((bx + tX * 40) * freqX, (by + tY * 40) * freqY) * 8; 
+                     const wx = Math.cos(n) * amp * 0.85;
+                     const wy = Math.sin(n) * amp * 0.42;
+                     
+                     if (isFirst) {
+                         ctx.moveTo(bx + wx, by + wy);
+                         isFirst = false;
+                     } else {
+                         ctx.lineTo(bx + wx, by + wy);
+                     }
+                 }
+              }
+              ctx.stroke();
+              element = canvas;
+          } else if (def.uuid === 'topography-canvas-gen-1') {
+              if (!topographyCanvasRef.current[layer.id]) topographyCanvasRef.current[layer.id] = document.createElement('canvas');
+              
+              const canvas = topographyCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) {
+                  canvas.width = targetW;
+                  canvas.height = targetH;
+              }
+              const ctx = canvas.getContext('2d')!;
+              ctx.clearRect(0, 0, targetW, targetH);
+              ctx.fillStyle = '#000';
+              ctx.fillRect(0, 0, targetW, targetH);
+              
+              const { speed, freq, amp, lines } = modifiedSettings;
+              const W = targetW;
+              const H = targetH;
+              const XSTEP = 3;
+              
+              const t = nowSec * 1000;
+              const rows: {x: number, baseY: number}[][] = [];
+              const yStart = H * 0.42;
+              const yEnd = H;
+              
+              for (let i = 0; i < lines; i++) {
+                const by = yStart + (yEnd - yStart) * (i / Math.max(1, lines - 1));
+                const nx = Math.ceil(W / XSTEP) + 2;
+                const pts: {x: number, baseY: number}[] = [];
+                for (let j = 0; j <= nx; j++) pts.push({ x: j * XSTEP, baseY: by });
+                rows.push(pts);
+              }
+              
+              const getY = (pt: {x: number, baseY: number}, t: number) => {
+                const f = freq;
+                const s = speed / 5;
+                const nx = pt.x / W;
+                const detail = fbm(pt.x * 0.004 * f + t * 0.00003 * s, pt.baseY * 0.005 * f, 5);
+                const env = fbm(nx * 1.8 + 0.3 + t * 0.0002 * s, pt.baseY * 0.002 + 7.4, 2);
+                const mountain = Math.pow(Math.max(0, env + 0.4), 2.2);
+                const rowT = (pt.baseY - H * 0.42) / (H * 0.58);
+                const peakScale = Math.pow(1.0 - rowT, 0.6);
+                return pt.baseY - Math.abs(detail) * amp * 0.25 - mountain * amp * peakScale;
+              };
+              
+              for (let i = 0; i < rows.length; i++) {
+                const pts = rows[i];
+                const ys = pts.map(p => getY(p, t));
+                
+                ctx.beginPath();
+                ctx.moveTo(-10, H + 10);
+                ctx.lineTo(pts[0].x, ys[0]);
+                for (let j = 1; j < pts.length; j++) ctx.lineTo(pts[j].x, ys[j]);
+                ctx.lineTo(W + 10, H + 10);
+                ctx.closePath();
+                ctx.fillStyle = '#000';
+                ctx.fill();
+                
+                ctx.beginPath();
+                ctx.moveTo(pts[0].x, ys[0]);
+                for (let j = 1; j < pts.length; j++) ctx.lineTo(pts[j].x, ys[j]);
+                ctx.strokeStyle = 'rgba(255,255,255,0.88)';
+                ctx.lineWidth = 0.9;
+                ctx.stroke();
+              }
+              
+              element = canvas;
+          } else if (def.uuid === 'particles-sphere-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) {
+                  canvas.width = targetW;
+                  canvas.height = targetH;
+              }
+              const ctx = canvas.getContext('2d')!;
+              ctx.clearRect(0, 0, targetW, targetH);
+              ctx.fillStyle = '#000';
+              ctx.fillRect(0, 0, targetW, targetH);
+              
+              const { particles: pCount, wiggle, radius, ball_size, speed, light_x } = modifiedSettings;
+              const count = Math.round(pCount);
+              
+              // Build/rebuild particle cache if count changed
+              const cache = sphereParticlesRef.current[layer.id];
+              if (!cache || cache.count !== count) {
+                  sphereParticlesRef.current[layer.id] = { count, particles: buildSphereParticles(count) };
+              }
+              const sphereParticles = sphereParticlesRef.current[layer.id].particles;
+              
+              const CX = targetW / 2;
+              const CY = targetH / 2;
+              const R = radius;
+              const t = nowSec * 1000;
+              
+              // Normalized light direction
+              const ly = -0.6, lz = 0.7;
+              const llen = Math.sqrt(light_x * light_x + ly * ly + lz * lz);
+              const Lx = light_x / llen, Ly = ly / llen, Lz = lz / llen;
+              
+              // Collect projected particles
+              const projected: { x: number, y: number, z: number, bright: number, ballR: number }[] = [];
+              for (const sp of sphereParticles) {
+                  const tt = t * speed * 0.001;
+                  const wd = snoise3d(
+                      sp.nx * 2.1 + tt * sp.freq + sp.phase,
+                      sp.ny * 2.1 + tt * sp.freq * 0.7,
+                      sp.nz * 2.1 + tt * sp.freq * 0.5
+                  ) * 2 - 1;
+                  const disp = 1 + wd * wiggle;
+                  const x3 = sp.nx * R * disp;
+                  const y3 = sp.ny * R * disp;
+                  const z3 = sp.nz * R * disp;
+                  
+                  const dot = Math.max(0, sp.nx * Lx + sp.ny * Ly + sp.nz * Lz);
+                  const ambient = 0.08;
+                  const diffuse = dot * 0.65;
+                  const dotProd = sp.nx * Lx + sp.ny * Ly + sp.nz * Lz;
+                  const rz = sp.nz - 2 * dotProd * Lz;
+                  const spec = Math.pow(Math.max(0, -rz), 8) * 0.5;
+                  const bright = Math.min(1, ambient + diffuse + spec);
+                  
+                  const depthScale = 0.7 + 0.3 * ((z3 / R + 1) / 2);
+                  const ballR = ball_size * depthScale * (0.9 + wd * wiggle * 0.1);
+                  
+                  projected.push({ x: CX + x3, y: CY + y3, z: z3, bright, ballR });
+              }
+              
+              // Sort back to front
+              projected.sort((a, b) => a.z - b.z);
+              
+              for (const pt of projected) {
+                  const v = Math.floor(pt.bright * 255);
+                  const alpha = 0.5 + pt.bright * 0.5;
+                  const g = ctx.createRadialGradient(
+                      pt.x - pt.ballR * 0.3, pt.y - pt.ballR * 0.3, pt.ballR * 0.05,
+                      pt.x, pt.y, pt.ballR
+                  );
+                  g.addColorStop(0, `rgba(255,255,255,${(alpha).toFixed(2)})`);
+                  g.addColorStop(0.4, `rgba(${v},${v},${v},${(alpha * 0.9).toFixed(2)})`);
+                  g.addColorStop(1, `rgba(0,0,0,0)`);
+                  ctx.beginPath();
+                  ctx.arc(pt.x, pt.y, pt.ballR, 0, Math.PI * 2);
+                  ctx.fillStyle = g;
+                  ctx.fill();
+              }
+              
+              element = canvas;
+          } else {
+              if (webglRendererRef.current.canvas.width !== targetW || webglRendererRef.current.canvas.height !== targetH) {
+                  webglRendererRef.current.resize(targetW, targetH);
+              }
+              webglRendererRef.current.render(def, nowSec, modifiedSettings);
+              element = webglRendererRef.current.canvas;
+          }
+        }
+      } else if (layer.type === 'video') {
+         element = videoRefs.current[layer.id];
+         if (element && isPlaying) {
+           const vid = element as HTMLVideoElement;
+           const start = layer.videoStart || 0;
+           const end = layer.videoEnd || vid.duration || 0;
+           if (vid.currentTime < start) vid.currentTime = start;
+           if (vid.currentTime >= end) vid.currentTime = start;
+         }
+      } else {
+         element = imageRefs.current[layer.id];
+      }
 
       if (element) {
-        // Clear offscreen intermediate canvas for this layer
+        let slotX = 0, slotY = 0, slotW = targetW, slotH = targetH;
+        let isGrid = false;
+        if (compositionLayout !== 'stack') {
+          isGrid = true;
+          const index = layers.findIndex(l => l.id === layer.id);
+          let cols = 1, rows = 1;
+          if (compositionLayout === 'split-vertical') { cols = 2; rows = 1; }
+          else if (compositionLayout === 'split-horizontal') { cols = 1; rows = 2; }
+          else if (compositionLayout === 'grid-2x2') { cols = 2; rows = 2; }
+          else if (compositionLayout === 'grid-3x3') { cols = 3; rows = 3; }
+          else if (compositionLayout === 'grid-4x4') { cols = 4; rows = 4; }
+          
+          const c = index % cols;
+          const r = Math.floor(index / cols) % rows;
+          slotW = targetW / cols;
+          slotH = targetH / rows;
+          slotX = c * slotW;
+          slotY = r * slotH;
+        }
+
         ctx.clearRect(0, 0, targetW, targetH);
         
-        const elW = (element as any).videoWidth || (element as HTMLImageElement).naturalWidth || targetW;
-        const elH = (element as any).videoHeight || (element as HTMLImageElement).naturalHeight || targetH;
+        const elW = (element as HTMLVideoElement).videoWidth || (element as HTMLImageElement).naturalWidth || (element as HTMLCanvasElement).width || targetW;
+        const elH = (element as HTMLVideoElement).videoHeight || (element as HTMLImageElement).naturalHeight || (element as HTMLCanvasElement).height || targetH;
         
-        // "object-fit: contain" without cropping
-        const scale = Math.min(targetW / elW, targetH / elH);
-        const destW = elW * scale;
-        const destH = elH * scale;
+        let destW, destH, x, y;
 
-        const x = (targetW - destW) / 2;
-        const y = (targetH - destH) / 2;
+        if (isGrid || layer.type === 'generative') {
+          const scale = Math.max(slotW / elW, slotH / elH);
+          destW = elW * scale;
+          destH = elH * scale;
+          x = slotX + (slotW - destW) / 2;
+          y = slotY + (slotH - destH) / 2;
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(slotX, slotY, slotW, slotH);
+          ctx.clip();
+        } else {
+          const scale = Math.min(targetW / elW, targetH / elH);
+          destW = elW * scale;
+          destH = elH * scale;
+          x = (targetW - destW) / 2;
+          y = (targetH - destH) / 2;
+        }
         
-        // Draw raw media to offscreen canvas without stretching, centered
         ctx.drawImage(element, x, y, destW, destH);
+        if (isGrid || layer.type === 'generative') ctx.restore();
 
-        // Store pure raw drawing unaffected by any effect logic loop overriding
         rawCtx.clearRect(0, 0, targetW, targetH);
+        if (isGrid) {
+          rawCtx.save();
+          rawCtx.beginPath();
+          rawCtx.rect(slotX, slotY, slotW, slotH);
+          rawCtx.clip();
+        }
         rawCtx.drawImage(element, x, y, destW, destH);
+        if (isGrid) rawCtx.restore();
 
         // Process effects for this layer
         const activeMappings = layer.mappings.filter(m => (m.active || m.manualActive) && !m.isMuted);
@@ -1828,14 +2785,34 @@ export default function App() {
 
       // Finally, composite this layer's fully processed canvas onto the main canvas
       mainCtx.save();
-      mainCtx.globalAlpha = layer.opacity;
+      if (isGrid) {
+        mainCtx.beginPath();
+        mainCtx.rect(slotX, slotY, slotW, slotH);
+        mainCtx.clip();
+      }
+      
+      let opacityMult = 1.0;
+      if (layer.midiMode) {
+          if (layer.audioMapping?.enabled) {
+              opacityMult = layer.audioMapping.target === 'opacity' ? audioVisualOpacity : (audioIsActive ? 1.0 : 0.0);
+          }
+          else if (layer.rhythmMapping?.enabled) opacityMult = rhythmVisualOpacity;
+          else opacityMult = layer.isActive ? 1.0 : 0.0;
+      }
+
+      mainCtx.globalAlpha = layer.opacity * opacityMult;
       mainCtx.globalCompositeOperation = layer.blendMode;
       mainCtx.drawImage(canvas, 0, 0, targetW, targetH);
       mainCtx.restore();
       
       if (bufferCtxRef.current) {
         bufferCtxRef.current.save();
-        bufferCtxRef.current.globalAlpha = layer.opacity;
+        if (isGrid) {
+          bufferCtxRef.current.beginPath();
+          bufferCtxRef.current.rect(slotX, slotY, slotW, slotH);
+          bufferCtxRef.current.clip();
+        }
+        bufferCtxRef.current.globalAlpha = layer.opacity * opacityMult;
         bufferCtxRef.current.globalCompositeOperation = layer.blendMode;
         bufferCtxRef.current.drawImage(canvas, 0, 0, targetW, targetH);
         bufferCtxRef.current.restore();
@@ -1844,7 +2821,7 @@ export default function App() {
     });
 
     requestRef.current = requestAnimationFrame(processFrame);
-  }, [layers, resolutionScale]);
+  }, [layers, resolutionScale, compositionLayout, aspectRatioValue]);
 
   useEffect(() => {
     if (isPlaying) requestRef.current = requestAnimationFrame(processFrame);
@@ -1864,7 +2841,12 @@ export default function App() {
         ...l,
         src: url,
         type: isVideo ? 'video' : 'image',
-        name: file.name
+        name: file.name,
+        mappings: [],
+        generativeSettings: {},
+        generativeMappings: [],
+        generativeTriggerActive: {},
+        generativeTriggerAmount: {}
       } : l));
       
       setIsPlaying(false);
@@ -1970,14 +2952,15 @@ export default function App() {
         settings: initialSettings,
         noteSettings: { ...DEFAULT_NOTE_SETTINGS },
         activeUntil: null,
-        velocity: 0
+        velocity: 0,
+        triggerBehavior: 'momentary'
       };
 
       return { ...l, mappings: [...l.mappings, newMapping] };
     }));
     
-    setSelectedEffectId(def.id);
-    setSelectedLayerForEffect(layerId);
+    // setSelectedEffectId(def.id);
+    // setSelectedLayerForEffect(layerId);
     setExpandedSection(`effects-${layerId}`);
     // No longer closing the browser so multiple effects can be added
   };
@@ -2020,17 +3003,37 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-red-600 overflow-hidden flex flex-col">
+      {/* Dynamic SVG Filters for Stickiness */}
+      <svg width="0" height="0" style={{ position: 'absolute', pointerEvents: 'none' }}>
+        <defs>
+          {layers.filter(l => l.generativeId === 'stickiness-canvas-gen-1').map(l => {
+            // Apply easing state if available, fallback to un-eased setting, then fallback to default (18)
+            const stick = l.generativeSettings?.stickiness || 18;
+            const th = 255 / Math.max(0.1, stick);
+            const cut = -(th * 0.38);
+            return (
+              <filter key={l.id} id={`sticky-goo-${l.id}`} colorInterpolationFilters="sRGB" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur in="SourceGraphic" stdDeviation={stick} result="blur" />
+                <feColorMatrix in="blur" mode="matrix"
+                  values={`1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 ${th} ${cut}`}
+                  result="goo" />
+                <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+              </filter>
+            );
+          })}
+        </defs>
+      </svg>
       {/* Background Atmosphere */}
       <div className="fixed inset-0 pointer-events-none">
-        <div className="absolute top-0 left-1/4 w-1/2 h-1/2 bg-red-900/10 blur-[120px] rounded-full" />
-        <div className="absolute bottom-0 right-1/4 w-1/2 h-1/2 bg-red-900/5 blur-[120px] rounded-full" />
+        <div className="absolute top-0 left-1/4 w-1/2 h-1/2 bg-red-900/10 blur-[120px] rounded-none" />
+        <div className="absolute bottom-0 right-1/4 w-1/2 h-1/2 bg-red-900/5 blur-[120px] rounded-none" />
       </div>
 
       {/* Mobile Header */}
-      <header className="lg:hidden relative z-50 p-4 flex justify-between items-center border-b border-white/5 bg-black/40 backdrop-blur-md">
+      <header className="lg:hidden relative z-50 p-4 flex justify-between items-center border-b border-white/5 bg-black/40 ">
         <button 
           onClick={() => setShowSidebar(!showSidebar)}
-          className="p-2 hover:bg-white/5 rounded-lg transition-colors"
+          className="p-2 hover:bg-transparent rounded-none transition-colors"
         >
           {showSidebar ? <X size={20} /> : <Menu size={20} />}
         </button>
@@ -2042,7 +3045,7 @@ export default function App() {
       <header className="hidden lg:flex relative z-10 p-6 justify-between items-center border-b border-white/5">
         <div className="flex items-center">
           <div className="flex items-center gap-4">
-            <div className={`w-2 h-2 rounded-full ${isPlaying ? 'bg-red-500 animate-pulse' : 'bg-white/20'}`} />
+            <div className={`w-2 h-2 rounded-none ${isPlaying ? 'bg-red-500 animate-pulse' : 'bg-white/20'}`} />
             <span className="text-[10px] font-mono tracking-widest opacity-40 uppercase">{status}</span>
           </div>
           
@@ -2054,6 +3057,50 @@ export default function App() {
         
         <h1 className="text-sm font-light tracking-[0.8em] uppercase opacity-80 absolute left-1/2 -translate-x-1/2">Glitch Pulse</h1>
 
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={() => {
+              const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({ layers, aspectRatioValue, compositionLayout }));
+              const downloadAnchorNode = document.createElement('a');
+              downloadAnchorNode.setAttribute("href", dataStr);
+              downloadAnchorNode.setAttribute("download", `glitch-pulse-project-${Date.now()}.json`);
+              document.body.appendChild(downloadAnchorNode);
+              downloadAnchorNode.click();
+              downloadAnchorNode.remove();
+            }}
+            className="px-4 py-2 rounded border transition-all text-[10px] uppercase tracking-widest bg-transparent border-white/10 hover:border border-white hover:bg-white hover:text-black hover:border-white/20 text-white flex items-center gap-2 cursor-pointer"
+          >
+            <Download size={12} /> Save
+          </button>
+          <label className="px-4 py-2 rounded border transition-all text-[10px] uppercase tracking-widest bg-transparent border-white/10 hover:border border-white hover:bg-white hover:text-black hover:border-white/20 text-white flex items-center gap-2 cursor-pointer">
+            <Upload size={12} /> Load
+            <input 
+              type="file" accept=".json" className="hidden" 
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  const reader = new FileReader();
+                  reader.onload = (event) => {
+                    try {
+                      const obj = JSON.parse(event.target?.result as string);
+                      if (obj.layers) {
+                        setLayers(obj.layers.map((l: any) => ({
+                           ...l,
+                           src: l.src && l.src.startsWith('blob:') ? null : l.src, // blobs are invalid on reconnect
+                           missingMedia: !!(l.src && l.src.startsWith('blob:'))
+                        })));
+                      }
+                      if (obj.canvasAspectRatio) setAspectRatioValue(obj.canvasAspectRatio);
+                      if (obj.aspectRatioValue) setAspectRatioValue(obj.aspectRatioValue);
+                      if (obj.compositionLayout) setCompositionLayout(obj.compositionLayout);
+                    } catch (err) { alert('Invalid project file'); }
+                  };
+                  reader.readAsText(file);
+                }
+                e.target.value = '';
+              }} 
+            />
+          </label>
         <button 
           onClick={stopAll}
           className={`px-4 py-2 rounded border transition-all flex items-center gap-2 text-[10px] uppercase tracking-widest ${
@@ -2065,23 +3112,83 @@ export default function App() {
           <Power size={12} />
           Stop All
         </button>
+        </div>
       </header>
 
       <div className="flex-1 relative z-10 flex flex-col lg:flex-row overflow-hidden">
         {/* Left Sidebar */}
         <aside className={`
-          fixed inset-x-0 bottom-0 z-40 w-full bg-black/95 backdrop-blur-2xl border-t border-white/10
-          lg:relative lg:inset-auto lg:z-0 lg:w-96 lg:border-t-0 lg:border-r lg:bg-black/20 lg:backdrop-blur-xl
+          fixed inset-x-0 bottom-0 z-40 w-full bg-black/95  border-t border-white/10
+          lg:relative lg:inset-auto lg:z-0 lg:w-96 lg:border-t-0 lg:border-r lg:bg-black/20 lg:
           flex flex-col transition-all duration-500 ease-in-out
           ${showSidebar ? 'h-[70vh] lg:h-full translate-y-0' : 'h-0 lg:h-full translate-y-full lg:translate-y-0'}
         `}>
           <div className="flex-1 overflow-y-auto custom-scrollbar pb-20 lg:pb-0">
-            <div className="lg:hidden p-4 flex justify-between items-center border-b border-white/5 sticky top-0 bg-black/80 backdrop-blur-md z-10">
+            <div className="lg:hidden p-4 flex justify-between items-center border-b border-white/5 sticky top-0 bg-black/80  z-10">
               <span className="text-[10px] uppercase tracking-widest font-bold opacity-40">Settings</span>
-              <button onClick={() => setShowSidebar(false)} className="p-2 hover:bg-white/5 rounded-full">
+              <button onClick={() => setShowSidebar(false)} className="p-2 hover:bg-transparent rounded-none">
                 <ChevronDown size={20} />
               </button>
             </div>
+
+            <Section 
+            title="Audio Input" 
+            icon={<Activity size={16} />} 
+            isExpanded={expandedSection === 'audio-input'} 
+            onToggle={() => setExpandedSection(expandedSection === 'audio-input' ? null : 'audio-input')}
+          >
+            <div className="p-4 space-y-4">
+              <div className="flex gap-2">
+                <label className="flex-1 border border-white/10 p-3 rounded-none bg-transparent hover:border border-white hover:bg-white hover:text-black transition-colors flex items-center justify-center gap-2 cursor-pointer">
+                  <Upload size={14} className="opacity-50" />
+                  <span className="text-[10px] uppercase tracking-widest font-bold">Load Stems</span>
+                  <input type="file" multiple accept="audio/*" onChange={handleAddAudioStem} className="hidden" />
+                </label>
+                <button 
+                  onClick={toggleAudioPlay}
+                  className={`px-4 rounded-none flex items-center justify-center transition-colors ${audioPlaying ? 'bg-red-600 text-white' : 'border border-white hover:bg-white hover:text-black hover:bg-white/20'}`}
+                >
+                  {audioPlaying ? <Pause size={14} /> : <Play size={14} />}
+                </button>
+              </div>
+              
+              <div className="space-y-2">
+                {audioDuration > 0 && (
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-[9px] font-mono opacity-50">{formatTime(audioTime)}</span>
+                    <input 
+                      type="range" 
+                      min="0" 
+                      max={audioDuration} 
+                      step="0.1" 
+                      value={audioTime} 
+                      onChange={handleSeek}
+                      className="flex-1 accent-red-600 h-1 border border-white hover:bg-white hover:text-black rounded-none appearance-none cursor-pointer" 
+                    />
+                    <span className="text-[9px] font-mono opacity-50">{formatTime(audioDuration)}</span>
+                  </div>
+                )}
+                {audioStems.length === 0 ? (
+                   <div className="text-[9px] text-center opacity-40 uppercase tracking-widest py-4 border border-white/5 border-dashed rounded">No AUDIO STEMS</div>
+                ) : audioStems.map(stem => (
+                  <div key={stem.id} className="flex items-center justify-between p-2 rounded bg-transparent border border-white/5 text-[10px]">
+                     <span className="truncate w-16 font-mono uppercase text-[9px] opacity-80">{stem.name}</span>
+                     <div className="flex items-center gap-1">
+                        <button 
+                          onClick={() => toggleStemMute(stem.id)}
+                          className={`px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider transition-colors ${stem.isMuted ? 'bg-red-500/20 text-red-500 font-bold' : 'bg-transparent opacity-40 hover:opacity-100'}`}
+                        >M</button>
+                        <button 
+                          onClick={() => toggleStemSolo(stem.id)}
+                          className={`px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider transition-colors ${stem.isSoloed ? 'bg-white/20 text-white font-bold' : 'bg-transparent opacity-40 hover:opacity-100'}`}
+                        >S</button>
+                        <button onClick={() => removeAudioStem(stem.id)} className="opacity-40 hover:opacity-100 hover:text-red-400 p-1 ml-1"><X size={10}/></button>
+                     </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Section>
 
             <Section 
             title="MIDI Input" 
@@ -2095,20 +3202,35 @@ export default function App() {
                   <label className="text-[10px] uppercase tracking-widest opacity-40">MIDI Device</label>
                   <button 
                     onClick={requestMidiAccess}
-                    className="p-1 hover:bg-white/10 rounded transition-colors opacity-40 hover:opacity-100"
+                    className="p-1 hover:border border-white hover:bg-white hover:text-black rounded transition-colors opacity-40 hover:opacity-100"
                     title="Refresh MIDI Devices"
                   >
                     <RefreshCw size={10} />
                   </button>
                 </div>
-                <select 
-                  value={selectedDeviceId}
-                  onChange={(e) => setSelectedDeviceId(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg p-2 text-xs outline-none focus:border-red-500/50 transition-colors appearance-none"
-                >
-                  {midiDevices.map(d => <option key={d.id} value={d.id} className="bg-neutral-900">{d.name}</option>)}
-                  {midiDevices.length === 0 && <option className="bg-neutral-900">No Devices Found</option>}
-                </select>
+                <div className="space-y-2">
+                  <div className="flex gap-2">
+                    <button onClick={() => setSelectedDeviceIds(midiDevices.map(d => d.id))} className="flex-1 text-[8px] uppercase tracking-widest bg-transparent py-1 rounded hover:border border-white hover:bg-white hover:text-black transition-colors">Select All</button>
+                    <button onClick={() => setSelectedDeviceIds([])} className="flex-1 text-[8px] uppercase tracking-widest bg-transparent py-1 rounded hover:border border-white hover:bg-white hover:text-black transition-colors">None</button>
+                  </div>
+                  <div className="max-h-32 overflow-y-auto">
+                    {midiDevices.map(d => (
+                      <label key={d.id} className="flex items-center gap-2 text-xs opacity-80 cursor-pointer p-1 hover:bg-transparent rounded">
+                        <input 
+                          type="checkbox" 
+                          checked={selectedDeviceIds.includes(d.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) setSelectedDeviceIds(prev => [...prev, d.id]);
+                            else setSelectedDeviceIds(prev => prev.filter(id => id !== d.id));
+                          }}
+                          className="accent-red-600"
+                        />
+                        {d.name}
+                      </label>
+                    ))}
+                  </div>
+                  {midiDevices.length === 0 && <div className="text-xs opacity-40 italic py-2">No Devices Found</div>}
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -2130,7 +3252,7 @@ export default function App() {
                   <motion.div 
                     initial={{ height: 0, opacity: 0 }}
                     animate={{ height: 'auto', opacity: 1 }}
-                    className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-[10px] text-red-200/80 font-mono leading-relaxed space-y-2 overflow-hidden"
+                    className="p-3 bg-red-500/10 border border-red-500/20 rounded-none text-[10px] text-red-200/80 font-mono leading-relaxed space-y-2 overflow-hidden"
                   >
                     <p className="font-bold text-red-400">Maschine Software Routing:</p>
                     <ol className="list-decimal list-inside space-y-1 opacity-90">
@@ -2142,11 +3264,11 @@ export default function App() {
                   </motion.div>
                 )}
 
-                <div className="bg-black/40 border border-white/5 rounded-lg p-3 h-32 overflow-y-auto font-mono text-[9px] space-y-1 custom-scrollbar">
+                <div className="bg-black/40 border border-white/5 rounded-none p-3 h-32 overflow-y-auto font-mono text-[9px] space-y-1 custom-scrollbar">
                   {midiLogs.length === 0 && <div className="opacity-20 italic">Awaiting MIDI signal...</div>}
                   {midiLogs.map(log => (
                     <div key={log.id} className="flex justify-between items-center border-b border-white/5 pb-1">
-                      <span className={log.type === 'ON' ? 'text-emerald-400' : 'opacity-40'}>CH {log.channel}</span>
+                      <span className={log.type === 'ON' ? 'text-white' : 'opacity-40'}>CH {log.channel}</span>
                       <span className={log.type === 'ON' ? 'text-red-400' : 'opacity-40'}>NOTE {log.note}</span>
                       <span className="opacity-40">{log.type}</span>
                     </div>
@@ -2157,7 +3279,7 @@ export default function App() {
           </Section>
 
           <Section 
-            title="Layers Configuration" 
+            title="Visuals" 
             icon={<Layers size={16} />} 
             isExpanded={expandedSection === 'layers'} 
             onToggle={() => setExpandedSection(expandedSection === 'layers' ? null : 'layers')}
@@ -2179,13 +3301,16 @@ export default function App() {
                     isActive: false,
                     midiMode: false,
                     triggerMapping: { ...DEFAULT_TRIGGER_MAPPING },
-                    mappings: []
+                    mappings: [],
+                    rhythmMapping: { enabled: false, pattern: '4-on-the-Floor', target: 'opacity', bpm: 120 },
+                    isMuted: false,
+                    isSoloed: false
                   }]);
                   setActiveLayerId(newId);
                   setSelectedEffectId(null);
                   setSelectedLayerForEffect(null);
                 }}
-                className="w-full p-2 rounded border border-dashed border-white/10 hover:border-white/30 hover:bg-white/5 transition-all text-[10px] uppercase tracking-widest opacity-40 hover:opacity-100 flex items-center justify-center gap-2"
+                className="w-full p-2 rounded border border-dashed border-white/10 hover:border-white/30 hover:bg-transparent transition-all text-[10px] uppercase tracking-widest opacity-40 hover:opacity-100 flex items-center justify-center gap-2"
               >
                 <Plus size={12} />
                 Add Layer
@@ -2197,35 +3322,69 @@ export default function App() {
                     key={layer.id}
                     value={layer}
                     onDragStart={() => { setActiveLayerId(layer.id); setSelectedEffectId(null); setSelectedLayerForEffect(null); }}
-                    className={`p-2 rounded-lg border transition-all cursor-pointer group ${activeLayerId === layer.id ? 'bg-white/10 border-white/20' : 'bg-white/5 border-transparent hover:bg-white/10'}`}
+                    className={`p-2 rounded-none border transition-all cursor-pointer group ${activeLayerId === layer.id ? 'border-white bg-[#111]' : 'bg-transparent border-transparent hover:border-white/20'}`}
                   >
                     <div className="flex items-center justify-between" onClick={() => { setActiveLayerId(layer.id); setSelectedEffectId(null); setSelectedLayerForEffect(null); }}>
                       <div className="flex items-center gap-2 min-w-0">
                         <GripVertical size={14} className="opacity-20 cursor-grab active:cursor-grabbing hover:opacity-100 transition-opacity" />
+                        {layer.midiMode ? (
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, triggerMapping: { ...l.triggerMapping, triggerBehavior: l.triggerMapping.triggerBehavior === 'toggle' ? 'momentary' : 'toggle' } } : l));
+                            }}
+                            className={`p-1 rounded hover:text-white transition-colors ${layer.triggerMapping.triggerBehavior === 'toggle' ? 'text-red-500 bg-red-500/10' : 'text-white/30'}`}
+                            title={`Trigger Mode: ${layer.triggerMapping.triggerBehavior === 'toggle' ? 'Toggle (Retrigger)' : 'Momentary'}`}
+                          >
+                            <RefreshCw size={12} />
+                          </button>
+                        ) : (
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, isVisible: !l.isVisible } : l));
+                            }}
+                            className={`p-1 rounded hover:text-white transition-colors ${layer.isVisible ? 'text-white' : 'text-white/20'}`}
+                            title="Toggle Visibility"
+                          >
+                            {layer.isVisible ? <Eye size={12} /> : <EyeOff size={12} />}
+                          </button>
+                        )}
                         <button 
                           onClick={(e) => {
                             e.stopPropagation();
-                            setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, isVisible: !l.isVisible } : l));
+                            setActiveLayerId(layer.id);
+                            setSelectedEffectId(null);
+                            setSidebarTab('triggers');
                           }}
-                          className={`p-1 rounded hover:bg-white/10 transition-colors ${layer.isVisible ? 'text-white' : 'text-white/20'} ${layer.midiMode ? 'opacity-30 cursor-not-allowed' : ''}`}
-                          disabled={layer.midiMode}
-                          title={layer.midiMode ? 'MIDI Mode Overrides Visibility' : 'Toggle Visibility'}
-                        >
-                          {layer.isVisible ? <Eye size={12} /> : <EyeOff size={12} />}
-                        </button>
-                        <button 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, midiMode: !l.midiMode } : l));
-                          }}
-                          className={`p-1 rounded hover:bg-white/10 transition-colors ${layer.midiMode ? 'text-red-500' : 'text-white/20'}`}
-                          title="MIDI Trigger Mode"
+                          className={`p-1 rounded hover:text-white transition-colors ${layer.midiMode ? 'text-red-500' : 'text-white/20'}`}
+                          title="Trigger settings"
                         >
                           <Zap size={12} />
                         </button>
-                        <span className="text-[11px] font-medium truncate opacity-80">{layer.name}</span>
+                        <span className="text-[11px] font-medium truncate opacity-80">{layers.findIndex(l => l.id === layer.id) + 1}. {layer.name}</span>
                       </div>
                       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, isSoloed: !l.isSoloed } : l));
+                          }}
+                          className={`w-5 h-5 flex items-center justify-center rounded transition-colors ${layer.isSoloed ? 'text-black bg-white opacity-100' : 'opacity-40 hover:opacity-100 border border-white/20 hover:border-white hover:bg-white hover:text-black'}`}
+                          title="Solo Layer"
+                        >
+                          <span className="text-[9px] font-bold">S</span>
+                        </button>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, isMuted: !l.isMuted } : l));
+                          }}
+                          className={`w-5 h-5 flex items-center justify-center rounded transition-colors ${layer.isMuted ? 'text-red-500 bg-red-500/10 opacity-100' : 'opacity-40 hover:opacity-100'}`}
+                          title="Mute Layer"
+                        >
+                          <span className="text-[9px] font-bold">M</span>
+                        </button>
                         <button 
                           onClick={(e) => {
                             e.stopPropagation();
@@ -2256,7 +3415,7 @@ export default function App() {
                                 setSelectedLayerForEffect(layer.id);
                                 setShowEffectBrowser(true);
                               }}
-                              className="text-[9px] uppercase tracking-widest bg-white/5 px-2 py-0.5 rounded hover:bg-white/10 transition-colors"
+                              className="text-[9px] uppercase tracking-widest bg-transparent px-2 py-0.5 rounded hover:border border-white hover:bg-white hover:text-black transition-colors"
                             >
                               Add Effect
                             </button>
@@ -2268,7 +3427,7 @@ export default function App() {
                             {layer.mappings.map(m => (
                               <div 
                                 key={m.id} 
-                                className={`p-2 rounded border transition-all cursor-pointer ${m.active || m.manualActive ? 'bg-red-600/20 border-red-500/50' : 'bg-white/5 border-white/5 hover:bg-white/10'} ${selectedEffectId === m.id && selectedLayerForEffect === layer.id ? 'border-red-500' : ''}`}
+                                className={`p-2 rounded border transition-all cursor-pointer ${m.active || m.manualActive ? 'bg-red-600/20 border-red-500/50' : 'bg-transparent border-white/5 hover:border border-white hover:bg-white hover:text-black'} ${selectedEffectId === m.id && selectedLayerForEffect === layer.id ? 'border-red-500' : ''}`}
                                 onClick={() => {
                                   setSelectedEffectId(m.id);
                                   setSelectedLayerForEffect(layer.id);
@@ -2278,6 +3437,19 @@ export default function App() {
                                   <span className={`text-[10px] font-medium ${m.active || m.manualActive ? 'text-red-400' : 'opacity-70'}`}>{m.name}</span>
                                   <div className="flex items-center gap-2">
                                     <button 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setActiveLayerId(layer.id);
+                                        setSelectedEffectId(m.id);
+                                        setSelectedLayerForEffect(layer.id);
+                                        setSidebarTab('triggers');
+                                      }}
+                                      className="p-1 rounded opacity-40 hover:opacity-100 hover:text-red-500 transition-all"
+                                      title="Trigger Settings"
+                                    >
+                                      <Zap size={10} />
+                                    </button>
+                                    <button 
                                       onClick={(e) => { e.stopPropagation(); toggleManual(layer.id, m.id); }}
                                       className={`p-1 rounded transition-colors ${m.manualActive ? 'text-red-500' : 'opacity-20 hover:opacity-100'}`}
                                       title="Power"
@@ -2286,7 +3458,7 @@ export default function App() {
                                     </button>
                                     <button 
                                       onClick={(e) => { e.stopPropagation(); toggleSolo(layer.id, m.id); }}
-                                      className={`w-4 h-4 flex items-center justify-center rounded transition-colors ${m.isSoloed ? 'text-yellow-400 bg-yellow-400/10' : 'opacity-20 hover:opacity-100'}`}
+                                      className={`w-4 h-4 flex items-center justify-center rounded transition-colors ${m.isSoloed ? 'text-white border border-white hover:bg-white hover:text-black' : 'opacity-20 hover:opacity-100'}`}
                                       title="Solo"
                                     >
                                       <span className="text-[8px] font-bold">S</span>
@@ -2321,6 +3493,37 @@ export default function App() {
           </Section>
 
           <Section 
+            title="Canvas Configuration" 
+            icon={<Sliders size={16} />}
+            isExpanded={expandedSection === 'composition'} 
+            onToggle={() => setExpandedSection(expandedSection === 'composition' ? null : 'composition')}
+          >
+            <div className="space-y-4 pt-4 px-4 pb-4">
+              <div className="space-y-2">
+                <label className="text-[10px] uppercase tracking-widest opacity-40">Layout Mode</label>
+                <div className="grid grid-cols-3 gap-1">
+                  {['stack', 'split-vertical', 'split-horizontal', 'grid-2x2', 'grid-3x3', 'grid-4x4'].map((format: any) => (
+                    <button
+                      key={format}
+                      onClick={() => setCompositionLayout(format)}
+                      className={`p-2 text-[9px] uppercase tracking-wider rounded border transition-all truncate ${
+                        compositionLayout === format 
+                          ? 'bg-red-600 border-red-500 text-white' 
+                          : 'bg-transparent border-white/5 text-white/40 hover:border border-white hover:bg-white hover:text-black'
+                      }`}
+                      title={format.replace('-', ' ')}
+                    >
+                      {format.replace('split-', '').replace('grid-', '')}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              
+              <AspectRatioControl value={aspectRatioValue} onChange={setAspectRatioValue} />
+            </div>
+          </Section>
+
+          <Section 
             title="Diagnostics & Performance" 
             icon={<Terminal size={16} />} 
             isExpanded={expandedSection === 'diagnostics'} 
@@ -2338,7 +3541,7 @@ export default function App() {
                     type="range" min="0.2" max="1.0" step="0.1" 
                     value={resolutionScale}
                     onChange={(e) => setResolutionScale(parseFloat(e.target.value))}
-                    className="w-full accent-red-500 opacity-60 hover:opacity-100 transition-opacity"
+                    className="w-full accent-red-600 opacity-60 hover:opacity-100 transition-opacity"
                   />
                   <div className="flex justify-between text-[8px] uppercase opacity-30">
                     <span>Performance</span>
@@ -2358,13 +3561,55 @@ export default function App() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowSidebar(false)}
-              className="lg:hidden fixed inset-0 z-30 bg-black/40 backdrop-blur-sm"
+              className="lg:hidden fixed inset-0 z-30 bg-black/40 "
             />
           )}
         </AnimatePresence>
 
         {/* Main Content Area */}
-        <main className="flex-1 relative flex flex-col items-center justify-center p-2 sm:p-4 lg:p-12 min-w-0 overflow-hidden">
+        <main 
+          className="flex-1 relative flex flex-col items-center justify-center p-2 sm:p-4 lg:p-12 min-w-0 overflow-hidden"
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+              const files = Array.from(e.dataTransfer.files) as File[];
+              
+              const newLayers = files.map((file, idx) => {
+                const isVideo = file.type.startsWith('video/');
+                return {
+                  id: `layer-${Date.now()}-${idx}`,
+                  name: file.name,
+                  type: isVideo ? 'video' : 'image',
+                  src: URL.createObjectURL(file),
+                  opacity: 1,
+                  blendMode: 'source-over',
+                  filterId: null,
+                  filterSettings: {},
+                  isVisible: true,
+                  isActive: false,
+                  midiMode: false,
+                  videoTriggerMode: 'continuous',
+                  triggerMapping: { ...DEFAULT_TRIGGER_MAPPING, channels: [0], noteSettings: { ...DEFAULT_NOTE_SETTINGS } },
+                  mappings: [],
+                  isMuted: false,
+                  isSoloed: false
+                };
+              });
+
+              setLayers(prev => {
+                // If there is only one empty layer, replace it with the new ones.
+                if (prev.length === 1 && !prev[0].src) return newLayers as any;
+                return [...prev, ...newLayers as any];
+              });
+              setStatus('READY');
+            }
+          }}
+        >
           <div className="relative w-full max-w-5xl aspect-video group">
             <div className="absolute inset-0 border border-white/10 rounded-2xl overflow-hidden shadow-2xl bg-black/40">
               {/* Hidden Layer Elements */}
@@ -2391,51 +3636,32 @@ export default function App() {
                 ))}
               </div>
 
-              <canvas ref={canvasRef} className="w-full h-full object-contain" />
-              
-              {layers.every(l => !l.src) && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center opacity-20">
-                  <Maximize2 size={48} strokeWidth={1} />
-                  <p className="text-xs uppercase tracking-[0.4em] mt-6">Awaiting Signal</p>
+              {layers.every(l => (!l.src && l.type !== 'generative')) && <Waves className="absolute inset-0 z-0 pointer-events-none" />}
+              <canvas ref={canvasRef} className={`w-full h-full object-contain relative ${layers.every(l => (!l.src && l.type !== 'generative')) ? 'opacity-0' : ''} z-10`} />
+
+              {!layers.every(l => !l.src && l.type !== 'generative') && !isPlaying && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 z-30 transition-all backdrop-blur-sm">
+                  <button onClick={togglePlay} className="px-8 py-4 border border-white/20 hover:border-red-500 hover:text-red-500 rounded uppercase tracking-widest transition-all">Start Engine</button>
                 </div>
               )}
             </div>
 
-            {/* Playback Trigger */}
-            <AnimatePresence>
-              {!isPlaying && layers.some(l => l.src) && (
-                <motion.div 
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 1.1 }}
-                  className="absolute inset-0 flex items-center justify-center pointer-events-none"
-                >
-                  <button 
-                    onClick={togglePlay}
-                    className="pointer-events-auto w-24 h-24 rounded-full border border-white/20 bg-white/5 backdrop-blur-md flex flex-col items-center justify-center gap-2 hover:bg-white/10 transition-all group"
-                  >
-                    <Play size={24} className="ml-1 group-hover:scale-110 transition-transform" />
-                    <span className="text-[8px] uppercase tracking-widest font-bold">Start Engine</span>
-                  </button>
-                </motion.div>
-              )}
-            </AnimatePresence>
 
             {/* Bottom Controls */}
-            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity duration-500">
-              <button onClick={togglePlay} className="p-3 rounded-full bg-white/10 backdrop-blur-md border border-white/10 hover:bg-white/20 transition-colors">
+            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-4 opacity-0 group-hover:opacity-100 transition-opacity duration-500 z-50">
+              <button onClick={togglePlay} className="p-3 rounded-none border transition-colors border-white/20 hover:border-white hover:bg-white hover:text-black">
                 {isPlaying ? <Pause size={18} /> : <Play size={18} className="ml-0.5" />}
               </button>
               <button 
                 onClick={isRecording ? stopRecording : startRecording} 
-                className={`p-3 rounded-full backdrop-blur-md border transition-all ${
-                  isRecording ? 'bg-red-600 border-red-500 text-white animate-pulse' : 'bg-white/10 border-white/10 hover:bg-white/20'
+                className={`p-3 rounded-none border transition-all ${
+                  isRecording ? 'bg-red-600 border-red-500 text-white animate-pulse' : 'border-white/20 hover:border-white hover:bg-white hover:text-black'
                 }`}
                 title={isRecording ? 'Stop Recording' : 'Start Recording'}
               >
                 {isRecording ? <Square size={18} fill="currentColor" /> : <Circle size={18} fill="currentColor" className="text-red-500" />}
               </button>
-              <button onClick={toggleFullScreen} className="p-3 rounded-full bg-white/10 backdrop-blur-md border border-white/10 hover:bg-white/20 transition-colors">
+              <button onClick={toggleFullScreen} className="p-3 rounded-none border transition-colors border-white/20 hover:border-white hover:bg-white hover:text-black">
                 <Maximize size={18} />
               </button>
             </div>
@@ -2443,136 +3669,630 @@ export default function App() {
         </main>
 
         {/* Right Sidebar: Effect Config */}
-        <aside className="w-80 border-l border-white/5 bg-black/20 backdrop-blur-xl flex flex-col hidden lg:flex">
-          <Section 
-            title={selectedEffectId ? "Effect Configuration" : "Layer Configuration"} 
-            icon={<Sliders size={16} />} 
-            isExpanded={true} 
-            onToggle={() => {}}
-          >
-            <div className="p-4 custom-scrollbar overflow-y-auto h-[calc(100vh-120px)]">
+        <aside className="w-80 border-l border-white/5 bg-black/20  flex flex-col hidden lg:flex">
+          <div className="flex border-b border-white/5 bg-black/40">
+            <button 
+              onClick={() => setSidebarTab('config')}
+              className={`flex-1 py-3 text-[10px] uppercase tracking-widest transition-all ${sidebarTab === 'config' ? 'bg-red-600 text-white font-bold' : 'opacity-40 hover:opacity-100'}`}
+            >
+              Configuration
+            </button>
+            <button 
+              onClick={() => setSidebarTab('triggers')}
+              className={`flex-1 py-3 text-[10px] uppercase tracking-widest transition-all ${sidebarTab === 'triggers' ? 'bg-red-600 text-white font-bold' : 'opacity-40 hover:opacity-100'}`}
+            >
+              Triggers
+            </button>
+          </div>
+          <div className="p-4 custom-scrollbar overflow-y-auto h-[calc(100vh-160px)]">
               {(() => {
                 if (selectedEffectId && selectedLayerForEffect) {
                   const layerTarget = layers.find(l => l.id === selectedLayerForEffect);
-                  const mapping = layerTarget?.mappings.find(m => m.id === selectedEffectId);
+                  let isGenerativeParam = false;
+                  let mapping = layerTarget?.mappings.find(m => m.id === selectedEffectId);
+                  if (!mapping && layerTarget?.generativeMappings) {
+                     mapping = layerTarget.generativeMappings.find(m => m.id === selectedEffectId);
+                     if (mapping) isGenerativeParam = true;
+                  }
                   if (!mapping || !layerTarget) return <div className="p-4 text-center opacity-40 text-[10px] uppercase tracking-widest">Effect not found</div>;
                   
                   return (
-                    <div className="space-y-8">
-                      <div className="flex justify-between items-center">
-                        <h3 className="text-sm font-medium text-red-400">{mapping.name}</h3>
-                        <button onClick={() => { setSelectedEffectId(null); setSelectedLayerForEffect(null); }} className="text-[9px] uppercase opacity-40 hover:opacity-100">Close</button>
+                    <>
+                      <div className="flex justify-between items-center bg-black/20 p-2 border-b border-white/5 -mx-4 -mt-4 mb-4">
+                        <h3 className="text-[11px] font-bold uppercase tracking-widest text-red-400 pl-2">{mapping.name}</h3>
+                        <button onClick={() => { setSelectedEffectId(null); setSelectedLayerForEffect(null); }} className="p-2 opacity-40 hover:opacity-100 transition-opacity">
+                           <Trash2 size={12} />
+                        </button>
                       </div>
 
-                      <div className="space-y-8">
-                        {/* Engine Parameters */}
-                        <div className="space-y-4">
-                          <label className="text-[10px] uppercase tracking-widest opacity-40">Engine Parameters</label>
-                          <div className="grid grid-cols-3 gap-4">
-                            {(() => {
-                              const definition = ALL_EFFECTS.find(e => e.id === selectedEffectId);
-                              if (!definition) return null;
-                              return definition.parameters.map(p => (
-                                <Knob 
-                                  key={p.id} label={p.name} min={p.min} max={p.max}
-                                  value={Number(mapping.settings[p.id])} type={p.type}
-                                  onChange={(val) => updateSetting(layerTarget.id, mapping.id, p.id, val)}
-                                />
-                              ));
-                            })()}
+                      {sidebarTab === 'config' ? (
+                        <div className="space-y-8">
+                          {/* Engine Parameters */}
+                          <div className="space-y-4">
+                            <label className="text-[10px] uppercase tracking-widest opacity-40">Engine Parameters</label>
+                            <div className="grid grid-cols-3 gap-4">
+                              {(() => {
+                                if (isGenerativeParam) {
+                                  const def = generativesRef.current.find(g => g.uuid === layerTarget.generativeId);
+                                  const p = def?.parameters?.find(param => param.name === selectedEffectId);
+                                  if (!p) return null;
+                                  return (
+                                    <div className="col-span-3 flex items-center justify-between gap-8 p-4 bg-black/40 border border-white/10 rounded">
+                                      <div className="flex flex-col items-center flex-1 max-w-[100px]">
+                                        <Knob 
+                                          label={p.name} 
+                                          min={p.min} max={p.max}
+                                          value={layerTarget.generativeSettings?.[p.name] ?? p.default} 
+                                          type="continuous"
+                                          id={"config-knob-" + p.name}
+                                          onChange={(val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeSettings: { ...(l.generativeSettings || {}), [p.name]: val } } : l))}
+                                        />
+                                      </div>
+                                      <div className="flex-1 flex flex-col items-center">
+                                          <label className="text-[10px] uppercase tracking-widest opacity-40 mb-3">Modulation Amount</label>
+                                          <input 
+                                            type="range" min="-1" max="1" step="0.01" 
+                                            value={layerTarget.generativeTriggerAmount?.[p.name] || 0.1} 
+                                            onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerAmount: { ...(l.generativeTriggerAmount || {}), [p.name]: parseFloat(e.target.value) } } : l))}
+                                            className="w-full h-1 accent-red-600"
+                                          />
+                                          <span className="text-[10px] mt-3 opacity-60 font-bold">
+                                            {((layerTarget.generativeTriggerAmount?.[p.name] || 0.1) * 100).toFixed(0)}%
+                                          </span>
+                                      </div>
+                                    </div>
+                                  );
+                                }
+
+                                const definition = ALL_EFFECTS.find(e => e.id === selectedEffectId);
+                                if (!definition) return null;
+                                return definition.parameters.map(p => (
+                                  <Knob 
+                                    key={p.id} label={p.name} min={p.min} max={p.max}
+                                    value={Number(mapping.settings[p.id])} type={p.type}
+                                    onChange={(val) => updateSetting(layerTarget.id, mapping.id, p.id, val)}
+                                  />
+                                ));
+                              })()}
+                            </div>
                           </div>
                         </div>
+                      ) : (
+                        /* Effect Triggers Tab Content */
+                        <div className="space-y-6">
+                           <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+                            <button 
+                              onClick={() => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: true } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: true } } : m) } : l)))}
+                              className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${mapping.audioMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                            >
+                              Audio
+                            </button>
+                            <button 
+                              onClick={() => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false } } : m) } : l)))}
+                              className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${!mapping.audioMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                            >
+                              MIDI
+                            </button>
+                          </div>
 
-                        <MidiConfigUI 
-                          label="Effect MIDI Trigger"
-                          mapping={mapping}
-                          onUpdate={(field, val) => updateMapping(layerTarget.id, mapping.id, field as keyof EffectMapping, val)}
-                          onUpdateNote={(field, val) => updateNoteSetting(layerTarget.id, mapping.id, field, val)}
-                          onToggleChannel={(ch) => toggleChannel(layerTarget.id, mapping.id, ch)}
-                          onSetAllChannels={() => setAllChannels(layerTarget.id, mapping.id)}
-                          onSetNoChannels={() => setNoChannels(layerTarget.id, mapping.id)}
-                        />
-                      </div>
-                    </div>
+                          {mapping.audioMapping?.enabled ? (
+                            <div className="space-y-4 pt-2">
+                               <label className="text-[10px] uppercase tracking-widest opacity-80 font-bold text-red-500">Audio Modulation</label>
+                               <div className="space-y-4 pt-2">
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div className="space-y-1">
+                                    <label className="text-[8px] uppercase tracking-widest opacity-40 block">Target Stem</label>
+                                    <select 
+                                      value={mapping.audioMapping?.stemId || ''}
+                                      onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), stemId: e.target.value } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), stemId: e.target.value } } : m) } : l)))}
+                                      className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
+                                    >
+                                      <option value="">Master Out</option>
+                                      {audioStems.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                    </select>
+                                  </div>
+                                  <div className="space-y-1">
+                                    <label className="text-[8px] uppercase tracking-widest opacity-40 block">Tracking Mode</label>
+                                    <select 
+                                      value={mapping.audioMapping?.mode || 'fast'}
+                                      onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), mode: e.target.value as 'fast' | 'smooth' } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), mode: e.target.value as 'fast' | 'smooth' } } : m) } : l)))}
+                                      className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
+                                    >
+                                      <option value="fast">Fast (Strobo)</option>
+                                      <option value="smooth">Smooth (Blend)</option>
+                                    </select>
+                                  </div>
+                                </div>
+
+                                <AudioSpectrogram 
+                                  stemId={mapping.audioMapping?.stemId}
+                                  freqRange={mapping.audioMapping?.freqRange || [20, 20000]}
+                                  threshold={mapping.audioMapping?.threshold || 0.5}
+                                  onRangeChange={(r) => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), freqRange: r } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), freqRange: r } } : m) } : l)))}
+                                  onThresholdChange={(t) => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), threshold: t } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), threshold: t } } : m) } : l)))}
+                                />
+
+                                <div className="grid grid-cols-3 gap-2">
+                                  <div className="space-y-1">
+                                    <label className="text-[8px] uppercase tracking-widest opacity-40 block">Smooth: {mapping.audioMapping?.smoothing?.toFixed(2) || '0.50'}</label>
+                                    <input type="range" min="0" max="0.99" step="0.01" value={mapping.audioMapping?.smoothing || 0.5} onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), smoothing: parseFloat(e.target.value) } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), smoothing: parseFloat(e.target.value) } } : m) } : l)))} className="w-full h-1"/>
+                                  </div>
+                                  <div className="space-y-1">
+                                    <label className="text-[8px] uppercase tracking-widest opacity-40 block">Attack: {mapping.audioMapping?.attack || 10}</label>
+                                    <input type="range" min="1" max="100" step="1" value={mapping.audioMapping?.attack || 10} onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), attack: parseInt(e.target.value) } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), attack: parseInt(e.target.value) } } : m) } : l)))} className="w-full h-1"/>
+                                  </div>
+                                  <div className="space-y-1">
+                                    <label className="text-[8px] uppercase tracking-widest opacity-40 block">Release: {mapping.audioMapping?.release || 100}</label>
+                                    <input type="range" min="10" max="1000" step="10" value={mapping.audioMapping?.release || 100} onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), release: parseInt(e.target.value) } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), release: parseInt(e.target.value) } } : m) } : l)))} className="w-full h-1"/>
+                                  </div>
+                                </div>
+
+                                <NoteSettingsConfigUI
+                                  ns={mapping.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS}
+                                  onUpdateNote={(field, val) => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), noteSettings: { ...(mapping.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), noteSettings: { ...(mapping.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } } } : m) } : l)))}
+                                />
+                               </div>
+                            </div>
+                          ) : (
+                            <MidiConfigUI 
+                              label={`${layerTarget.name}.${mapping.name}`}
+                              mapping={mapping}
+                              isLearnActive={midiLearnTarget?.layerId === layerTarget.id && midiLearnTarget?.effectId === mapping.id ? midiLearnTarget : false}
+                              onToggleLearn={(field) => setMidiLearnTarget(prev => prev?.layerId === layerTarget.id && prev?.effectId === mapping.id && prev?.field === field ? null : { layerId: layerTarget.id, effectId: mapping.id, field })}
+                              onUpdate={(field, val) => {
+                                if (isGenerativeParam) {
+                                  setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, [field]: val } : m) } : l));
+                                } else {
+                                  updateMapping(layerTarget.id, mapping.id, field as keyof EffectMapping, val)
+                                }
+                              }}
+                              onUpdateNote={(field, val) => {
+                                if (isGenerativeParam) {
+                                  setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, noteSettings: { ...m.noteSettings, [field]: val } } : m) } : l));
+                                } else {
+                                  updateNoteSetting(layerTarget.id, mapping.id, field, val)
+                                }
+                              }}
+                              onToggleChannel={(ch) => {
+                                if (isGenerativeParam) {
+                                  setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, channels: m.channels.includes(ch) ? m.channels.filter(c => c !== ch) : [...m.channels, ch] } : m) } : l));
+                                } else {
+                                  toggleChannel(layerTarget.id, mapping.id, ch)
+                                }
+                              }}
+                              onSetAllChannels={() => {
+                                if (isGenerativeParam) {
+                                  setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, channels: Array.from({length: 16}, (_, i) => i) } : m) } : l));
+                                } else {
+                                  setAllChannels(layerTarget.id, mapping.id)
+                                }
+                              }}
+                              onSetNoChannels={() => {
+                                if (isGenerativeParam) {
+                                  setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, channels: [] } : m) } : l));
+                                } else {
+                                  setNoChannels(layerTarget.id, mapping.id)
+                                }
+                              }}
+                            />
+                          )}
+                        </div>
+                      )}
+                    </>
                   );
                 } else if (activeLayerId) {
                   const layerTarget = layers.find(l => l.id === activeLayerId);
                   if (!layerTarget) return <div className="p-4 text-center opacity-40 text-[10px] uppercase tracking-widest">Layer not found</div>;
-                  
                   return (
                     <div className="space-y-8">
                       <div className="flex justify-between items-center">
                         <h3 className="text-sm font-medium text-white/80">{layerTarget.name}</h3>
                       </div>
                       
-                      {/* Media Source */}
-                      <div className="space-y-2">
-                        <label className="text-[10px] uppercase tracking-widest opacity-40">Media Source</label>
-                        <div className="relative group">
-                          <input type="file" accept="video/*,image/*" onChange={(e) => handleFileUpload(e, layerTarget.id)} className="absolute inset-0 opacity-0 cursor-pointer" />
-                          <div className="border border-white/10 p-3 rounded-lg bg-white/5 group-hover:bg-white/10 transition-colors flex items-center gap-3">
-                            <Upload size={14} className="opacity-50" />
-                            <span className="text-[10px] truncate">{layerTarget.src ? layerTarget.name : 'Load Media File'}</span>
+                      {sidebarTab === 'config' ? (
+                        <div className="space-y-8">
+                          {/* Visuals Selection */}
+                          <div className="space-y-4">
+                            <label className="text-[10px] uppercase tracking-widest opacity-80 font-bold text-red-500">Type</label>
+                            <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+                              <button 
+                                onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? {...l, type: 'video', mappings: [], generativeSettings: {}, generativeMappings: [], generativeTriggerActive: {}, generativeTriggerAmount: {} } : l))}
+                                className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layerTarget.type === 'video' ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                              >
+                                Video
+                              </button>
+                              <button 
+                                onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? {...l, type: 'image', mappings: [], generativeSettings: {}, generativeMappings: [], generativeTriggerActive: {}, generativeTriggerAmount: {} } : l))}
+                                className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layerTarget.type === 'image' ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                              >
+                                Image
+                              </button>
+                              <button 
+                                onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? {...l, type: 'generative', generativeId: l.generativeId || generativesRef.current[0]?.uuid, mappings: [], generativeSettings: {}, generativeMappings: [], generativeTriggerActive: {}, generativeTriggerAmount: {} } : l))}
+                                className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layerTarget.type === 'generative' ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                              >
+                                Generative
+                              </button>
+                            </div>
+                          </div>
+
+                          {layerTarget.type === 'generative' ? (
+                            <div className="space-y-4 pt-4 border-t border-white/5">
+                              <div className="space-y-2">
+                                <label className="text-[10px] uppercase tracking-widest opacity-40">Generative Script</label>
+                                <button 
+                                  onClick={() => setShowGenerativeBrowser(true)}
+                                  className="w-full flex items-center justify-between p-3 rounded-none border border-white/5 bg-transparent hover:border border-white hover:bg-white hover:text-black hover:border-white/20 transition-all text-left group"
+                                >
+                                  <div className="flex items-center gap-3">
+                                    <div className="w-8 h-8 rounded bg-black/40 border border-white/10 flex items-center justify-center">
+                                      <Sliders size={12} className="opacity-50" />
+                                    </div>
+                                    <div className="text-[10px] font-bold uppercase tracking-widest group-hover:text-red-400 transition-colors">
+                                        {generativesRef.current.find(g => g.uuid === layerTarget.generativeId)?.description || "Select Script..."}
+                                    </div>
+                                  </div>
+                                  <ChevronRight size={14} className="opacity-20 group-hover:opacity-100 transition-opacity group-hover:text-red-400" />
+                                </button>
+                              </div>
+
+                              {/* Generative Parameters */}
+                              {layerTarget.generativeId && generativesRef.current.find(g => g.uuid === layerTarget.generativeId)?.parameters.length > 0 && (
+                                <div className="space-y-4 pt-4 border-t border-white/5">
+                                  <label className="text-[10px] uppercase tracking-widest opacity-40">Visual Parameters</label>
+                                  <div className="grid grid-cols-2 gap-4">
+                                    {generativesRef.current.find(g => g.uuid === layerTarget.generativeId)?.parameters.map(p => {
+                                      const isMapped = layerTarget.generativeMappings?.some(m => m.id === p.name);
+                                      const isGloballyBound = layerTarget.generativeTriggerActive?.[p.name];
+                                      return (
+                                       <div key={p.name} className="flex flex-col gap-1">
+                                          <div className="flex items-center justify-between px-1">
+                                            <button 
+                                                onClick={() => {
+                                                  if (!isMapped) {
+                                                     const targetM = { 
+                                                       ...INITIAL_MAPPINGS[0], 
+                                                       id: p.name, 
+                                                       name: p.name, 
+                                                       active: true, 
+                                                       triggerBehavior: 'momentary',
+                                                       noteSettings: { ...DEFAULT_NOTE_SETTINGS },
+                                                       channels: Array.from({length: 16}, (_, i) => i)
+                                                     };
+                                                     setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: [...(l.generativeMappings || []), targetM] } : l));
+                                                  }
+                                                  setSelectedEffectId(p.name);
+                                                  setSelectedLayerForEffect(layerTarget.id);
+                                                  setSidebarTab('triggers');
+                                                }}
+                                                className="text-[10px] uppercase opacity-60 hover:opacity-100 hover:text-red-400 font-bold transition-colors text-left"
+                                              >
+                                                {p.name.replace(/([A-Z])/g, ' $1').trim()}
+                                              </button>
+                                            <div className="flex gap-1 items-center">
+                                              <button 
+                                                onClick={() => {
+                                                  setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [p.name]: !isGloballyBound } } : l));
+                                                }}
+                                                className={`p-1 transition-colors rounded hover:bg-neutral-800 ${isGloballyBound ? 'text-red-500' : 'opacity-20 hover:text-white'}`}
+                                                title="Bind to Layer Tracking Env"
+                                              >
+                                                L
+                                              </button>
+                                              <button 
+                                                onClick={() => {
+                                                  if (isMapped) {
+                                                     setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.filter(m => m.id !== p.name) } : l));
+                                                  } else {
+                                                     const targetM: EffectMapping = { 
+                                                       ...INITIAL_MAPPINGS[0], 
+                                                       id: p.name, 
+                                                       name: p.name, 
+                                                       active: true, 
+                                                       triggerBehavior: 'momentary',
+                                                       noteSettings: { ...DEFAULT_NOTE_SETTINGS },
+                                                       channels: Array.from({length: 16}, (_, i) => i)
+                                                     };
+                                                     setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: [...(l.generativeMappings || []), targetM] } : l));
+                                                     setSelectedEffectId(p.name);
+                                                     setSelectedLayerForEffect(layerTarget.id);
+                                                     setSidebarTab('triggers');
+                                                  }
+                                                }}
+                                                className={`p-1 transition-colors rounded hover:bg-neutral-800 ${isMapped ? 'text-blue-400' : 'opacity-20 hover:text-white'}`}
+                                                title="Specific MIDI Trigger"
+                                              >
+                                                <Zap size={10} />
+                                              </button>
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            <div className="flex-1">
+                                              <Knob 
+                                                label="" 
+                                                min={p.min} max={p.max}
+                                                value={layerTarget.generativeSettings?.[p.name] ?? p.default} 
+                                                type="continuous"
+                                                id={p.name}
+                                                onChange={(val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeSettings: { ...(l.generativeSettings || {}), [p.name]: val } } : l))}
+                                              />
+                                            </div>
+                                            {(isMapped || isGloballyBound) && (
+                                              <div className="flex flex-col items-center">
+                                                <input 
+                                                  type="range" min="-1" max="1" step="0.01" 
+                                                  value={layerTarget.generativeTriggerAmount?.[p.name] || 0.1} 
+                                                  onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerAmount: { ...(l.generativeTriggerAmount || {}), [p.name]: parseFloat(e.target.value) } } : l))}
+                                                  className="w-10 accent-red-600"
+                                                />
+                                                {isMapped && (
+                                                  <button 
+                                                    onClick={() => {
+                                                      setSelectedEffectId(p.name);
+                                                      setSelectedLayerForEffect(layerTarget.id);
+                                                      setSidebarTab('triggers');
+                                                    }}
+                                                    className="p-1.5 opacity-40 hover:opacity-100 hover:text-blue-400 transition-colors mt-1"
+                                                    title="Configure Mapping"
+                                                  >
+                                                    <Sliders size={10} />
+                                                  </button>
+                                                )}
+                                              </div>
+                                            )}
+                                          </div>
+                                       </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                             /* Media Source for Non-Generative */
+                             <div className="space-y-2 pt-4 border-t border-white/5">
+                                <label className="text-[10px] uppercase tracking-widest opacity-40">Media Source</label>
+                                <div className="relative group">
+                                  <input type="file" multiple accept="video/*,image/*" onChange={(e) => handleFileUpload(e, layerTarget.id)} className="absolute inset-0 opacity-0 cursor-pointer" />
+                                  <div className="border border-white/10 p-3 rounded-none bg-transparent group-hover:border border-white hover:bg-white hover:text-black transition-colors flex items-center justify-between">
+                                    <div className="flex items-center gap-3 min-w-0">
+                                      <Upload size={14} className="opacity-50" />
+                                      <span className="text-[10px] truncate">{layerTarget.src ? layerTarget.name : 'Load Media File'}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                          )}
+
+                          {layerTarget.type === 'video' && layerTarget.src && (
+                            <div className="space-y-4 pt-4 border-t border-white/5">
+                               <RangeSlider 
+                                 label="Video Segment"
+                                 min={0}
+                                 max={videoRefs.current[layerTarget.id]?.duration || 10}
+                                 start={layerTarget.videoStart || 0}
+                                 end={layerTarget.videoEnd || videoRefs.current[layerTarget.id]?.duration || 10}
+                                 onChange={(s, e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, videoStart: s, videoEnd: e } : l))}
+                               />
+                               <div className="space-y-2">
+                                <label className="text-[10px] uppercase tracking-widest opacity-40">Trigger Mode</label>
+                                <select 
+                                  value={layerTarget.videoTriggerMode || 'continuous'}
+                                  onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, videoTriggerMode: e.target.value as 'restart' | 'continuous' } : l))}
+                                  className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[9px] uppercase tracking-widest outline-none"
+                                >
+                                  <option value="continuous">Continuous Playback</option>
+                                  <option value="restart">Restart on Trigger</option>
+                                </select>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Basic Config */}
+                          <div className="space-y-4 pt-4 border-t border-white/5">
+                            <label className="text-[10px] uppercase tracking-widest opacity-80 font-bold text-red-500">Blend</label>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div className="space-y-2">
+                                <div className="flex justify-between text-[8px] uppercase opacity-40">
+                                  <span>Opacity</span>
+                                  <span>{Math.round(layerTarget.opacity * 100)}%</span>
+                                </div>
+                                <input 
+                                  type="range" min="0" max="1" step="0.01"
+                                  value={layerTarget.opacity}
+                                  onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, opacity: parseFloat(e.target.value) } : l))}
+                                  className="w-full accent-red-600 h-1"
+                                />
+                              </div>
+                              <div className="space-y-2">
+                                <label className="text-[8px] uppercase opacity-40">Blend Mode</label>
+                                <select 
+                                  value={layerTarget.blendMode}
+                                  onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, blendMode: e.target.value as GlobalCompositeOperation } : l))}
+                                  className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[9px] outline-none"
+                                >
+                                  <option value="source-over">Normal</option>
+                                  <option value="screen">Screen</option>
+                                  <option value="multiply">Multiply</option>
+                                  <option value="overlay">Overlay</option>
+                                  <option value="lighten">Lighten</option>
+                                  <option value="darken">Darken</option>
+                                  <option value="color-dodge">Color Dodge</option>
+                                  <option value="color-burn">Color Burn</option>
+                                  <option value="hard-light">Hard Light</option>
+                                  <option value="soft-light">Soft Light</option>
+                                  <option value="difference">Difference</option>
+                                  <option value="exclusion">Exclusion</option>
+                                </select>
+                              </div>
+                            </div>
+                          </div>
+                          
+                          {/* Effects List in Config Tab */}
+                          <div className="space-y-2 pt-4 border-t border-white/5">
+                            <div className="flex items-center justify-between">
+                              <label className="text-[10px] uppercase tracking-widest opacity-40">Layer Effects</label>
+                              <button onClick={() => { setSelectedLayerForEffect(layerTarget.id); setShowEffectBrowser(true); }} className="text-[9px] uppercase tracking-widest bg-transparent px-2 py-0.5 rounded hover:border border-white hover:bg-white hover:text-black transition-colors">Add Effect</button>
+                            </div>
+                            <div className="space-y-1">
+                              {layerTarget.mappings.map(m => (
+                                <div key={m.id} className="p-2 rounded border bg-transparent border-white/5 hover:border-white transition-all flex items-center justify-between group">
+                                  <span className="text-[10px] opacity-70 group-hover:opacity-100">{m.name}</span>
+                                  <div className="flex items-center gap-2">
+                                    <button onClick={(e) => { e.stopPropagation(); setActiveLayerId(layerTarget.id); setSelectedEffectId(m.id); setSelectedLayerForEffect(layerTarget.id); setSidebarTab('triggers'); }} className="p-1 opacity-20 hover:opacity-100 transition-opacity"><Zap size={10} /></button>
+                                    <button onClick={(e) => { e.stopPropagation(); removeEffect(layerTarget.id, m.id); }} className="p-1 opacity-0 group-hover:opacity-40 hover:opacity-100 transition-opacity"><Trash2 size={10} /></button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         </div>
-                      </div>
-
-                      {/* Basic Config */}
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <div className="flex justify-between text-[8px] uppercase opacity-40">
-                            <span>Opacity</span>
-                            <span>{Math.round(layerTarget.opacity * 100)}%</span>
+                      ) : (
+                        /* Layer Triggers Tab Content */
+                        <div className="space-y-6">
+                           <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+                            <button 
+                              onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, midiMode: true, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false }, rhythmMapping: { ...(l.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false } } : l))}
+                              className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layerTarget.midiMode && !layerTarget.audioMapping?.enabled && !layerTarget.rhythmMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                            >
+                              MIDI
+                            </button>
+                            <button 
+                              onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, midiMode: true, rhythmMapping: { ...(l.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false }, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: true } } : l))}
+                              className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layerTarget.midiMode && mapping.audioMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                            >
+                              Audio
+                            </button>
+                            <button 
+                              onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, midiMode: true, rhythmMapping: { ...(l.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: true }, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false } } : l))}
+                              className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layerTarget.midiMode && layerTarget.rhythmMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                            >
+                              Rhythm
+                            </button>
+                            <button 
+                              onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, midiMode: false, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false }, rhythmMapping: { ...(l.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false } } : l))}
+                              className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest font-bold transition-colors ${!layerTarget.midiMode ? 'text-red-500 bg-red-500/10' : 'text-white/40 hover:bg-transparent'}`}
+                              title="Disable all triggers for this layer"
+                            >
+                              OFF
+                            </button>
                           </div>
-                          <input 
-                            type="range" min="0" max="1" step="0.01"
-                            value={layerTarget.opacity}
-                            onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, opacity: parseFloat(e.target.value) } : l))}
-                            className="w-full accent-red-500 h-1"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-[8px] uppercase opacity-40">Blend Mode</label>
-                          <select 
-                            value={layerTarget.blendMode}
-                            onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, blendMode: e.target.value as GlobalCompositeOperation } : l))}
-                            className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[9px] outline-none"
-                          >
-                            <option value="source-over">Normal</option>
-                            <option value="screen">Screen</option>
-                            <option value="multiply">Multiply</option>
-                            <option value="overlay">Overlay</option>
-                            <option value="lighten">Lighten</option>
-                            <option value="darken">Darken</option>
-                            <option value="color-dodge">Color Dodge</option>
-                            <option value="color-burn">Color Burn</option>
-                            <option value="hard-light">Hard Light</option>
-                            <option value="soft-light">Soft Light</option>
-                            <option value="difference">Difference</option>
-                            <option value="exclusion">Exclusion</option>
-                          </select>
-                        </div>
-                      </div>
 
-                      <div className="space-y-2">
-                        <label className="text-[8px] uppercase opacity-40">Opacity MIDI CC (Optional)</label>
-                        <input 
-                          type="number" min="0" max="127" placeholder="N/A"
-                          value={layerTarget.midiCC !== undefined ? layerTarget.midiCC : ''}
-                          onChange={(e) => toggleLayerMidiCC(layerTarget.id, e.target.value ? parseInt(e.target.value) : undefined)}
-                          className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
-                        />
-                      </div>
+                          {!layerTarget.midiMode ? (
+                              <div className="p-4 text-center mt-4">
+                                <p className="text-[10px] uppercase font-bold tracking-widest opacity-40">Layer triggers disabled</p>
+                                <p className="text-[9px] opacity-20 mt-2">Activate MIDI, Audio, or Rhythm above to modulate layer visibility.</p>
+                              </div>
+                          ) : layerTarget.rhythmMapping?.enabled ? (
+                            <div className="space-y-4">
+                                <div className="grid grid-cols-2 gap-4">
+                                  <div className="flex flex-col gap-1">
+                                    <label className="text-[8px] uppercase tracking-widest opacity-40">BPM</label>
+                                    <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+                                      <button onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, rhythmMapping: { ...l.rhythmMapping!, bpm: Math.max(20, (l.rhythmMapping?.bpm || 120) - 1) } } : l))} className="px-2 hover:bg-white/20 transition-colors">-</button>
+                                      <input type="number" value={layerTarget.rhythmMapping.bpm} onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, rhythmMapping: { ...l.rhythmMapping!, bpm: parseInt(e.target.value) || 120 } } : l))} className="w-full bg-transparent p-1.5 text-[10px] text-center outline-none" min="20" max="300" />
+                                      <button onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, rhythmMapping: { ...l.rhythmMapping!, bpm: Math.min(300, (l.rhythmMapping?.bpm || 120) + 1) } } : l))} className="px-2 hover:bg-white/20 transition-colors">+</button>
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-col gap-1">
+                                    <label className="text-[8px] uppercase tracking-widest opacity-40">Pattern</label>
+                                    <select 
+                                      value={layerTarget.rhythmMapping.pattern}
+                                      onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, rhythmMapping: { ...l.rhythmMapping!, pattern: e.target.value } } : l))}
+                                      className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
+                                    >
+                                      <option value="4-on-the-Floor">4-on-the-Floor</option>
+                                      <option value="Backbeat">Backbeat</option>
+                                      <option value="Off-Beat">Off-Beat</option>
+                                      <option value="Straight Eighths">Straight Eighths</option>
+                                      <option value="Straight Sixteenths">Straight Sixteenths</option>
+                                      <option value="The &quot;One&quot;">The "One"</option>
+                                      <option value="Custom">Custom</option>
+                                    </select>
+                                  </div>
+                                </div>
+                                <StepSequencer 
+                                  bpm={layerTarget.rhythmMapping.bpm}
+                                  pattern={layerTarget.rhythmMapping.pattern}
+                                  customPattern={layerTarget.rhythmMapping.customPattern}
+                                  onCustomPatternChange={(newPattern) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, rhythmMapping: { ...l.rhythmMapping!, customPattern: newPattern } } : l))}
+                                />
+                                <NoteSettingsConfigUI
+                                  ns={layerTarget.rhythmMapping.noteSettings || DEFAULT_NOTE_SETTINGS}
+                                  onUpdateNote={(field, val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, rhythmMapping: { ...l.rhythmMapping!, noteSettings: { ...(l.rhythmMapping!.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } } } : l))}
+                                />
+                            </div>
+                          ) : layerTarget.audioMapping?.enabled ? (
+                            <div className="space-y-4">
+                               <label className="text-[10px] uppercase tracking-widest opacity-80 font-bold text-red-500">Audio Visibility Trigger</label>
+                               <div className="grid grid-cols-2 gap-2">
+                                <div className="space-y-1">
+                                  <label className="text-[8px] uppercase tracking-widest opacity-40 block mb-1">Target Stem</label>
+                                  <select 
+                                    value={mapping.audioMapping?.stemId || ''}
+                                    onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), stemId: e.target.value } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), stemId: e.target.value } } : m) } : l)))}
+                                    className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
+                                  >
+                                    <option value="">Master Out</option>
+                                    {audioStems.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                  </select>
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[8px] uppercase tracking-widest opacity-40 block mb-1">Tracking Mode</label>
+                                  <select 
+                                    value={mapping.audioMapping?.mode || 'fast'}
+                                    onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...l.audioMapping!, mode: e.target.value as 'fast'|'smooth' } } : l))}
+                                    className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
+                                  >
+                                    <option value="fast">Fast (Strobo)</option>
+                                    <option value="smooth">Smooth (Blend)</option>
+                                  </select>
+                                </div>
+                               </div>
 
-                      <MidiConfigUI 
-                        label="Layer MIDI Trigger"
-                        mapping={layerTarget.triggerMapping}
-                        onUpdate={(field, val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping, [field]: val } } : l))}
-                        onUpdateNote={(field, val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping, noteSettings: { ...l.triggerMapping.noteSettings, [field]: val } } } : l))}
-                        onToggleChannel={(ch) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping, channels: l.triggerMapping.channels.includes(ch) ? l.triggerMapping.channels.filter(c => c !== ch) : [...l.triggerMapping.channels, ch] } } : l))}
-                        onSetAllChannels={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping, channels: Array.from({length: 16}, (_, i) => i) } } : l))}
-                        onSetNoChannels={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping, channels: [] } } : l))}
-                      />
+                               <AudioSpectrogram 
+                                  stemId={mapping.audioMapping?.stemId}
+                                  freqRange={mapping.audioMapping?.freqRange || [20, 20000]}
+                                  threshold={mapping.audioMapping?.threshold || 0.5}
+                                  onRangeChange={(r) => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), freqRange: r } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), freqRange: r } } : m) } : l)))}
+                                  onThresholdChange={(t) => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), threshold: t } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), threshold: t } } : m) } : l)))}
+                               />
+
+                               <div className="grid grid-cols-3 gap-2">
+                                <div className="space-y-1">
+                                  <label className="text-[8px] uppercase tracking-widest opacity-40 block">Smooth: {mapping.audioMapping?.smoothing?.toFixed(2) || '0.50'}</label>
+                                  <input type="range" min="0" max="0.99" step="0.01" value={mapping.audioMapping?.smoothing || 0.5} onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), smoothing: parseFloat(e.target.value) } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), smoothing: parseFloat(e.target.value) } } : m) } : l)))} className="w-full h-1"/>
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[8px] uppercase tracking-widest opacity-40 block">Attack (ms): {layerTarget.audioMapping.attack || 10}</label>
+                                  <input type="range" min="1" max="100" step="1" value={mapping.audioMapping?.attack || 10} onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), attack: parseInt(e.target.value) } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), attack: parseInt(e.target.value) } } : m) } : l)))} className="w-full h-1"/>
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[8px] uppercase tracking-widest opacity-40 block">Release (ms): {layerTarget.audioMapping.release || 100}</label>
+                                  <input type="range" min="10" max="1000" step="10" value={mapping.audioMapping?.release || 100} onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), release: parseInt(e.target.value) } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), release: parseInt(e.target.value) } } : m) } : l)))} className="w-full h-1"/>
+                                </div>
+                               </div>
+
+                               <NoteSettingsConfigUI
+                                  ns={mapping.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS}
+                                  onUpdateNote={(field, val) => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), noteSettings: { ...(mapping.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), noteSettings: { ...(mapping.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } } } : m) } : l)))}
+                               />
+                            </div>
+                          ) : (
+                            <MidiConfigUI 
+                              label="Layer Visibility Trigger"
+                              mapping={layerTarget.triggerMapping!}
+                              isLearnActive={midiLearnTarget?.layerId === layerTarget.id && !midiLearnTarget?.effectId ? midiLearnTarget : false}
+                              onToggleLearn={(field) => setMidiLearnTarget(prev => prev?.layerId === layerTarget.id && !prev?.effectId && prev?.field === field ? null : { layerId: layerTarget.id, field })}
+                              onUpdate={(field, val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping!, [field]: val } } : l))}
+                              onUpdateNote={(field, val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping!, noteSettings: { ...l.triggerMapping!.noteSettings, [field]: val } } } : l))}
+                              onToggleChannel={(ch) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping!, channels: l.triggerMapping!.channels.includes(ch) ? l.triggerMapping!.channels.filter(c => c !== ch) : [...l.triggerMapping!.channels, ch] } } : l))}
+                              onSetAllChannels={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping!, channels: Array.from({ length: 16 }, (_, i) => i) } } : l))}
+                              onSetNoChannels={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping!, channels: [] } } : l))}
+                            />
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 } else {
@@ -2585,7 +4305,6 @@ export default function App() {
                 }
               })()}
             </div>
-          </Section>
         </aside>
 
       </div>
@@ -2593,26 +4312,14 @@ export default function App() {
       {/* Footer Status Bar */}
       <footer className="p-4 border-t border-white/5 flex flex-col sm:flex-row justify-between items-center px-4 sm:px-8 gap-4">
         <div className="flex flex-wrap gap-4 sm:gap-8 items-center justify-center">
-          <div className="flex items-center gap-2">
-            <div className={`w-1.5 h-1.5 rounded-full ${midiAccess ? 'bg-emerald-500' : 'bg-red-500'}`} />
-            <span className="text-[9px] uppercase tracking-widest opacity-40">MIDI Status: {midiAccess ? 'Active' : 'Offline'}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className={`w-1.5 h-1.5 rounded-full ${layers.some(l => l.src) ? 'bg-emerald-500' : 'bg-white/10'}`} />
-            <span className="text-[9px] uppercase tracking-widest opacity-40">Engine: {status}</span>
-          </div>
+          
+          
         </div>
         <div className="text-[9px] uppercase tracking-[0.4em] opacity-20 text-center">
           Glitch Pulse // Version 1.2.25
         </div>
       </footer>
 
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
-      `}</style>
 
       {/* Effect Browser Modal */}
       <AnimatePresence>
@@ -2623,7 +4330,7 @@ export default function App() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowEffectBrowser(false)}
-              className="absolute inset-0 bg-black/80 backdrop-blur-md"
+              className="absolute inset-0 bg-black/80 "
             />
             <motion.div 
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
@@ -2639,7 +4346,7 @@ export default function App() {
                 <div className="flex items-center gap-4">
                   <button 
                     
-                    className="text-[9px] uppercase tracking-widest bg-white/5 px-3 py-1.5 rounded hover:bg-white/10 transition-colors border border-white/5"
+                    className="text-[9px] uppercase tracking-widest bg-transparent px-3 py-1.5 rounded hover:border border-white hover:bg-white hover:text-black transition-colors border border-white/5"
                   >
                     Add All
                   </button>
@@ -2652,7 +4359,7 @@ export default function App() {
                   </button>
                   <button 
                     onClick={() => setShowEffectBrowser(false)}
-                    className="p-2 hover:bg-white/5 rounded-full transition-colors"
+                    className="p-2 hover:bg-transparent rounded-none transition-colors"
                   >
                     <X size={20} className="opacity-40 hover:opacity-100" />
                   </button>
@@ -2665,7 +4372,7 @@ export default function App() {
                   return (
                     <div 
                       key={effect.id}
-                      className={`group p-4 rounded-xl border transition-all flex flex-col justify-between ${isAdded ? 'bg-red-600/5 border-red-500/20 opacity-50' : 'bg-white/5 border-white/5 hover:border-white/20 hover:bg-white/10'}`}
+                      className={`group p-4 rounded-none border transition-all flex flex-col justify-between ${isAdded ? 'bg-red-600/5 border-red-500/20 opacity-50' : 'bg-transparent border-white/10 hover:border-white'}`}
                     >
                       <div>
                         <div className="flex items-center justify-between mb-2">
@@ -2677,9 +4384,76 @@ export default function App() {
                       <button 
                         disabled={!!isAdded}
                         onClick={() => addEffect(selectedLayerForEffect!, effect)}
-                        className={`w-full py-2 rounded-lg text-[10px] uppercase tracking-widest font-bold transition-all ${isAdded ? 'bg-transparent text-red-500/50 cursor-not-allowed' : 'bg-white/10 hover:bg-red-600 hover:text-white'}`}
+                        className={`w-full py-2 rounded-none text-[10px] uppercase tracking-widest font-bold transition-all ${isAdded ? 'bg-transparent text-red-500/50 cursor-not-allowed' : 'border border-white hover:bg-white hover:text-black hover:bg-red-600 hover:text-white'}`}
                       >
                         {isAdded ? 'Added to Engine' : 'Add Module'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    
+      {/* Generative Browser Modal */}
+      <AnimatePresence>
+        {showGenerativeBrowser && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowGenerativeBrowser(false)}
+              className="absolute inset-0 bg-black/80 "
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-4xl bg-[#0a0a0a] border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh]"
+            >
+              <div className="p-6 border-b border-white/5 flex justify-between items-center">
+                <div>
+                  <h2 className="text-xl font-light tracking-widest uppercase">Generatives Library</h2>
+                  <p className="text-[10px] opacity-40 uppercase tracking-widest mt-1">Select a code-driven visual</p>
+                </div>
+                <div className="flex items-center gap-4">
+                  <button 
+                    onClick={() => setShowGenerativeBrowser(false)}
+                    className="p-2 hover:bg-transparent rounded-none transition-colors"
+                  >
+                    <X size={20} className="opacity-40 hover:opacity-100" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 custom-scrollbar">
+                {generativesRef.current.map(g => {
+                  const isActive = activeLayerId && layers.find(l => l.id === activeLayerId)?.generativeId === g.uuid;
+                  return (
+                    <div 
+                      key={g.uuid}
+                      className={`group p-4 rounded-none border transition-all flex flex-col justify-between ${isActive ? 'bg-red-600/5 border-red-500/20 opacity-50' : 'bg-transparent border-white/10 hover:border-white'}`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <h3 className="text-xs font-bold uppercase tracking-widest">{g.description}</h3>
+                        </div>
+                        <p className="text-[10px] opacity-40 leading-relaxed mb-4">{g.parameters.length} Interactive Params</p>
+                      </div>
+                      <button 
+                        disabled={!!isActive}
+                        onClick={() => {
+                          if (activeLayerId) {
+                            setLayers(prev => prev.map(l => l.id === activeLayerId ? { ...l, generativeId: g.uuid, mappings: [], generativeSettings: {}, generativeMappings: [], generativeTriggerActive: {}, generativeTriggerAmount: {} } : l));
+                            setShowGenerativeBrowser(false);
+                          }
+                        }}
+                        className={`w-full py-2 rounded-none text-[10px] uppercase tracking-widest font-bold transition-all ${isActive ? 'bg-transparent text-red-500/50 cursor-not-allowed' : 'border border-white hover:bg-white hover:text-black hover:bg-red-600 hover:text-white'}`}
+                      >
+                        {isActive ? 'Active on Layer' : 'Load Script'}
                       </button>
                     </div>
                   );
@@ -2704,7 +4478,7 @@ function Section({ title, icon, children, isExpanded, onToggle }: {
     <div className="border-b border-white/5">
       <button 
         onClick={onToggle}
-        className="w-full p-4 flex items-center justify-between hover:bg-white/5 transition-colors group"
+        className="w-full p-4 flex items-center justify-between hover:bg-transparent transition-colors group"
       >
         <div className="flex items-center gap-3">
           <span className="opacity-40 group-hover:opacity-100 transition-opacity">{icon}</span>

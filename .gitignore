@@ -6,3 +6,7 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Temp helper scripts
+*.py
+spectro_log.txt
