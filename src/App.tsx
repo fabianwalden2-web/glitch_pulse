@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   Upload, 
   Music, 
@@ -86,7 +87,12 @@ interface Layer {
   videoStart?: number;
   videoEnd?: number;
   videoDuration?: number;
-  videoTriggerMode?: 'restart' | 'continuous';
+  videoTriggerMode?: 'restart' | 'continuous' | 'advance' | 'rewind' | 'frame-accumulator';
+  accumulateThreshold?: number;
+  videoAdvanceUnit?: 'frames' | 'seconds';
+  videoAdvanceAmount?: number;
+  videoFrameRate?: number;
+  videoRewindSpeed?: number;
   generativeId?: string;
   generativeSettings?: Record<string, number>;
   generativeTriggerActive?: Record<string, boolean>;
@@ -98,6 +104,7 @@ interface Layer {
   rhythmMapping?: RhythmMapping;
   isMuted: boolean;
   isSoloed: boolean;
+  ccBindings?: Record<string, { cc: number, min: number, max: number }>;
 }
 
 interface Scene {
@@ -303,6 +310,16 @@ const ALL_EFFECTS: EffectDefinition[] = [
       { id: 'maxObjects', name: 'Objects', description: 'Limits how many glitch boxes appear at once.', min: 1, max: 20, type: 'continuous' },
       { id: 'persistence', name: 'Persistence', description: 'How long the glitch boxes stay on screen after motion stops.', min: 1, max: 60, type: 'continuous' },
     ]
+  },
+  {
+    id: 'long-exposure',
+    name: 'Long Exposure',
+    description: 'Isolates moving subjects from a static background and composites them onto a persistent buffer.',
+    parameters: [
+      { id: 'threshold', name: 'Threshold', description: 'Determines the amount of pixel movement required.', min: 1, max: 100, type: 'continuous', default: 30 },
+      { id: 'fade', name: 'Trail Fade', description: 'How fast the trails disappear.', min: 0, max: 50, type: 'continuous', default: 5 },
+      { id: 'clear', name: 'Clear', description: 'Triggers a clear of the accumulated trails.', min: 0, max: 1, type: 'binary', default: 0 },
+    ]
   }
 ];
 
@@ -362,7 +379,7 @@ const INITIAL_MAPPINGS: EffectMapping[] = [
 
 // --- Components ---
 
-function Knob({ value, min, max, onChange, label, type = 'continuous', id }: {
+function Knob({ value, min, max, onChange, label, type = 'continuous', id, onContextMenuAction, ccLabel, isLearning }: {
   value: number,
   min: number,
   max: number,
@@ -370,13 +387,33 @@ function Knob({ value, min, max, onChange, label, type = 'continuous', id }: {
   label: string,
   type?: 'continuous' | 'binary',
   id?: string,
-  key?: any
+  key?: any,
+  onContextMenuAction?: (action: 'learn' | 'clear') => void,
+  ccLabel?: string,
+  isLearning?: boolean
 }) {
   const [isDragging, setIsDragging] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+  const [menuPos, setMenuPos] = useState<{x: number, y: number} | null>(null);
+
   const startY = useRef(0);
   const startX = useRef(0);
   const startVal = useRef(0);
+
+  useEffect(() => {
+    const handleGlobalClick = () => setMenuPos(null);
+    if (menuPos) {
+      const timer = setTimeout(() => {
+        document.addEventListener('mousedown', handleGlobalClick);
+        document.addEventListener('contextmenu', handleGlobalClick);
+      }, 50);
+      return () => {
+        clearTimeout(timer);
+        document.removeEventListener('mousedown', handleGlobalClick);
+        document.removeEventListener('contextmenu', handleGlobalClick);
+      };
+    }
+  }, [menuPos]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -464,12 +501,20 @@ function Knob({ value, min, max, onChange, label, type = 'continuous', id }: {
           onTouchStart={handleTouchStart}
           onMouseEnter={() => setIsHovered(true)}
           onMouseLeave={() => setIsHovered(false)}
+          onContextMenu={(e) => {
+             e.preventDefault();
+             e.stopPropagation();
+             e.nativeEvent.stopPropagation();
+             if (onContextMenuAction) {
+                setMenuPos({ x: e.clientX, y: e.clientY });
+             }
+          }}
         >
           <svg viewBox="0 0 100 100" className="w-full h-full">
             <circle 
               cx="50" cy="50" r="40" 
               fill="none" stroke="currentColor" strokeWidth="2" 
-              className="text-white/10"
+              className={`transition-colors ${isLearning ? 'text-red-500 animate-pulse' : 'text-white/10'}`}
             />
             <circle 
               id={id ? `knob-circle-${id}` : undefined}
@@ -491,13 +536,43 @@ function Knob({ value, min, max, onChange, label, type = 'continuous', id }: {
             />
           </svg>
         </div>
+        {ccLabel && (
+          <div className="absolute -bottom-2 -right-2 bg-red-600 px-1 py-0.5 rounded text-[8px] font-mono font-bold">
+            {ccLabel}
+          </div>
+        )}
         {(isHovered || isDragging) && (
           <div className="absolute -top-7 left-1/2 -translate-x-1/2 bg-black border border-white/20 rounded px-1.5 py-0.5 text-[9px] font-mono text-white whitespace-nowrap pointer-events-none z-50 shadow-lg">
             {displayVal}
           </div>
         )}
       </div>
-      <span className="text-[8px] uppercase tracking-widest font-bold opacity-40 group-hover:opacity-100 transition-opacity whitespace-nowrap">{label}</span>
+      {label && <span className="text-[8px] uppercase tracking-widest font-bold opacity-40 group-hover:opacity-100 transition-opacity whitespace-nowrap">{label}</span>}
+      {menuPos && createPortal(
+         <div 
+           className="fixed bg-neutral-900 border border-white/20 rounded shadow-2xl py-1 flex flex-col min-w-[120px] text-[10px] uppercase tracking-widest"
+           style={{ left: menuPos.x + 'px', top: menuPos.y + 'px', zIndex: 99999 }}
+           onMouseDown={(e) => { e.stopPropagation(); e.nativeEvent.stopPropagation(); }}
+           onClick={(e) => { e.stopPropagation(); e.nativeEvent.stopPropagation(); }}
+           onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); e.nativeEvent.stopPropagation(); }}
+         >
+           <button 
+             className="px-3 py-2 text-left hover:bg-neutral-800 text-white/80 hover:text-white transition-colors"
+             onClick={(e) => { e.stopPropagation(); onContextMenuAction?.('learn'); setMenuPos(null); }}
+           >
+             MIDI Learn
+           </button>
+           {ccLabel && (
+             <button 
+               className="px-3 py-2 text-left hover:bg-red-900/50 text-red-400 hover:text-red-300 transition-colors"
+               onClick={(e) => { e.stopPropagation(); onContextMenuAction?.('clear'); setMenuPos(null); }}
+             >
+               Remove Mapping
+             </button>
+           )}
+         </div>,
+         document.body
+      )}
     </div>
   );
 }
@@ -857,6 +932,8 @@ export default function App() {
   const [midiDevices, setMidiDevices] = useState<MidiDevice[]>([]);
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
   const [midiLearnTarget, setMidiLearnTarget] = useState<{layerId: string, effectId?: string, field: 'noteStart' | 'noteEnd'} | null>(null);
+  const [ccLearnTarget, setCcLearnTarget] = useState<{layerId: string, paramId: string, min: number, max: number} | null>(null);
+  const [expandedParamTrigger, setExpandedParamTrigger] = useState<string | null>(null);
   const [midiLogs, setMidiLogs] = useState<MidiLogEntry[]>([]);
   
   // UI State
@@ -904,7 +981,14 @@ export default function App() {
   const sphereCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
   const sphereParticlesRef = useRef<Record<string, { count: number, particles: SphereParticle[] }>>({});
   const stickinessCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
+  
+  // Accumulation Mode Refs
+  const accumulateCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const referenceFrameRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const stutterStateRef = useRef<Record<string, { triggerStamp: boolean, clearBuffer: boolean }>>({});
   const stickinessCirclesRef = useRef<Record<string, { count: number, circles: any[] }>>({});
+  const videoRewindStateRef = useRef<Record<string, { rewinding: boolean; visible: boolean; lastSeekTime?: number }>>({});
+  const lastRenderTimeRef = useRef<number>(performance.now());
   const [audioStems, setAudioStems] = useState<{ id: string, name: string, fileUrl: string, isMuted: boolean, isSoloed: boolean }[]>([]);
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [audioTime, setAudioTime] = useState(0);
@@ -1126,6 +1210,47 @@ export default function App() {
           if (tr.channels.includes(channel) && note >= tr.noteStart && note <= tr.noteEnd) {
           let activeUntil = null;
           const finalVelocity = tr.noteSettings.useFixedVelocity ? tr.noteSettings.fixedVelocity : velocity;
+
+          // --- Frame Advance Mode ---
+          if (layer.videoTriggerMode === 'advance' && layer.type === 'video' && isDown) {
+            const vid = videoRefs.current[layer.id];
+            if (vid) {
+              const unit = layer.videoAdvanceUnit || 'frames';
+              const amount = layer.videoAdvanceAmount || 1;
+              const fps = layer.videoFrameRate || 30;
+              const delta = unit === 'frames' ? amount / fps : amount;
+              const start = layer.videoStart || 0;
+              const end = layer.videoEnd || vid.duration || 0;
+              let newTime = vid.currentTime + delta;
+              // Loop back to start when reaching end
+              if (newTime >= end) newTime = start + (newTime - end);
+              vid.currentTime = Math.max(start, Math.min(end, newTime));
+              vid.pause();
+            }
+            return { ...layer, isActive: true, triggerMapping: { ...tr, velocity: finalVelocity } };
+          }
+
+          // --- Rewind on Release Mode ---
+          if (layer.videoTriggerMode === 'rewind' && layer.type === 'video') {
+            const vid = videoRefs.current[layer.id];
+            if (isDown) {
+              // Note ON: stop rewinding, play forward, become visible
+              videoRewindStateRef.current[layer.id] = { rewinding: false, visible: true };
+              if (vid) {
+                // Instantly advance by ~1 frame to provide immediate visual feedback 
+                // while the async play() method spins up the decoder
+                const end = layer.videoEnd || vid.duration || 0;
+                vid.currentTime = Math.min(vid.currentTime + 0.05, end);
+                vid.play().catch(() => {});
+              }
+              return { ...layer, isActive: true, triggerMapping: { ...tr, velocity: finalVelocity } };
+            } else {
+              // Note OFF: start rewinding
+              videoRewindStateRef.current[layer.id] = { rewinding: true, visible: true };
+              if (vid) vid.pause();
+              return { ...layer, isActive: false, triggerMapping: { ...tr, velocity: 0 } };
+            }
+          }
           
           if (tr.triggerBehavior === 'toggle') {
             if (isDown) {
@@ -1219,15 +1344,53 @@ export default function App() {
       };
       setMidiLogs(prev => [log, ...prev].slice(0, 15));
 
-      // Check Layer Opacity Triggers
-      setLayers(prev => prev.map(l => {
-        if (l.midiCC === note) {
-          return { ...l, opacity: velocity / 127 };
-        }
-        return l;
-      }));
+      if (ccLearnTarget) {
+         setLayers(prev => prev.map(l => {
+           if (l.id === ccLearnTarget.layerId) {
+             return { ...l, ccBindings: { ...(l.ccBindings || {}), [ccLearnTarget.paramId]: { cc: note, min: ccLearnTarget.min, max: ccLearnTarget.max } } };
+           }
+           return l;
+         }));
+         setCcLearnTarget(null);
+      } else {
+        // Check Layer CC Bindings
+        setLayers(prev => prev.map(l => {
+          let newLayer = { ...l };
+          let changed = false;
+          
+          if (l.midiCC === note) {
+            newLayer.opacity = velocity / 127;
+            changed = true;
+          }
+          
+          if (l.ccBindings) {
+             for (const [paramId, binding] of Object.entries(l.ccBindings)) {
+                if (binding.cc === note) {
+                   const mappedValue = binding.min + (velocity / 127) * (binding.max - binding.min);
+                   
+                   if (paramId === 'opacity') {
+                      newLayer.opacity = mappedValue;
+                   } else if (paramId.startsWith('generative-')) {
+                      const pName = paramId.replace('generative-', '');
+                      newLayer.generativeSettings = { ...(newLayer.generativeSettings || {}), [pName]: mappedValue };
+                   } else if (paramId.startsWith('effect-')) {
+                      const parts = paramId.split('-');
+                      const mappingId = parts[1];
+                      const effectParamId = parts.slice(2).join('-');
+                      newLayer.mappings = newLayer.mappings.map(m => 
+                         m.id === mappingId ? { ...m, settings: { ...m.settings, [effectParamId]: mappedValue } } : m
+                      );
+                   }
+                   changed = true;
+                }
+             }
+          }
+          
+          return changed ? newLayer : l;
+        }));
+      }
     }
-  }, [layers, scenes, midiLearnTarget]);
+  }, [layers, scenes, midiLearnTarget, ccLearnTarget]);
 
   useEffect(() => {
     if (!midiAccess || selectedDeviceIds.length === 0) return;
@@ -1573,7 +1736,19 @@ export default function App() {
       const hasActiveEffect = layer.mappings.some(m => (m.active || m.manualActive) && !m.isMuted);
       let isVisibleNormally = layer.isVisible;
       if (layer.midiMode) {
-          if (layer.audioMapping?.enabled) isVisibleNormally = audioIsActive;
+          // Advance mode: layer is always visible
+          if (layer.videoTriggerMode === 'advance' && layer.type === 'video') {
+              isVisibleNormally = true;
+          }
+          // Rewind mode: always visible
+          else if (layer.videoTriggerMode === 'rewind' && layer.type === 'video') {
+              isVisibleNormally = true;
+          }
+          // Frame Accumulator mode: always visible (shows reference frame + accumulated stamps)
+          else if (layer.videoTriggerMode === 'frame-accumulator' && layer.type === 'video') {
+              isVisibleNormally = true;
+          }
+          else if (layer.audioMapping?.enabled) isVisibleNormally = audioIsActive;
           else if (layer.rhythmMapping?.enabled) isVisibleNormally = rhythmIsActive;
           else isVisibleNormally = !!layer.isActive;
       }
@@ -1882,8 +2057,47 @@ export default function App() {
            const vid = element as HTMLVideoElement;
            const start = layer.videoStart || 0;
            const end = layer.videoEnd || vid.duration || 0;
-           if (vid.currentTime < start) vid.currentTime = start;
-           if (vid.currentTime >= end) vid.currentTime = start;
+
+           // Frame Advance: keep video paused, don't auto-loop
+           if (layer.videoTriggerMode === 'advance') {
+             vid.pause();
+           }
+           // Rewind on Release: handle per-frame rewind animation
+           else if (layer.videoTriggerMode === 'rewind') {
+             const rState = videoRewindStateRef.current[layer.id];
+             if (rState?.rewinding) {
+               const nowTime = performance.now();
+               if (!rState.lastSeekTime) rState.lastSeekTime = nowTime;
+               const timeSinceLastSeek = nowTime - rState.lastSeekTime;
+               
+               // Throttle backward seeks to roughly 30fps (33ms) to allow the browser decoder to keep up
+               if (timeSinceLastSeek >= 33) {
+                 const rewindSpeed = layer.videoRewindSpeed || 1.0;
+                 const dt = timeSinceLastSeek / 1000;
+                 const rewindDelta = rewindSpeed * dt;
+                 let newTime = vid.currentTime - rewindDelta;
+                 
+                 if (newTime <= start) {
+                   newTime = start;
+                   vid.currentTime = newTime;
+                   // Fully rewound — stay visible and wait at start
+                   videoRewindStateRef.current[layer.id] = { rewinding: false, visible: true, lastSeekTime: nowTime };
+                 } else {
+                   vid.currentTime = newTime;
+                   rState.lastSeekTime = nowTime;
+                 }
+               }
+             } else {
+               // Normal forward play — respect segment bounds
+               if (vid.currentTime < start) vid.currentTime = start;
+               if (vid.currentTime >= end) vid.currentTime = start;
+             }
+           }
+           // Standard modes
+           else {
+             if (vid.currentTime < start) vid.currentTime = start;
+             if (vid.currentTime >= end) vid.currentTime = start;
+           }
          }
       } else {
          element = imageRefs.current[layer.id];
@@ -1947,6 +2161,100 @@ export default function App() {
         }
         rawCtx.drawImage(element, x, y, destW, destH);
         if (isGrid) rawCtx.restore();
+
+        // --- Frame Accumulator Mode ---
+        if (layer.videoTriggerMode === 'frame-accumulator') {
+          // Capture reference frame (first frame of the video) on first encounter
+          if (!referenceFrameRef.current[layer.id]) {
+            const refCanvas = document.createElement('canvas');
+            refCanvas.width = targetW;
+            refCanvas.height = targetH;
+            referenceFrameRef.current[layer.id] = refCanvas;
+            const refCtx = refCanvas.getContext('2d', { willReadFrequently: true })!;
+            refCtx.drawImage((window as any).rawOffscreenCanvas, 0, 0);
+          }
+          
+          if (!accumulateCanvasRef.current[layer.id]) {
+            const accCanvas = document.createElement('canvas');
+            accCanvas.width = targetW;
+            accCanvas.height = targetH;
+            accumulateCanvasRef.current[layer.id] = accCanvas;
+          }
+          
+          const refCanvas = referenceFrameRef.current[layer.id];
+          const accCanvas = accumulateCanvasRef.current[layer.id];
+          const accCtx = accCanvas.getContext('2d', { willReadFrequently: true })!;
+          const stState = stutterStateRef.current[layer.id] || { triggerStamp: false, clearBuffer: false, wasActive: false };
+          stutterStateRef.current[layer.id] = stState;
+          
+          // Edge detection for the stamp trigger — fires on the rising edge of the layer's trigger
+          let isCurrentlyActive = false;
+          if (layer.audioMapping?.enabled) {
+              isCurrentlyActive = audioIsActive;
+          } else if (layer.rhythmMapping?.enabled) {
+              isCurrentlyActive = rhythmIsActive;
+          } else if (layer.midiMode) {
+              isCurrentlyActive = !!layer.isActive;
+          }
+          
+          if (isCurrentlyActive && !stState.wasActive) {
+              stState.triggerStamp = true;
+          }
+          stState.wasActive = isCurrentlyActive;
+          
+          // Handle clear
+          if (stState.clearBuffer) {
+            accCtx.clearRect(0, 0, targetW, targetH);
+            stState.clearBuffer = false;
+          }
+
+          // When triggered, stamp the moving pixels onto the accumulation buffer
+          if (stState.triggerStamp) {
+            const currentData = rawCtx.getImageData(0, 0, targetW, targetH).data;
+            const refCtx2 = refCanvas.getContext('2d', { willReadFrequently: true })!;
+            const refData = refCtx2.getImageData(0, 0, targetW, targetH).data;
+            
+            if (!(window as any).diffCanvas) {
+               (window as any).diffCanvas = document.createElement('canvas');
+               (window as any).diffCtx = (window as any).diffCanvas.getContext('2d', { willReadFrequently: true });
+            }
+            const diffCanvas = (window as any).diffCanvas as HTMLCanvasElement;
+            const diffCtx = (window as any).diffCtx as CanvasRenderingContext2D;
+            if (diffCanvas.width !== targetW) { diffCanvas.width = targetW; diffCanvas.height = targetH; }
+            
+            const diffImgData = diffCtx.createImageData(targetW, targetH);
+            const diffData = diffImgData.data;
+            const thresh = layer.accumulateThreshold ?? 30;
+            
+            for (let i = 0; i < currentData.length; i += 4) {
+               const rDiff = Math.abs(currentData[i] - refData[i]);
+               const gDiff = Math.abs(currentData[i+1] - refData[i+1]);
+               const bDiff = Math.abs(currentData[i+2] - refData[i+2]);
+               
+               const avgDiff = (rDiff + gDiff + bDiff) / 3;
+               if (avgDiff > thresh) {
+                 diffData[i] = currentData[i];
+                 diffData[i+1] = currentData[i+1];
+                 diffData[i+2] = currentData[i+2];
+                 diffData[i+3] = 255;
+               } else {
+                 diffData[i+3] = 0;
+               }
+            }
+            diffCtx.putImageData(diffImgData, 0, 0);
+            accCtx.drawImage(diffCanvas, 0, 0);
+            stState.triggerStamp = false;
+          }
+
+          // Output: Always show Background Reference Frame + Accumulated Stamps on top
+          ctx.clearRect(0, 0, targetW, targetH);
+          ctx.drawImage(refCanvas, 0, 0);
+          ctx.drawImage(accCanvas, 0, 0);
+          
+          rawCtx.clearRect(0, 0, targetW, targetH);
+          rawCtx.drawImage(refCanvas, 0, 0);
+          rawCtx.drawImage(accCanvas, 0, 0);
+        }
 
         // Process effects for this layer
         const activeMappings = layer.mappings.filter(m => (m.active || m.manualActive) && !m.isMuted);
@@ -2781,6 +3089,89 @@ export default function App() {
         });
         ctx.restore();
       }
+
+      // --- 14. Long Exposure ---
+      if (effect.id === 'long-exposure') {
+        const threshold = settings.threshold || 30;
+        const fadeVal = (settings.fade || 5) / 100;
+        
+        // Use layer-specific accumulation canvases
+        const leKey = layer.id + '-long-exposure';
+        if (!referenceFrameRef.current[leKey]) {
+          const refCanvas = document.createElement('canvas');
+          refCanvas.width = targetW;
+          refCanvas.height = targetH;
+          referenceFrameRef.current[leKey] = refCanvas;
+          const refCtx = refCanvas.getContext('2d', { willReadFrequently: true })!;
+          refCtx.drawImage((window as any).rawOffscreenCanvas, 0, 0);
+        }
+        if (!accumulateCanvasRef.current[leKey]) {
+          const accCanvas = document.createElement('canvas');
+          accCanvas.width = targetW;
+          accCanvas.height = targetH;
+          accumulateCanvasRef.current[leKey] = accCanvas;
+        }
+        
+        const leRefCanvas = referenceFrameRef.current[leKey];
+        const leAccCanvas = accumulateCanvasRef.current[leKey];
+        const leAccCtx = leAccCanvas.getContext('2d', { willReadFrequently: true })!;
+        
+        // Check for clear signal
+        const leState = stutterStateRef.current[layer.id] || { triggerStamp: false, clearBuffer: false, wasActive: false };
+        stutterStateRef.current[layer.id] = leState;
+        if (leState.clearBuffer) {
+          leAccCtx.clearRect(0, 0, targetW, targetH);
+          leState.clearBuffer = false;
+        }
+        
+        // Continuous difference calculation every frame
+        const currentData = rawCtx.getImageData(0, 0, targetW, targetH).data;
+        const leRefCtx = leRefCanvas.getContext('2d', { willReadFrequently: true })!;
+        const refData = leRefCtx.getImageData(0, 0, targetW, targetH).data;
+        
+        if (!(window as any).diffCanvas) {
+           (window as any).diffCanvas = document.createElement('canvas');
+           (window as any).diffCtx = (window as any).diffCanvas.getContext('2d', { willReadFrequently: true });
+        }
+        const diffCanvas = (window as any).diffCanvas as HTMLCanvasElement;
+        const diffCtx2 = (window as any).diffCtx as CanvasRenderingContext2D;
+        if (diffCanvas.width !== targetW) { diffCanvas.width = targetW; diffCanvas.height = targetH; }
+        
+        const diffImgData = diffCtx2.createImageData(targetW, targetH);
+        const diffData = diffImgData.data;
+        
+        for (let i = 0; i < currentData.length; i += 4) {
+           const rDiff = Math.abs(currentData[i] - refData[i]);
+           const gDiff = Math.abs(currentData[i+1] - refData[i+1]);
+           const bDiff = Math.abs(currentData[i+2] - refData[i+2]);
+           const avgDiff = (rDiff + gDiff + bDiff) / 3;
+           if (avgDiff > threshold) {
+             diffData[i] = currentData[i];
+             diffData[i+1] = currentData[i+1];
+             diffData[i+2] = currentData[i+2];
+             diffData[i+3] = 255;
+           } else {
+             diffData[i+3] = 0;
+           }
+        }
+        diffCtx2.putImageData(diffImgData, 0, 0);
+        leAccCtx.drawImage(diffCanvas, 0, 0);
+        
+        // Apply fade to trails
+        if (fadeVal > 0) {
+          leAccCtx.save();
+          leAccCtx.globalCompositeOperation = 'destination-out';
+          leAccCtx.fillStyle = `rgba(0, 0, 0, ${fadeVal})`;
+          leAccCtx.fillRect(0, 0, targetW, targetH);
+          leAccCtx.restore();
+        }
+
+        // Output: Reference Frame + Accumulated trails
+        ctx.clearRect(0, 0, targetW, targetH);
+        ctx.drawImage(leRefCanvas, 0, 0);
+        ctx.drawImage(leAccCanvas, 0, 0);
+      }
+
     } // <-- Added closing bracket for if (mappingsToProcess.length > 0)
 
       // Finally, composite this layer's fully processed canvas onto the main canvas
@@ -2793,7 +3184,19 @@ export default function App() {
       
       let opacityMult = 1.0;
       if (layer.midiMode) {
-          if (layer.audioMapping?.enabled) {
+          // Advance mode: always visible
+          if (layer.videoTriggerMode === 'advance' && layer.type === 'video') {
+              opacityMult = 1.0;
+          }
+          // Rewind mode: always visible
+          else if (layer.videoTriggerMode === 'rewind' && layer.type === 'video') {
+              opacityMult = 1.0;
+          }
+          // Frame Accumulator mode: always visible
+          else if (layer.videoTriggerMode === 'frame-accumulator' && layer.type === 'video') {
+              opacityMult = 1.0;
+          }
+          else if (layer.audioMapping?.enabled) {
               opacityMult = layer.audioMapping.target === 'opacity' ? audioVisualOpacity : (audioIsActive ? 1.0 : 0.0);
           }
           else if (layer.rhythmMapping?.enabled) opacityMult = rhythmVisualOpacity;
@@ -2869,6 +3272,8 @@ export default function App() {
     // Toggle all video layers
     layers.forEach(layer => {
       if (layer.type === 'video') {
+        // Frame Advance layers stay paused — their playback is trigger-controlled
+        if (layer.videoTriggerMode === 'advance') return;
         const video = videoRefs.current[layer.id];
         if (video) {
           if (!isPlaying) video.play().catch(() => {});
@@ -3726,6 +4131,21 @@ export default function App() {
                                           type="continuous"
                                           id={"config-knob-" + p.name}
                                           onChange={(val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeSettings: { ...(l.generativeSettings || {}), [p.name]: val } } : l))}
+                                          onContextMenuAction={(action) => {
+                                            if (action === 'learn') {
+                                              setCcLearnTarget({layerId: layerTarget.id, paramId: `generative-${p.name}`, min: p.min, max: p.max});
+                                            } else if (action === 'clear') {
+                                              setLayers(prev => prev.map(l => {
+                                                if (l.id !== layerTarget.id || !l.ccBindings) return l;
+                                                const newBindings = { ...l.ccBindings };
+                                                delete newBindings[`generative-${p.name}`];
+                                                return { ...l, ccBindings: newBindings };
+                                              }));
+                                              if (ccLearnTarget?.paramId === `generative-${p.name}`) setCcLearnTarget(null);
+                                            }
+                                          }}
+                                          ccLabel={layerTarget.ccBindings?.[`generative-${p.name}`] ? `CC ${layerTarget.ccBindings[`generative-${p.name}`].cc}` : undefined}
+                                          isLearning={ccLearnTarget?.layerId === layerTarget.id && ccLearnTarget?.paramId === `generative-${p.name}`}
                                         />
                                       </div>
                                       <div className="flex-1 flex flex-col items-center">
@@ -3746,13 +4166,48 @@ export default function App() {
 
                                 const definition = ALL_EFFECTS.find(e => e.id === selectedEffectId);
                                 if (!definition) return null;
-                                return definition.parameters.map(p => (
-                                  <Knob 
-                                    key={p.id} label={p.name} min={p.min} max={p.max}
-                                    value={Number(mapping.settings[p.id])} type={p.type}
-                                    onChange={(val) => updateSetting(layerTarget.id, mapping.id, p.id, val)}
-                                  />
-                                ));
+                                return (
+                                  <>
+                                    {definition.parameters.filter(p => p.id !== 'clear').map(p => (
+                                      <Knob 
+                                        key={p.id} label={p.name} min={p.min} max={p.max}
+                                        value={Number(mapping.settings[p.id])} type={p.type}
+                                        onChange={(val) => updateSetting(layerTarget.id, mapping.id, p.id, val)}
+                                        onContextMenuAction={(action) => {
+                                          if (action === 'learn') {
+                                            setCcLearnTarget({layerId: layerTarget.id, paramId: `effect-${mapping.id}-${p.id}`, min: p.min, max: p.max});
+                                          } else if (action === 'clear') {
+                                            setLayers(prev => prev.map(l => {
+                                              if (l.id !== layerTarget.id || !l.ccBindings) return l;
+                                              const newBindings = { ...l.ccBindings };
+                                              delete newBindings[`effect-${mapping.id}-${p.id}`];
+                                              return { ...l, ccBindings: newBindings };
+                                            }));
+                                            if (ccLearnTarget?.paramId === `effect-${mapping.id}-${p.id}`) setCcLearnTarget(null);
+                                          }
+                                        }}
+                                        ccLabel={layerTarget.ccBindings?.[`effect-${mapping.id}-${p.id}`] ? `CC ${layerTarget.ccBindings[`effect-${mapping.id}-${p.id}`].cc}` : undefined}
+                                        isLearning={ccLearnTarget?.layerId === layerTarget.id && ccLearnTarget?.paramId === `effect-${mapping.id}-${p.id}`}
+                                      />
+                                    ))}
+                                    {selectedEffectId === 'long-exposure' && (
+                                      <div className="col-span-2 pt-2">
+                                        <button 
+                                          onClick={() => {
+                                            if (stutterStateRef.current[layerTarget.id]) {
+                                              stutterStateRef.current[layerTarget.id].clearBuffer = true;
+                                            } else {
+                                              stutterStateRef.current[layerTarget.id] = { triggerStamp: false, clearBuffer: true, wasActive: false };
+                                            }
+                                          }}
+                                          className="w-full py-1.5 bg-red-600/20 hover:bg-red-600 border border-red-600/50 rounded text-[9px] uppercase tracking-widest text-red-100 hover:text-white transition-colors"
+                                        >
+                                          Clear Accumulated Trails
+                                        </button>
+                                      </div>
+                                    )}
+                                  </>
+                                );
                               })()}
                             </div>
                           </div>
@@ -3945,103 +4400,206 @@ export default function App() {
                                       const isMapped = layerTarget.generativeMappings?.some(m => m.id === p.name);
                                       const isGloballyBound = layerTarget.generativeTriggerActive?.[p.name];
                                       return (
-                                       <div key={p.name} className="flex flex-col gap-1">
-                                          <div className="flex items-center justify-between px-1">
-                                            <button 
-                                                onClick={() => {
-                                                  if (!isMapped) {
-                                                     const targetM = { 
-                                                       ...INITIAL_MAPPINGS[0], 
-                                                       id: p.name, 
-                                                       name: p.name, 
-                                                       active: true, 
-                                                       triggerBehavior: 'momentary',
-                                                       noteSettings: { ...DEFAULT_NOTE_SETTINGS },
-                                                       channels: Array.from({length: 16}, (_, i) => i)
-                                                     };
-                                                     setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: [...(l.generativeMappings || []), targetM] } : l));
-                                                  }
-                                                  setSelectedEffectId(p.name);
-                                                  setSelectedLayerForEffect(layerTarget.id);
-                                                  setSidebarTab('triggers');
-                                                }}
-                                                className="text-[10px] uppercase opacity-60 hover:opacity-100 hover:text-red-400 font-bold transition-colors text-left"
-                                              >
-                                                {p.name.replace(/([A-Z])/g, ' $1').trim()}
-                                              </button>
-                                            <div className="flex gap-1 items-center">
-                                              <button 
-                                                onClick={() => {
-                                                  setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [p.name]: !isGloballyBound } } : l));
-                                                }}
-                                                className={`p-1 transition-colors rounded hover:bg-neutral-800 ${isGloballyBound ? 'text-red-500' : 'opacity-20 hover:text-white'}`}
-                                                title="Bind to Layer Tracking Env"
-                                              >
-                                                L
-                                              </button>
-                                              <button 
-                                                onClick={() => {
-                                                  if (isMapped) {
-                                                     setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.filter(m => m.id !== p.name) } : l));
-                                                  } else {
-                                                     const targetM: EffectMapping = { 
-                                                       ...INITIAL_MAPPINGS[0], 
-                                                       id: p.name, 
-                                                       name: p.name, 
-                                                       active: true, 
-                                                       triggerBehavior: 'momentary',
-                                                       noteSettings: { ...DEFAULT_NOTE_SETTINGS },
-                                                       channels: Array.from({length: 16}, (_, i) => i)
-                                                     };
-                                                     setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: [...(l.generativeMappings || []), targetM] } : l));
-                                                     setSelectedEffectId(p.name);
-                                                     setSelectedLayerForEffect(layerTarget.id);
-                                                     setSidebarTab('triggers');
-                                                  }
-                                                }}
-                                                className={`p-1 transition-colors rounded hover:bg-neutral-800 ${isMapped ? 'text-blue-400' : 'opacity-20 hover:text-white'}`}
-                                                title="Specific MIDI Trigger"
-                                              >
-                                                <Zap size={10} />
-                                              </button>
-                                            </div>
-                                          </div>
-                                          <div className="flex items-center gap-2">
-                                            <div className="flex-1">
-                                              <Knob 
-                                                label="" 
-                                                min={p.min} max={p.max}
-                                                value={layerTarget.generativeSettings?.[p.name] ?? p.default} 
-                                                type="continuous"
-                                                id={p.name}
-                                                onChange={(val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeSettings: { ...(l.generativeSettings || {}), [p.name]: val } } : l))}
-                                              />
-                                            </div>
-                                            {(isMapped || isGloballyBound) && (
-                                              <div className="flex flex-col items-center">
-                                                <input 
-                                                  type="range" min="-1" max="1" step="0.01" 
-                                                  value={layerTarget.generativeTriggerAmount?.[p.name] || 0.1} 
-                                                  onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerAmount: { ...(l.generativeTriggerAmount || {}), [p.name]: parseFloat(e.target.value) } } : l))}
-                                                  className="w-10 accent-red-600"
-                                                />
-                                                {isMapped && (
-                                                  <button 
-                                                    onClick={() => {
-                                                      setSelectedEffectId(p.name);
-                                                      setSelectedLayerForEffect(layerTarget.id);
-                                                      setSidebarTab('triggers');
-                                                    }}
-                                                    className="p-1.5 opacity-40 hover:opacity-100 hover:text-blue-400 transition-colors mt-1"
-                                                    title="Configure Mapping"
-                                                  >
-                                                    <Sliders size={10} />
-                                                  </button>
-                                                )}
-                                              </div>
-                                            )}
-                                          </div>
-                                       </div>
+                                       <React.Fragment key={p.name}>
+                                        <div className="flex flex-col gap-1">
+                                           <div className="flex items-center justify-between px-1">
+                                             <button 
+                                                 onClick={() => {
+                                                   if (!isMapped) {
+                                                      const targetM: EffectMapping = { 
+                                                        ...INITIAL_MAPPINGS[0], 
+                                                        id: p.name, 
+                                                        name: p.name, 
+                                                        active: true, 
+                                                        triggerBehavior: 'momentary',
+                                                        noteSettings: { ...DEFAULT_NOTE_SETTINGS },
+                                                        channels: Array.from({length: 16}, (_, i) => i)
+                                                      };
+                                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: [...(l.generativeMappings || []), targetM] } : l));
+                                                   }
+                                                   setExpandedParamTrigger(prev => prev === p.name ? null : p.name);
+                                                 }}
+                                                 className="text-[10px] uppercase opacity-60 hover:opacity-100 hover:text-red-400 font-bold transition-colors text-left"
+                                               >
+                                                 {p.name.replace(/([A-Z])/g, ' $1').trim()}
+                                               </button>
+                                             <div className="flex gap-1 items-center">
+                                               <button 
+                                                 onClick={() => {
+                                                   setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [p.name]: !isGloballyBound } } : l));
+                                                 }}
+                                                 className={`p-1 transition-colors rounded hover:bg-neutral-800 ${isGloballyBound ? 'text-red-500' : 'opacity-20 hover:text-white'}`}
+                                                 title="Bind to Layer Tracking Env"
+                                               >
+                                                 L
+                                               </button>
+                                               <button 
+                                                 onClick={() => {
+                                                   if (!isMapped) {
+                                                      const targetM: EffectMapping = { 
+                                                        ...INITIAL_MAPPINGS[0], 
+                                                        id: p.name, 
+                                                        name: p.name, 
+                                                        active: true, 
+                                                        triggerBehavior: 'momentary',
+                                                        noteSettings: { ...DEFAULT_NOTE_SETTINGS },
+                                                        channels: Array.from({length: 16}, (_, i) => i)
+                                                      };
+                                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: [...(l.generativeMappings || []), targetM] } : l));
+                                                   }
+                                                   setExpandedParamTrigger(prev => prev === p.name ? null : p.name);
+                                                 }}
+                                                 className={`p-1 transition-colors rounded hover:bg-neutral-800 ${isMapped ? 'text-blue-400' : 'opacity-20 hover:text-white'}`}
+                                                 title="Parameter Trigger"
+                                               >
+                                                 <Zap size={10} />
+                                               </button>
+                                             </div>
+                                           </div>
+                                           <div className="flex items-center gap-2">
+                                             <div className="flex-1">
+                                               <Knob 
+                                                 label="" 
+                                                 min={p.min} max={p.max}
+                                                 value={layerTarget.generativeSettings?.[p.name] ?? p.default} 
+                                                 type="continuous"
+                                                 id={p.name}
+                                                 onChange={(val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeSettings: { ...(l.generativeSettings || {}), [p.name]: val } } : l))}
+                                                 onContextMenuAction={(action) => {
+                                                   if (action === 'learn') {
+                                                     setCcLearnTarget({layerId: layerTarget.id, paramId: `generative-${p.name}`, min: p.min, max: p.max});
+                                                   } else if (action === 'clear') {
+                                                     setLayers(prev => prev.map(l => {
+                                                       if (l.id !== layerTarget.id || !l.ccBindings) return l;
+                                                       const newBindings = { ...l.ccBindings };
+                                                       delete newBindings[`generative-${p.name}`];
+                                                       return { ...l, ccBindings: newBindings };
+                                                     }));
+                                                     if (ccLearnTarget?.paramId === `generative-${p.name}`) setCcLearnTarget(null);
+                                                   }
+                                                 }}
+                                                 ccLabel={layerTarget.ccBindings?.[`generative-${p.name}`] ? `CC ${layerTarget.ccBindings[`generative-${p.name}`].cc}` : undefined}
+                                                 isLearning={ccLearnTarget?.layerId === layerTarget.id && ccLearnTarget?.paramId === `generative-${p.name}`}
+                                               />
+                                             </div>
+                                             {(isMapped || isGloballyBound) && (
+                                               <div className="flex flex-col items-center">
+                                                 <input 
+                                                   type="range" min="-1" max="1" step="0.01" 
+                                                   value={layerTarget.generativeTriggerAmount?.[p.name] || 0.1} 
+                                                   onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerAmount: { ...(l.generativeTriggerAmount || {}), [p.name]: parseFloat(e.target.value) } } : l))}
+                                                   className="w-10 accent-red-600"
+                                                 />
+                                               </div>
+                                             )}
+                                           </div>
+                                        </div>
+                                        
+                                        {/* Inline Parameter Trigger Panel */}
+                                        {expandedParamTrigger === p.name && (() => {
+                                           const mapping = layerTarget.generativeMappings?.find(m => m.id === p.name);
+                                           if (!mapping) return null;
+                                           return (
+                                             <div className="col-span-2 bg-black/40 border border-white/10 rounded overflow-hidden mt-1 mb-2 animate-in fade-in slide-in-from-top-1 shadow-xl">
+                                                <div className="flex justify-between items-center bg-black/60 p-2 border-b border-white/5">
+                                                  <h3 className="text-[10px] font-bold uppercase tracking-widest text-red-400 pl-1">{p.name.replace(/([A-Z])/g, ' $1').trim()} — Parameter Trigger</h3>
+                                                  <div className="flex items-center gap-2">
+                                                    <button onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.filter(m => m.id !== p.name) } : l))} className="p-1 opacity-40 hover:opacity-100 hover:text-red-400 transition-opacity" title="Remove Trigger">
+                                                      <Trash2 size={12} />
+                                                    </button>
+                                                    <button onClick={() => setExpandedParamTrigger(null)} className="p-1 opacity-40 hover:opacity-100 hover:text-white transition-opacity" title="Close Panel">
+                                                      <X size={12} />
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                                
+                                                <div className="p-3 space-y-4">
+                                                  {/* Source Selector */}
+                                                  <div className="flex bg-black/40 border border-white/5 rounded overflow-hidden">
+                                                     <button 
+                                                       onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, active: true, manualActive: false, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false }, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false } } : m) } : l))}
+                                                       className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${mapping.active && !mapping.audioMapping?.enabled && !mapping.rhythmMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                                                     >MIDI</button>
+                                                     <button 
+                                                       onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, active: false, manualActive: false, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: true }, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false } } : m) } : l))}
+                                                       className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${mapping.audioMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                                                     >AUDIO</button>
+                                                     <button 
+                                                       onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, active: false, manualActive: false, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false }, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: true } } : m) } : l))}
+                                                       className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${mapping.rhythmMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                                                     >RHYTHM</button>
+                                                  </div>
+                                                  
+                                                  {/* Content */}
+                                                  {mapping.active && !mapping.audioMapping?.enabled && !mapping.rhythmMapping?.enabled && (
+                                                     <div className="grid grid-cols-2 gap-4">
+                                                       <div className="grid grid-cols-2 gap-2">
+                                                          <div className="space-y-1">
+                                                             <label className="text-[8px] uppercase tracking-widest opacity-40">Start Note</label>
+                                                             <button onClick={() => setMidiLearnTarget({layerId: layerTarget.id, effectId: mapping.id, field: 'noteStart'})} className={`w-full py-1 text-[9px] font-mono border rounded ${midiLearnTarget?.effectId === mapping.id && midiLearnTarget.field === 'noteStart' ? 'border-red-500 text-red-500 bg-red-500/10' : 'border-white/10 opacity-60 bg-black/40 hover:bg-white/5 transition-colors'}`}>{mapping.noteStart}</button>
+                                                          </div>
+                                                          <div className="space-y-1">
+                                                             <label className="text-[8px] uppercase tracking-widest opacity-40">End Note</label>
+                                                             <button onClick={() => setMidiLearnTarget({layerId: layerTarget.id, effectId: mapping.id, field: 'noteEnd'})} className={`w-full py-1 text-[9px] font-mono border rounded ${midiLearnTarget?.effectId === mapping.id && midiLearnTarget.field === 'noteEnd' ? 'border-red-500 text-red-500 bg-red-500/10' : 'border-white/10 opacity-60 bg-black/40 hover:bg-white/5 transition-colors'}`}>{mapping.noteEnd}</button>
+                                                          </div>
+                                                       </div>
+                                                       <div className="space-y-1">
+                                                         <label className="text-[8px] uppercase tracking-widest opacity-40">Behavior</label>
+                                                         <select value={mapping.triggerBehavior} onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, triggerBehavior: e.target.value as any } : m) } : l))} className="w-full bg-black/40 border border-white/10 rounded p-1 text-[9px] uppercase tracking-widest outline-none">
+                                                           <option value="momentary">Momentary</option>
+                                                           <option value="toggle">Toggle</option>
+                                                         </select>
+                                                       </div>
+                                                     </div>
+                                                  )}
+                                                  
+                                                  {mapping.audioMapping?.enabled && (
+                                                     <div className="space-y-3">
+                                                        <div className="space-y-1">
+                                                          <label className="text-[8px] uppercase tracking-widest opacity-40">Stem ID</label>
+                                                          <select value={mapping.audioMapping.stemId || ''} onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), stemId: e.target.value } } : m) } : l))} className="w-full bg-black/40 border border-white/10 rounded p-1 text-[9px] uppercase tracking-widest outline-none">
+                                                             <option value="">Master Mix</option>
+                                                             <option value="kick">Kick</option>
+                                                             <option value="snare">Snare</option>
+                                                             <option value="hihat">Hi-Hat</option>
+                                                             <option value="bass">Bass</option>
+                                                             <option value="synth">Synth</option>
+                                                          </select>
+                                                        </div>
+                                                        <div className="grid grid-cols-2 gap-4">
+                                                          <div className="space-y-2 flex flex-col justify-end">
+                                                            <label className="text-[8px] uppercase tracking-widest opacity-40">Threshold: {mapping.audioMapping.threshold?.toFixed(2) || '0.50'}</label>
+                                                            <input type="range" min="0" max="1" step="0.01" value={mapping.audioMapping.threshold || 0.5} onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), threshold: parseFloat(e.target.value) } } : m) } : l))} className="w-full h-1 accent-red-600" />
+                                                          </div>
+                                                          <div className="space-y-2 flex flex-col justify-end">
+                                                            <label className="text-[8px] uppercase tracking-widest opacity-40">Smooth: {mapping.audioMapping.smoothing?.toFixed(2) || '0.50'}</label>
+                                                            <input type="range" min="0" max="0.99" step="0.01" value={mapping.audioMapping.smoothing || 0.5} onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), smoothing: parseFloat(e.target.value) } } : m) } : l))} className="w-full h-1 accent-red-600" />
+                                                          </div>
+                                                        </div>
+                                                     </div>
+                                                  )}
+                                                  
+                                                  {mapping.rhythmMapping?.enabled && (
+                                                     <div className="space-y-3">
+                                                        <div className="space-y-1">
+                                                          <label className="text-[8px] uppercase tracking-widest opacity-40">Pattern</label>
+                                                          <select value={mapping.rhythmMapping.pattern} onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), pattern: e.target.value } } : m) } : l))} className="w-full bg-black/40 border border-white/10 rounded p-1 text-[9px] uppercase tracking-widest outline-none">
+                                                            <option value="4-on-the-Floor">4-on-the-Floor</option>
+                                                            <option value="8-beat">8-beat</option>
+                                                            <option value="16-beat">16-beat</option>
+                                                            <option value="Off-beat">Off-beat</option>
+                                                            <option value="Clave">Clave</option>
+                                                            <option value="Custom">Custom</option>
+                                                          </select>
+                                                        </div>
+                                                     </div>
+                                                  )}
+                                                  
+                                                </div>
+                                             </div>
+                                           );
+                                        })()}
+                                       </React.Fragment>
                                       );
                                     })}
                                   </div>
@@ -4078,13 +4636,128 @@ export default function App() {
                                 <label className="text-[10px] uppercase tracking-widest opacity-40">Trigger Mode</label>
                                 <select 
                                   value={layerTarget.videoTriggerMode || 'continuous'}
-                                  onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, videoTriggerMode: e.target.value as 'restart' | 'continuous' } : l))}
+                                  onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, videoTriggerMode: e.target.value as 'restart' | 'continuous' | 'advance' | 'rewind' | 'frame-accumulator' } : l))}
                                   className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[9px] uppercase tracking-widest outline-none"
                                 >
                                   <option value="continuous">Continuous Playback</option>
                                   <option value="restart">Restart on Trigger</option>
+                                  <option value="advance">Frame Advance</option>
+                                  <option value="rewind">Rewind on Release</option>
+                                  <option value="frame-accumulator">Frame Accumulator</option>
                                 </select>
                               </div>
+
+                              {/* Frame Advance Settings */}
+                              {layerTarget.videoTriggerMode === 'advance' && (
+                                <motion.div initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} className="space-y-3 p-3 bg-black/30 border border-white/5 rounded">
+                                  <label className="text-[8px] uppercase tracking-widest opacity-60 font-bold text-red-400">Advance Settings</label>
+                                  
+                                  <div className="space-y-2">
+                                    <label className="text-[8px] uppercase opacity-30">Unit</label>
+                                    <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+                                      <button 
+                                        onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, videoAdvanceUnit: 'frames' } : l))}
+                                        className={`flex-1 py-1.5 text-[8px] uppercase tracking-widest transition-colors ${(layerTarget.videoAdvanceUnit || 'frames') === 'frames' ? 'bg-red-600 text-white' : 'text-white/40'}`}
+                                      >
+                                        Frames
+                                      </button>
+                                      <button 
+                                        onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, videoAdvanceUnit: 'seconds' } : l))}
+                                        className={`flex-1 py-1.5 text-[8px] uppercase tracking-widest transition-colors ${layerTarget.videoAdvanceUnit === 'seconds' ? 'bg-red-600 text-white' : 'text-white/40'}`}
+                                      >
+                                        Seconds
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  <div className="space-y-2">
+                                    <div className="flex justify-between">
+                                      <label className="text-[8px] uppercase opacity-30">Amount</label>
+                                      <span className="text-[9px] font-mono opacity-60">
+                                        {layerTarget.videoAdvanceAmount || 1} {(layerTarget.videoAdvanceUnit || 'frames') === 'frames' ? 'frame(s)' : 'sec'}
+                                      </span>
+                                    </div>
+                                    <input 
+                                      type="number" 
+                                      min={((layerTarget.videoAdvanceUnit || 'frames') === 'frames') ? 1 : 0.01} 
+                                      max={((layerTarget.videoAdvanceUnit || 'frames') === 'frames') ? 120 : 10} 
+                                      step={((layerTarget.videoAdvanceUnit || 'frames') === 'frames') ? 1 : 0.01}
+                                      value={layerTarget.videoAdvanceAmount || 1}
+                                      onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, videoAdvanceAmount: parseFloat(e.target.value) || 1 } : l))}
+                                      className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
+                                    />
+                                  </div>
+
+                                  {(layerTarget.videoAdvanceUnit || 'frames') === 'frames' && (
+                                    <div className="space-y-2">
+                                      <div className="flex justify-between">
+                                        <label className="text-[8px] uppercase opacity-30">Video Frame Rate</label>
+                                        <span className="text-[9px] font-mono opacity-60">{layerTarget.videoFrameRate || 30} fps</span>
+                                      </div>
+                                      <input 
+                                        type="number" min="1" max="120" step="1"
+                                        value={layerTarget.videoFrameRate || 30}
+                                        onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, videoFrameRate: parseInt(e.target.value) || 30 } : l))}
+                                        className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
+                                      />
+                                    </div>
+                                  )}
+                                </motion.div>
+                              )}
+
+                                {/* Rewind on Release Settings */}
+                              {layerTarget.videoTriggerMode === 'rewind' && (
+                                <motion.div initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} className="space-y-3 p-3 bg-black/30 border border-white/5 rounded">
+                                  <label className="text-[8px] uppercase tracking-widest opacity-60 font-bold text-red-400">Rewind Settings</label>
+                                  <div className="space-y-2">
+                                    <div className="flex justify-between">
+                                      <label className="text-[8px] uppercase opacity-30">Rewind Speed</label>
+                                      <span className="text-[9px] font-mono opacity-60">{(layerTarget.videoRewindSpeed || 1.0).toFixed(1)}x</span>
+                                    </div>
+                                    <input 
+                                      type="range" min="0.5" max="5" step="0.1"
+                                      value={layerTarget.videoRewindSpeed || 1.0}
+                                      onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, videoRewindSpeed: parseFloat(e.target.value) } : l))}
+                                      className="w-full accent-red-600 h-1"
+                                    />
+                                  </div>
+                                </motion.div>
+                              )}
+
+                              {/* Frame Accumulator Settings */}
+                              {layerTarget.videoTriggerMode === 'frame-accumulator' && (
+                                <motion.div initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} className="space-y-3 p-3 bg-black/30 border border-white/5 rounded">
+                                  <label className="text-[8px] uppercase tracking-widest opacity-60 font-bold text-red-400">Frame Accumulator Settings</label>
+                                  
+                                  <div className="space-y-2">
+                                    <div className="flex justify-between">
+                                      <label className="text-[8px] uppercase opacity-30">Difference Threshold</label>
+                                      <span className="text-[9px] font-mono opacity-60">{(layerTarget.accumulateThreshold ?? 30).toFixed(0)}</span>
+                                    </div>
+                                    <input 
+                                      type="range" min="1" max="100" step="1"
+                                      value={layerTarget.accumulateThreshold ?? 30}
+                                      onChange={(e) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, accumulateThreshold: parseFloat(e.target.value) } : l))}
+                                      className="w-full accent-red-600 h-1"
+                                    />
+                                  </div>
+
+                                  <div className="pt-2">
+                                    <button 
+                                      onClick={() => {
+                                        if (stutterStateRef.current[layerTarget.id]) {
+                                          stutterStateRef.current[layerTarget.id].clearBuffer = true;
+                                        } else {
+                                          stutterStateRef.current[layerTarget.id] = { triggerStamp: false, clearBuffer: true, wasActive: false };
+                                        }
+                                      }}
+                                      className="w-full py-1.5 bg-red-600/20 hover:bg-red-600 border border-red-600/50 rounded text-[9px] uppercase tracking-widest text-red-100 hover:text-white transition-colors"
+                                    >
+                                      Clear Accumulated Frames
+                                    </button>
+                                  </div>
+                                </motion.div>
+                              )}
                             </div>
                           )}
 
@@ -4159,7 +4832,7 @@ export default function App() {
                             </button>
                             <button 
                               onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, midiMode: true, rhythmMapping: { ...(l.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false }, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: true } } : l))}
-                              className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layerTarget.midiMode && mapping.audioMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                              className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layerTarget.midiMode && layerTarget.audioMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
                             >
                               Audio
                             </button>
@@ -4229,8 +4902,8 @@ export default function App() {
                                 <div className="space-y-1">
                                   <label className="text-[8px] uppercase tracking-widest opacity-40 block mb-1">Target Stem</label>
                                   <select 
-                                    value={mapping.audioMapping?.stemId || ''}
-                                    onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), stemId: e.target.value } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), stemId: e.target.value } } : m) } : l)))}
+                                    value={layerTarget.audioMapping?.stemId || ''}
+                                    onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), stemId: e.target.value } } : l))}
                                     className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
                                   >
                                     <option value="">Master Out</option>
@@ -4240,7 +4913,7 @@ export default function App() {
                                 <div className="space-y-1">
                                   <label className="text-[8px] uppercase tracking-widest opacity-40 block mb-1">Tracking Mode</label>
                                   <select 
-                                    value={mapping.audioMapping?.mode || 'fast'}
+                                    value={layerTarget.audioMapping?.mode || 'fast'}
                                     onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...l.audioMapping!, mode: e.target.value as 'fast'|'smooth' } } : l))}
                                     className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
                                   >
@@ -4251,31 +4924,31 @@ export default function App() {
                                </div>
 
                                <AudioSpectrogram 
-                                  stemId={mapping.audioMapping?.stemId}
-                                  freqRange={mapping.audioMapping?.freqRange || [20, 20000]}
-                                  threshold={mapping.audioMapping?.threshold || 0.5}
-                                  onRangeChange={(r) => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), freqRange: r } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), freqRange: r } } : m) } : l)))}
-                                  onThresholdChange={(t) => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), threshold: t } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), threshold: t } } : m) } : l)))}
+                                  stemId={layerTarget.audioMapping?.stemId}
+                                  freqRange={layerTarget.audioMapping?.freqRange || [20, 20000]}
+                                  threshold={layerTarget.audioMapping?.threshold || 0.5}
+                                  onRangeChange={(r) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), freqRange: r } } : l))}
+                                  onThresholdChange={(t) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), threshold: t } } : l))}
                                />
 
                                <div className="grid grid-cols-3 gap-2">
                                 <div className="space-y-1">
-                                  <label className="text-[8px] uppercase tracking-widest opacity-40 block">Smooth: {mapping.audioMapping?.smoothing?.toFixed(2) || '0.50'}</label>
-                                  <input type="range" min="0" max="0.99" step="0.01" value={mapping.audioMapping?.smoothing || 0.5} onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), smoothing: parseFloat(e.target.value) } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), smoothing: parseFloat(e.target.value) } } : m) } : l)))} className="w-full h-1"/>
+                                  <label className="text-[8px] uppercase tracking-widest opacity-40 block">Smooth: {layerTarget.audioMapping?.smoothing?.toFixed(2) || '0.50'}</label>
+                                  <input type="range" min="0" max="0.99" step="0.01" value={layerTarget.audioMapping?.smoothing || 0.5} onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), smoothing: parseFloat(e.target.value) } } : l))} className="w-full h-1"/>
                                 </div>
                                 <div className="space-y-1">
-                                  <label className="text-[8px] uppercase tracking-widest opacity-40 block">Attack (ms): {layerTarget.audioMapping.attack || 10}</label>
-                                  <input type="range" min="1" max="100" step="1" value={mapping.audioMapping?.attack || 10} onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), attack: parseInt(e.target.value) } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), attack: parseInt(e.target.value) } } : m) } : l)))} className="w-full h-1"/>
+                                  <label className="text-[8px] uppercase tracking-widest opacity-40 block">Attack (ms): {layerTarget.audioMapping?.attack || 10}</label>
+                                  <input type="range" min="1" max="100" step="1" value={layerTarget.audioMapping?.attack || 10} onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), attack: parseInt(e.target.value) } } : l))} className="w-full h-1"/>
                                 </div>
                                 <div className="space-y-1">
-                                  <label className="text-[8px] uppercase tracking-widest opacity-40 block">Release (ms): {layerTarget.audioMapping.release || 100}</label>
-                                  <input type="range" min="10" max="1000" step="10" value={mapping.audioMapping?.release || 100} onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), release: parseInt(e.target.value) } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), release: parseInt(e.target.value) } } : m) } : l)))} className="w-full h-1"/>
+                                  <label className="text-[8px] uppercase tracking-widest opacity-40 block">Release (ms): {layerTarget.audioMapping?.release || 100}</label>
+                                  <input type="range" min="10" max="1000" step="10" value={layerTarget.audioMapping?.release || 100} onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), release: parseInt(e.target.value) } } : l))} className="w-full h-1"/>
                                 </div>
                                </div>
 
                                <NoteSettingsConfigUI
-                                  ns={mapping.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS}
-                                  onUpdateNote={(field, val) => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), noteSettings: { ...(mapping.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), noteSettings: { ...(mapping.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } } } : m) } : l)))}
+                                  ns={layerTarget.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS}
+                                  onUpdateNote={(field, val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), noteSettings: { ...(l.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } } } : l))}
                                />
                             </div>
                           ) : (
