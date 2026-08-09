@@ -54,6 +54,16 @@ export interface AudioMapping {
   target: 'trigger' | 'opacity';
 }
 
+interface TriggerState {
+  isDown: boolean;
+  velocity: number;
+  phase: 'idle' | 'attack' | 'decay' | 'sustain' | 'release';
+  currentEnvValue: number;
+  lastUpdate: number;
+  activeUntil: number | null;
+  useFixedDuration: boolean;
+}
+
 interface LayerTriggerMapping {
   channels: number[];
   noteStart: number;
@@ -141,6 +151,10 @@ interface NoteSettings {
   bpm: number;
   useFixedVelocity: boolean;
   fixedVelocity: number;
+  attack: number;
+  decay: number;
+  sustain: number;
+  release: number;
 }
 
 interface EffectMapping {
@@ -328,7 +342,11 @@ const DEFAULT_NOTE_SETTINGS: NoteSettings = {
   subdivision: '1/4',
   bpm: 120,
   useFixedVelocity: false,
-  fixedVelocity: 100,
+  fixedVelocity: 127,
+  attack: 0,
+  decay: 100,
+  sustain: 1.0,
+  release: 50,
 };
 
 const DEFAULT_TRIGGER_TYPE: 'momentary' | 'toggle' = 'momentary';
@@ -698,45 +716,96 @@ function HelpIcon({ text }: { text: string }) {
 }
 
 function NoteSettingsConfigUI({ ns, onUpdateNote }: { ns: NoteSettings, onUpdateNote: (field: string, val: any) => void }) {
+  const ToggleSwitch = ({ active }: { active: boolean }) => (
+    <div className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors ${active ? 'bg-red-600' : 'bg-white/20'}`}>
+      <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform shadow-sm ${active ? 'translate-x-4' : 'translate-x-1'}`} />
+    </div>
+  );
+
   return (
-    <div className="space-y-4 pt-6 border-t border-white/5">
-        <label className="text-[10px] uppercase tracking-widest opacity-40">Notes Settings</label>
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <label className="text-[8px] uppercase opacity-30">Fixed Duration</label>
-            <button onClick={() => onUpdateNote('useFixedDuration', !ns.useFixedDuration)} className={`p-1 rounded ${ns.useFixedDuration ? 'text-red-500' : 'opacity-20'}`}>
-              <Power size={12} />
-            </button>
+    <div className="space-y-3 pt-6 border-t border-white/5">
+        <label className="text-[10px] uppercase tracking-widest font-bold opacity-70">Trigger Configuration</label>
+        
+        {/* Duration Card */}
+        <div className={`p-3 rounded-md border transition-all ${ns.useFixedDuration ? 'bg-white/10 border-white/20' : 'bg-black/40 border-white/5'}`}>
+          <div className="flex items-center justify-between cursor-pointer select-none" onClick={() => onUpdateNote('useFixedDuration', !ns.useFixedDuration)}>
+            <div className="flex flex-col">
+              <span className="text-[10px] font-bold uppercase tracking-wider">Fixed Duration</span>
+              <span className="text-[8px] opacity-40">Play for exact musical length</span>
+            </div>
+            <ToggleSwitch active={ns.useFixedDuration} />
           </div>
+          <AnimatePresence>
           {ns.useFixedDuration && (
-            <motion.div initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} className="space-y-3">
-              <div className="grid grid-cols-5 gap-1">
-                {['1', '1/2', '1/4', '1/8', '1/16'].map(sub => (
-                  <button key={sub} onClick={() => onUpdateNote('subdivision', sub)} className={`h-6 rounded text-[8px] font-mono transition-all border ${ns.subdivision === sub ? 'bg-red-600 border-red-500 text-white' : 'bg-black/40 border-white/5 text-white/40'}`}>
-                    {sub}
-                  </button>
-                ))}
-              </div>
-              <div className="flex items-center gap-2">
-                <label className="text-[8px] uppercase opacity-30">BPM</label>
-                <input type="number" min="20" max="300" value={ns.bpm} onChange={(e) => onUpdateNote('bpm', parseInt(e.target.value))} className="flex-1 bg-black/40 border border-white/10 rounded p-1 text-[10px] outline-none" />
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+              <div className="pt-3 mt-3 border-t border-white/10 space-y-3">
+                <div className="grid grid-cols-5 gap-1">
+                  {['1', '1/2', '1/4', '1/8', '1/16'].map(sub => (
+                    <button key={sub} onClick={() => onUpdateNote('subdivision', sub)} className={`h-6 rounded text-[8px] font-mono transition-all border ${ns.subdivision === sub ? 'bg-red-600 border-red-500 text-white' : 'bg-black/40 border-white/5 text-white/40'}`}>
+                      {sub}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-[8px] uppercase opacity-30">BPM</label>
+                  <input type="number" min="20" max="300" value={ns.bpm} onChange={(e) => onUpdateNote('bpm', parseInt(e.target.value))} className="flex-1 bg-black/40 border border-white/10 rounded p-1 text-[10px] outline-none" />
+                </div>
               </div>
             </motion.div>
           )}
+          </AnimatePresence>
         </div>
-        <div className="space-y-3 pt-2">
-          <div className="flex items-center justify-between">
-            <label className="text-[8px] uppercase opacity-30">Fixed Velocity</label>
-            <button onClick={() => onUpdateNote('useFixedVelocity', !ns.useFixedVelocity)} className={`p-1 rounded ${ns.useFixedVelocity ? 'text-red-500' : 'opacity-20'}`}>
-              <Power size={12} />
-            </button>
+
+        {/* Velocity Card */}
+        <div className={`p-3 rounded-md border transition-all ${ns.useFixedVelocity ? 'bg-white/10 border-white/20' : 'bg-black/40 border-white/5'}`}>
+          <div className="flex items-center justify-between cursor-pointer select-none" onClick={() => onUpdateNote('useFixedVelocity', !ns.useFixedVelocity)}>
+            <div className="flex flex-col">
+              <span className="text-[10px] font-bold uppercase tracking-wider">Fixed Velocity</span>
+              <span className="text-[8px] opacity-40">Ignore input sensitivity</span>
+            </div>
+            <ToggleSwitch active={ns.useFixedVelocity} />
           </div>
+          <AnimatePresence>
           {ns.useFixedVelocity && (
-            <motion.div initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} className="flex items-center gap-2">
-              <input type="range" min="0" max="127" value={ns.fixedVelocity} onChange={(e) => onUpdateNote('fixedVelocity', parseInt(e.target.value))} className="flex-1 accent-red-600" />
-              <span className="text-[10px] font-mono w-6">{ns.fixedVelocity}</span>
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden">
+              <div className="pt-3 mt-3 border-t border-white/10 flex items-center gap-2">
+                <input type="range" min="0" max="127" value={ns.fixedVelocity} onChange={(e) => onUpdateNote('fixedVelocity', parseInt(e.target.value))} className="flex-1 accent-red-600" />
+                <span className="text-[10px] font-mono w-6 text-right">{ns.fixedVelocity}</span>
+              </div>
             </motion.div>
           )}
+          </AnimatePresence>
+        </div>
+
+        {/* ADSR Card */}
+        <div className="p-3 rounded-md border bg-white/5 border-white/10">
+          <div className="flex flex-col mb-3">
+            <span className="text-[10px] font-bold uppercase tracking-wider">Envelope (ADSR)</span>
+            <span className="text-[8px] opacity-40">Control attack, decay, sustain, release</span>
+          </div>
+          
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 group">
+              <span className="text-[8px] w-12 opacity-50 uppercase font-bold group-hover:text-red-400 transition-colors">Attack</span>
+              <input type="range" min="0" max="2000" value={ns.attack} onChange={(e) => onUpdateNote('attack', parseInt(e.target.value))} className="flex-1 accent-red-600" />
+              <span className="text-[8px] font-mono w-8 text-right bg-black/40 px-1 py-0.5 rounded">{ns.attack}</span>
+            </div>
+            <div className="flex items-center gap-2 group">
+              <span className="text-[8px] w-12 opacity-50 uppercase font-bold group-hover:text-red-400 transition-colors">Decay</span>
+              <input type="range" min="0" max="2000" value={ns.decay} onChange={(e) => onUpdateNote('decay', parseInt(e.target.value))} className="flex-1 accent-red-600" />
+              <span className="text-[8px] font-mono w-8 text-right bg-black/40 px-1 py-0.5 rounded">{ns.decay}</span>
+            </div>
+            <div className="flex items-center gap-2 group">
+              <span className="text-[8px] w-12 opacity-50 uppercase font-bold group-hover:text-red-400 transition-colors">Sustain</span>
+              <input type="range" min="0" max="100" value={Math.round(ns.sustain * 100)} onChange={(e) => onUpdateNote('sustain', parseInt(e.target.value) / 100)} className="flex-1 accent-red-600" />
+              <span className="text-[8px] font-mono w-8 text-right bg-black/40 px-1 py-0.5 rounded">{Math.round(ns.sustain * 100)}%</span>
+            </div>
+            <div className="flex items-center gap-2 group">
+              <span className="text-[8px] w-12 opacity-50 uppercase font-bold group-hover:text-red-400 transition-colors">Release</span>
+              <input type="range" min="0" max="5000" value={ns.release} onChange={(e) => onUpdateNote('release', parseInt(e.target.value))} className="flex-1 accent-red-600" />
+              <span className="text-[8px] font-mono w-8 text-right bg-black/40 px-1 py-0.5 rounded">{ns.release}</span>
+            </div>
+          </div>
         </div>
       </div>
   );
@@ -973,6 +1042,19 @@ export default function App() {
   const asciiAtlasRef = useRef<HTMLCanvasElement | null>(null);
   const asciiDownsampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const generativesRef = useRef<GenerativeDefinition[]>(parseGeneratives());
+  const triggerStatesRef = useRef<Record<string, {
+    isDown: boolean;
+    velocity: number;
+    phase: 'idle' | 'attack' | 'decay' | 'sustain' | 'release';
+    currentEnvValue: number;
+    lastUpdate: number;
+    activeUntil: number | null;
+    useFixedDuration: boolean;
+  }>>({});
+  const layersRef = useRef<Layer[]>([]);
+  useEffect(() => {
+    layersRef.current = layers;
+  }, [layers]);
   const audioTrackersRef = useRef<Record<string, { state: 'idle' | 'attack' | 'release', value: number, lastUpdate: number, lastTriggerTime: number }>>({});
   const parameterEasingRef = useRef<Record<string, number>>({});
   const wavesCanvasRef = useRef<Record<string, HTMLCanvasElement>>({}); 
@@ -1204,12 +1286,17 @@ export default function App() {
       }
 
       // 2. Check Layer Triggers
-      setLayers(prev => prev.map(layer => {
-        if (!layer.triggerMapping) return layer;
+      layersRef.current.forEach(layer => {
+        if (!layer.triggerMapping) return;
         const tr = layer.triggerMapping;
-          if (tr.channels.includes(channel) && note >= tr.noteStart && note <= tr.noteEnd) {
-          let activeUntil = null;
+        if (tr.channels.includes(channel) && note >= tr.noteStart && note <= tr.noteEnd) {
           const finalVelocity = tr.noteSettings.useFixedVelocity ? tr.noteSettings.fixedVelocity : velocity;
+          const triggerKey = `layer-${layer.id}`;
+          
+          if (!triggerStatesRef.current[triggerKey]) {
+            triggerStatesRef.current[triggerKey] = { isDown: false, velocity: 0, phase: 'idle', currentEnvValue: 0, lastUpdate: Date.now(), activeUntil: null, useFixedDuration: false };
+          }
+          const state = triggerStatesRef.current[triggerKey];
 
           // --- Frame Advance Mode ---
           if (layer.videoTriggerMode === 'advance' && layer.type === 'video' && isDown) {
@@ -1222,114 +1309,114 @@ export default function App() {
               const start = layer.videoStart || 0;
               const end = layer.videoEnd || vid.duration || 0;
               let newTime = vid.currentTime + delta;
-              // Loop back to start when reaching end
               if (newTime >= end) newTime = start + (newTime - end);
               vid.currentTime = Math.max(start, Math.min(end, newTime));
               vid.pause();
             }
-            return { ...layer, isActive: true, triggerMapping: { ...tr, velocity: finalVelocity } };
           }
 
           // --- Rewind on Release Mode ---
           if (layer.videoTriggerMode === 'rewind' && layer.type === 'video') {
             const vid = videoRefs.current[layer.id];
             if (isDown) {
-              // Note ON: stop rewinding, play forward, become visible
               videoRewindStateRef.current[layer.id] = { rewinding: false, visible: true };
               if (vid) {
-                // Instantly advance by ~1 frame to provide immediate visual feedback 
-                // while the async play() method spins up the decoder
                 const end = layer.videoEnd || vid.duration || 0;
                 vid.currentTime = Math.min(vid.currentTime + 0.05, end);
                 vid.play().catch(() => {});
               }
-              return { ...layer, isActive: true, triggerMapping: { ...tr, velocity: finalVelocity } };
             } else {
-              // Note OFF: start rewinding
               videoRewindStateRef.current[layer.id] = { rewinding: true, visible: true };
               if (vid) vid.pause();
-              return { ...layer, isActive: false, triggerMapping: { ...tr, velocity: 0 } };
             }
           }
           
           if (tr.triggerBehavior === 'toggle') {
             if (isDown) {
-              return { ...layer, isActive: !layer.isActive, triggerMapping: { ...tr, velocity: layer.isActive ? 0 : finalVelocity } };
+              const newState = state.phase === 'idle' || state.phase === 'release';
+              state.isDown = newState;
+              state.velocity = newState ? finalVelocity : 0;
+              state.phase = newState ? 'attack' : 'release';
             }
-            return layer;
+          } else {
+            if (isDown) {
+              state.isDown = true;
+              state.velocity = finalVelocity;
+              state.phase = 'attack';
+              if (layer.videoTriggerMode === 'restart' && layer.type === 'video' && videoRefs.current[layer.id]) {
+                videoRefs.current[layer.id]!.currentTime = layer.videoStart || 0;
+              }
+            } else {
+              state.isDown = false;
+              state.phase = 'release';
+            }
           }
 
-          if (tr.noteSettings.useFixedDuration) {
-            const bpm = tr.noteSettings.bpm;
-            const subdivision = tr.noteSettings.subdivision;
-            const beatDuration = 60000 / bpm;
+          if (tr.noteSettings.useFixedDuration && isDown) {
+            const beatDuration = 60000 / tr.noteSettings.bpm;
             let duration = beatDuration;
-            if (subdivision === '1/2') duration = beatDuration * 2;
-            if (subdivision === '1') duration = beatDuration * 4;
-            if (subdivision === '1/4') duration = beatDuration;
-            if (subdivision === '1/8') duration = beatDuration / 2;
-            if (subdivision === '1/16') duration = beatDuration / 4;
-            
-            activeUntil = Date.now() + duration;
-          }
-          if (!tr.noteSettings.useFixedDuration && !isDown) {
-            return { ...layer, isActive: false, triggerMapping: { ...tr, activeUntil: null, velocity: 0 } };
-          }
-          if (isDown) {
-            if (layer.videoTriggerMode === 'restart' && layer.type === 'video' && videoRefs.current[layer.id]) {
-              videoRefs.current[layer.id]!.currentTime = layer.videoStart || 0;
-            }
-            return { ...layer, isActive: true, triggerMapping: { ...tr, activeUntil, velocity: finalVelocity } };
-          }
-          if (!isDown && tr.noteSettings.useFixedDuration) {
-            return layer;
+            const sub = tr.noteSettings.subdivision;
+            if (sub === '1/2') duration = beatDuration * 2;
+            if (sub === '1') duration = beatDuration * 4;
+            if (sub === '1/8') duration = beatDuration / 2;
+            if (sub === '1/16') duration = beatDuration / 4;
+            state.useFixedDuration = true;
+            state.activeUntil = Date.now() + duration;
+          } else {
+            state.useFixedDuration = false;
           }
         }
-        return layer;
-      }));
+      });
 
       // 3. Check Effect & Generative Mappings
-      setLayers(prevLayers => prevLayers.map(layer => {
-        let changed = false;
-        
-        const processMapping = (m: any) => {
+      layersRef.current.forEach(layer => {
+        const processMapping = (m: any, type: string) => {
           if (m.channels.includes(channel) && note >= m.noteStart && note <= m.noteEnd) {
-            changed = true;
+            const finalVelocity = m.noteSettings.useFixedVelocity ? m.noteSettings.fixedVelocity : velocity;
+            const triggerKey = `${type}-${layer.id}-${m.id}`;
+            
+            if (!triggerStatesRef.current[triggerKey]) {
+              triggerStatesRef.current[triggerKey] = { isDown: false, velocity: 0, phase: 'idle', currentEnvValue: 0, lastUpdate: Date.now(), activeUntil: null, useFixedDuration: false };
+            }
+            const state = triggerStatesRef.current[triggerKey];
+
             if (isDown) {
-              const finalVelocity = m.noteSettings.useFixedVelocity ? m.noteSettings.fixedVelocity : velocity;
-              
               if (m.triggerBehavior === 'toggle') {
-                return { ...m, active: !m.active, velocity: m.active ? 0 : finalVelocity };
+                const newState = state.phase === 'idle' || state.phase === 'release';
+                state.isDown = newState;
+                state.velocity = newState ? finalVelocity : 0;
+                state.phase = newState ? 'attack' : 'release';
+              } else {
+                state.isDown = true;
+                state.velocity = finalVelocity;
+                state.phase = 'attack';
               }
 
-              let activeUntil = null;
               if (m.noteSettings.useFixedDuration) {
-                const bpm = m.noteSettings.bpm;
-                const subdivision = m.noteSettings.subdivision;
-                const beatDuration = 60000 / bpm;
+                const beatDuration = 60000 / m.noteSettings.bpm;
                 let duration = beatDuration;
-                if (subdivision === '1/2') duration = beatDuration * 2;
-                if (subdivision === '1') duration = beatDuration * 4;
-                if (subdivision === '1/4') duration = beatDuration;
-                if (subdivision === '1/8') duration = beatDuration / 2;
-                if (subdivision === '1/16') duration = beatDuration / 4;
-                
-                activeUntil = Date.now() + duration;
+                const sub = m.noteSettings.subdivision;
+                if (sub === '1/2') duration = beatDuration * 2;
+                if (sub === '1') duration = beatDuration * 4;
+                if (sub === '1/8') duration = beatDuration / 2;
+                if (sub === '1/16') duration = beatDuration / 4;
+                state.useFixedDuration = true;
+                state.activeUntil = Date.now() + duration;
+              } else {
+                state.useFixedDuration = false;
               }
-              return { ...m, active: true, activeUntil, velocity: finalVelocity };
             } else {
-              if (m.triggerBehavior === 'toggle' || m.noteSettings.useFixedDuration) return m;
-              return { ...m, active: false, activeUntil: null, velocity: 0 };
+              if (m.triggerBehavior !== 'toggle' && !m.noteSettings.useFixedDuration) {
+                state.isDown = false;
+                state.phase = 'release';
+              }
             }
           }
-          return m;
         };
 
-        const newMappings = layer.mappings.map(processMapping);
-        const newGenMappings = layer.generativeMappings?.map(processMapping);
-        
-        return changed ? { ...layer, mappings: newMappings, generativeMappings: newGenMappings } : layer;
-      }));
+        layer.mappings.forEach(m => processMapping(m, 'effect'));
+        layer.generativeMappings?.forEach(m => processMapping(m, 'gen'));
+      });
     }
 
     // Control Change (11)
@@ -1364,7 +1451,8 @@ export default function App() {
           }
           
           if (l.ccBindings) {
-             for (const [paramId, binding] of Object.entries(l.ccBindings)) {
+             for (const [paramId, bindingRaw] of Object.entries(l.ccBindings)) {
+                const binding = bindingRaw as { cc: number; min: number; max: number };
                 if (binding.cc === note) {
                    const mappedValue = binding.min + (velocity / 127) * (binding.max - binding.min);
                    
@@ -1563,6 +1651,48 @@ export default function App() {
       let audioVisualOpacity = 1.0;
       let audioIsActive = false;
       let audioIntensity = 0.0;
+      
+      // --- MIDI ADSR PROCESSING ---
+      const triggerKey = `layer-${layer.id}`;
+      const state = triggerStatesRef.current[triggerKey];
+      let midiIsActive = !!layer.isActive;
+      let midiVisualOpacity = layer.triggerMapping ? layer.triggerMapping.velocity / 127 : (layer.isActive ? 1.0 : 0.0);
+
+      if (state && layer.triggerMapping) {
+          const ns = layer.triggerMapping.noteSettings;
+          const dt = deltaTime / 1000.0; // delta in seconds
+          const sustain = ns.sustain !== undefined ? ns.sustain : 1.0;
+          
+          if (state.phase === 'attack') {
+             const a = (ns.attack || 0) / 1000.0;
+             if (a <= 0.001) state.currentEnvValue = 1;
+             else state.currentEnvValue += dt / a;
+             if (state.currentEnvValue >= 1) { state.currentEnvValue = 1; state.phase = 'decay'; }
+          } else if (state.phase === 'decay') {
+             const d = (ns.decay || 0) / 1000.0;
+             if (d <= 0.001) state.currentEnvValue = sustain;
+             else state.currentEnvValue -= dt * (1 - sustain) / d;
+             if (state.currentEnvValue <= sustain) { 
+                state.currentEnvValue = sustain; 
+                state.phase = 'sustain'; 
+             }
+          } else if (state.phase === 'sustain') {
+             state.currentEnvValue = sustain;
+          } else if (state.phase === 'release') {
+             const r = (ns.release || 0) / 1000.0;
+             if (r <= 0.001) state.currentEnvValue = 0;
+             else state.currentEnvValue -= dt / r;
+             if (state.currentEnvValue <= 0) { state.currentEnvValue = 0; state.phase = 'idle'; }
+          }
+          
+          if (state.useFixedDuration && state.activeUntil && Date.now() >= state.activeUntil && state.phase !== 'release' && state.phase !== 'idle') {
+             state.phase = 'release';
+             state.isDown = false;
+          }
+          
+          midiVisualOpacity = state.currentEnvValue * (state.velocity / 127);
+          midiIsActive = state.currentEnvValue > 0.001;
+      }
 
       // --- HIGH SPEED AUDIO POLLING ---
       if (layer.audioMapping?.enabled && layer.audioMapping.stemId) {
@@ -1750,7 +1880,7 @@ export default function App() {
           }
           else if (layer.audioMapping?.enabled) isVisibleNormally = audioIsActive;
           else if (layer.rhythmMapping?.enabled) isVisibleNormally = rhythmIsActive;
-          else isVisibleNormally = !!layer.isActive;
+          else isVisibleNormally = midiIsActive;
       }
       
       // We still process the layer even if hidden if it has effects that could be drawing something (e.g. generative)
@@ -1767,7 +1897,7 @@ export default function App() {
           let unifiedTriggerValue = 0.0;
           if (layer.audioMapping?.enabled) unifiedTriggerValue = audioVisualOpacity;
           else if (layer.rhythmMapping?.enabled) unifiedTriggerValue = rhythmVisualOpacity;
-          else if (layer.midiMode) unifiedTriggerValue = layer.isActive ? 1.0 : 0.0;
+          else if (layer.midiMode) unifiedTriggerValue = midiVisualOpacity;
 
           let modifiedSettings = { ...(layer.generativeSettings || {}) };
           if (def.parameters) {
@@ -2194,7 +2324,7 @@ export default function App() {
           } else if (layer.rhythmMapping?.enabled) {
               isCurrentlyActive = rhythmIsActive;
           } else if (layer.midiMode) {
-              isCurrentlyActive = !!layer.isActive;
+              isCurrentlyActive = midiIsActive;
           }
           
           if (isCurrentlyActive && !stState.wasActive) {
@@ -2257,7 +2387,44 @@ export default function App() {
         }
 
         // Process effects for this layer
-        const activeMappings = layer.mappings.filter(m => (m.active || m.manualActive) && !m.isMuted);
+        const activeMappings = layer.mappings.filter(m => {
+           if (m.isMuted) return false;
+           if (m.manualActive) return true;
+           const state = triggerStatesRef.current[`effect-${layer.id}-${m.id}`];
+           if (state) {
+               // Update ADSR state for effect trigger
+               const ns = m.noteSettings;
+               const dt = deltaTime / 1000.0;
+               const sustain = ns.sustain !== undefined ? ns.sustain : 1.0;
+               
+               if (state.phase === 'attack') {
+                  const a = (ns.attack || 0) / 1000.0;
+                  if (a <= 0.001) state.currentEnvValue = 1;
+                  else state.currentEnvValue += dt / a;
+                  if (state.currentEnvValue >= 1) { state.currentEnvValue = 1; state.phase = 'decay'; }
+               } else if (state.phase === 'decay') {
+                  const d = (ns.decay || 0) / 1000.0;
+                  if (d <= 0.001) state.currentEnvValue = sustain;
+                  else state.currentEnvValue -= dt * (1 - sustain) / d;
+                  if (state.currentEnvValue <= sustain) { state.currentEnvValue = sustain; state.phase = 'sustain'; }
+               } else if (state.phase === 'sustain') {
+                  state.currentEnvValue = sustain;
+               } else if (state.phase === 'release') {
+                  const r = (ns.release || 0) / 1000.0;
+                  if (r <= 0.001) state.currentEnvValue = 0;
+                  else state.currentEnvValue -= dt / r;
+                  if (state.currentEnvValue <= 0) { state.currentEnvValue = 0; state.phase = 'idle'; }
+               }
+
+               if (state.useFixedDuration && state.activeUntil && Date.now() >= state.activeUntil && state.phase !== 'release' && state.phase !== 'idle') {
+                  state.phase = 'release';
+                  state.isDown = false;
+               }
+
+               return state.currentEnvValue > 0.001;
+           }
+           return m.active;
+        });
         const soloedMappings = activeMappings.filter(m => m.isSoloed);
         const mappingsToProcess = soloedMappings.length > 0 ? soloedMappings : activeMappings;
 
@@ -3200,7 +3367,7 @@ export default function App() {
               opacityMult = layer.audioMapping.target === 'opacity' ? audioVisualOpacity : (audioIsActive ? 1.0 : 0.0);
           }
           else if (layer.rhythmMapping?.enabled) opacityMult = rhythmVisualOpacity;
-          else opacityMult = layer.isActive ? 1.0 : 0.0;
+          else opacityMult = midiVisualOpacity;
       }
 
       mainCtx.globalAlpha = layer.opacity * opacityMult;

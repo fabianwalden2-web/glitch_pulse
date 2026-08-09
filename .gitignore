@@ -10,3 +10,6 @@ coverage/
 # Temp helper scripts
 *.py
 spectro_log.txt
+
+# Electron
+dist-electron/
