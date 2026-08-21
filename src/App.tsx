@@ -2530,7 +2530,600 @@ export default function App() {
               }
               
               element = canvas;
-            } else if (def.uuid === 'text-umbrella-canvas-1') {
+            } else if (def.uuid === 'terrain-lines-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) {
+                  canvas.width = targetW; canvas.height = targetH;
+              }
+              const ctx = canvas.getContext('2d')!;
+              ctx.clearRect(0, 0, targetW, targetH);
+              ctx.fillStyle = '#f5f4f2';
+              ctx.fillRect(0, 0, targetW, targetH);
+              
+              const { speed, amplitude, density } = modifiedSettings;
+              const spd = speed ?? 1.0;
+              const amp = amplitude ?? 80.0;
+              const dens = density ?? 1.0;
+              
+              const t = nowSec * spd;
+              const gridW = 40 * dens;
+              const gridH = 40 * dens;
+              const step = 20 / dens;
+              
+              const iso = (x: number, y: number, z: number) => {
+                 const angle = Math.PI / 6;
+                 return {
+                    x: targetW/2 + (x - y) * Math.cos(angle),
+                    y: targetH/2 + 100 + (x + y) * Math.sin(angle) - z
+                 };
+              };
+              
+              const noise2D = (nx: number, ny: number) => {
+                 return Math.sin(nx * 0.1 + ny * 0.05 + t) * 0.5 + 
+                        Math.sin(nx * 0.2 - ny * 0.1 - t*0.5) * 0.25 + 
+                        Math.sin(nx * 0.05 + ny * 0.2 + t*0.2) * 0.25;
+              };
+              
+              const colors = ['#f68b1f', '#e67ba0', '#1a1cd4', '#16441b', '#f92002'];
+              ctx.lineWidth = 1.5;
+              
+              for (let yi = -gridH; yi <= gridH; yi++) {
+                 for (let xi = -gridW; xi <= gridW; xi++) {
+                     const x = xi * step;
+                     const y = yi * step;
+                     const z = noise2D(x, y) * amp;
+                     const zNext = noise2D(x + step, y) * amp;
+                     
+                     const p1 = iso(x, y, z);
+                     const p2 = iso(x + step, y, zNext);
+                     
+                     // Region color based on coarse grid
+                     const regionVal = Math.floor(Math.sin(xi*0.1) * 3 + Math.cos(yi*0.1) * 3 + 10) % colors.length;
+                     ctx.strokeStyle = colors[regionVal];
+                     
+                     ctx.beginPath();
+                     ctx.moveTo(p1.x, p1.y);
+                     ctx.lineTo(p2.x, p2.y);
+                     ctx.stroke();
+                 }
+              }
+              element = canvas;
+          } else if (def.uuid === 'squares-noise-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) {
+                  canvas.width = targetW; canvas.height = targetH;
+              }
+              const ctx = canvas.getContext('2d')!;
+              ctx.clearRect(0, 0, targetW, targetH);
+              ctx.fillStyle = '#000000';
+              ctx.fillRect(0, 0, targetW, targetH);
+              
+              const { speed, count, spread, rotation } = modifiedSettings;
+              const spd = speed ?? 1.0;
+              const num = Math.floor(count ?? 20);
+              const spr = spread ?? 80;
+              const rot = rotation ?? 0.0;
+              
+              const t = nowSec * spd;
+              
+              const iso = (x0: number, y0: number, z: number) => {
+                 const x = x0 * Math.cos(rot) - y0 * Math.sin(rot);
+                 const y = x0 * Math.sin(rot) + y0 * Math.cos(rot);
+                 const angle = Math.PI / 6;
+                 return {
+                    x: targetW/2 + (x - y) * Math.cos(angle),
+                    y: targetH/2 + (x + y) * Math.sin(angle) - z
+                 };
+              };
+              
+              ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+              ctx.setLineDash([2, 4]); // noise/grainy look
+              ctx.lineWidth = 1.5;
+              
+              for (let i = 0; i < num; i++) {
+                 const offset = i * spr - (num * spr)/2;
+                 const zOff = Math.sin(t + i*0.5) * 50;
+                 const size = 100 + Math.sin(t*0.5 + i) * 30;
+                 
+                 const p1 = iso(offset - size, -size, zOff);
+                 const p2 = iso(offset + size, -size, zOff);
+                 const p3 = iso(offset + size, size, zOff);
+                 const p4 = iso(offset - size, size, zOff);
+                 
+                 ctx.beginPath();
+                 ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y);
+                 ctx.lineTo(p3.x, p3.y); ctx.lineTo(p4.x, p4.y);
+                 ctx.closePath();
+                 ctx.stroke();
+                 
+                 // draw inner noisy dots
+                 ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+                 for(let d=0; d<20; d++) {
+                    const dx = offset + (Math.random()*2-1)*size;
+                    const dy = (Math.random()*2-1)*size;
+                    const pt = iso(dx, dy, zOff);
+                    ctx.fillRect(pt.x, pt.y, 1.5, 1.5);
+                 }
+              }
+              ctx.setLineDash([]);
+              element = canvas;
+          } else if (def.uuid === 'number-paths-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) {
+                  canvas.width = targetW; canvas.height = targetH;
+              }
+              const ctx = canvas.getContext('2d')!;
+              ctx.clearRect(0, 0, targetW, targetH);
+              ctx.fillStyle = '#e5e5e3';
+              ctx.fillRect(0, 0, targetW, targetH);
+              
+              const { speed, nodes, grid_size, movement, chaos } = modifiedSettings;
+              const gs = grid_size ?? 50.0;
+              const mov = movement ?? 0.0;
+              const cha = chaos ?? 1.0;
+              const t = nowSec * (speed ?? 1.0);
+              
+              // Draw grid
+              ctx.strokeStyle = '#d0cfca';
+              ctx.lineWidth = 1;
+              const ox = (targetW/2) % gs;
+              const oy = (targetH/2) % gs;
+              for(let x = ox; x < targetW; x+=gs) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, targetH); ctx.stroke(); }
+              for(let y = oy; y < targetH; y+=gs) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(targetW, y); ctx.stroke(); }
+              
+              // Draw nodes and lines
+              const cols = ['#f16543', '#f6b8c9', '#7eb2dc', '#facb2a', '#1a1d20', '#76a68b'];
+              const pts: {x: number, y: number, c: string, num: number}[] = [];
+              const numNodes = Math.floor(nodes ?? 15);
+              
+              for(let i=0; i<numNodes; i++) {
+                 const xGrid = Math.floor(Math.sin(i * 12.3 + t*0.2) * 5);
+                 const yGrid = Math.floor(Math.cos(i * 32.1 + t*0.25) * 5);
+                 pts.push({
+                    x: targetW/2 + xGrid * gs + Math.sin(t*cha + i*13.3)*mov,
+                    y: targetH/2 + yGrid * gs + Math.cos(t*cha + i*17.7)*mov,
+                    c: cols[i % cols.length],
+                    num: i + 1
+                 });
+              }
+              
+              // Draw lines between sequential nodes
+              ctx.strokeStyle = '#111';
+              ctx.lineWidth = 2;
+              ctx.beginPath();
+              for(let i=0; i<pts.length-1; i++) {
+                 ctx.moveTo(pts[i].x, pts[i].y);
+                 // Manhattan routing or diagonal
+                 ctx.lineTo(pts[i+1].x, pts[i].y);
+                 ctx.lineTo(pts[i+1].x, pts[i+1].y);
+              }
+              ctx.stroke();
+              
+              // Draw nodes
+              ctx.font = '10px monospace';
+              ctx.fillStyle = '#333';
+              for(const p of pts) {
+                 ctx.fillStyle = p.c;
+                 ctx.beginPath();
+                 ctx.arc(p.x, p.y, gs * 0.4, 0, Math.PI*2);
+                 ctx.fill();
+                 
+                 ctx.fillStyle = '#333';
+                 ctx.fillText(p.num.toString(), p.x + gs*0.6, p.y + gs*0.6);
+              }
+              element = canvas;
+          } else if (def.uuid === 'isometric-buildings-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) {
+                  canvas.width = targetW; canvas.height = targetH;
+              }
+              const ctx = canvas.getContext('2d')!;
+              ctx.clearRect(0, 0, targetW, targetH);
+              ctx.fillStyle = '#ff7a7a'; // coral background
+              ctx.fillRect(0, 0, targetW, targetH);
+              
+              const { speed, count, max_height } = modifiedSettings;
+              const spd = speed ?? 1.0;
+              const num = Math.floor(count ?? 8);
+              const maxH = max_height ?? 200;
+              const t = nowSec * spd;
+              
+              const iso = (x: number, y: number, z: number) => {
+                 const angle = Math.PI / 6;
+                 return {
+                    x: targetW/2 + (x - y) * Math.cos(angle),
+                    y: targetH/2 + 100 + (x + y) * Math.sin(angle) - z
+                 };
+              };
+              
+              const bWidth = 40;
+              
+              const drawBlock = (bx: number, by: number, height: number) => {
+                 const pTop0 = iso(bx - bWidth/2, by - bWidth/2, height);
+                 const pTop1 = iso(bx + bWidth/2, by - bWidth/2, height);
+                 const pTop2 = iso(bx + bWidth/2, by + bWidth/2, height);
+                 const pTop3 = iso(bx - bWidth/2, by + bWidth/2, height);
+                 
+                 const pBot0 = iso(bx - bWidth/2, by - bWidth/2, 0);
+                 const pBot1 = iso(bx + bWidth/2, by - bWidth/2, 0);
+                 const pBot2 = iso(bx + bWidth/2, by + bWidth/2, 0);
+                 const pBot3 = iso(bx - bWidth/2, by + bWidth/2, 0);
+                 
+                 // Draw left face
+                 const gradLeft = ctx.createLinearGradient(pTop3.x, pTop3.y, pBot3.x, pBot3.y);
+                 gradLeft.addColorStop(0, '#537188');
+                 gradLeft.addColorStop(1, '#ff7a7a');
+                 ctx.fillStyle = gradLeft;
+                 ctx.beginPath();
+                 ctx.moveTo(pTop0.x, pTop0.y); ctx.lineTo(pTop3.x, pTop3.y);
+                 ctx.lineTo(pBot3.x, pBot3.y); ctx.lineTo(pBot0.x, pBot0.y);
+                 ctx.closePath();
+                 ctx.fill();
+                 
+                 // Draw right face
+                 const gradRight = ctx.createLinearGradient(pTop2.x, pTop2.y, pBot2.x, pBot2.y);
+                 gradRight.addColorStop(0, '#36536b');
+                 gradRight.addColorStop(1, '#ff7a7a');
+                 ctx.fillStyle = gradRight;
+                 ctx.beginPath();
+                 ctx.moveTo(pTop3.x, pTop3.y); ctx.lineTo(pTop2.x, pTop2.y);
+                 ctx.lineTo(pBot2.x, pBot2.y); ctx.lineTo(pBot3.x, pBot3.y);
+                 ctx.closePath();
+                 ctx.fill();
+                 
+                 // Draw top face
+                 ctx.fillStyle = '#ff9898';
+                 ctx.beginPath();
+                 ctx.moveTo(pTop0.x, pTop0.y); ctx.lineTo(pTop1.x, pTop1.y);
+                 ctx.lineTo(pTop2.x, pTop2.y); ctx.lineTo(pTop3.x, pTop3.y);
+                 ctx.closePath();
+                 ctx.fill();
+              };
+              
+              const buildings = [];
+              for(let ix=-num; ix<=num; ix++) {
+                 for(let iy=-num; iy<=num; iy++) {
+                    const noise = Math.sin(ix*0.5 + t) + Math.cos(iy*0.5 + t*0.8);
+                    if (noise > 0.5) {
+                       const h = (noise - 0.5) * maxH * 2;
+                       buildings.push({x: ix * bWidth, y: iy * bWidth, h});
+                    }
+                 }
+              }
+              
+              // Sort by painter's algorithm (x + y)
+              buildings.sort((a,b) => (b.x + b.y) - (a.x + a.y));
+              
+              for(const b of buildings) {
+                 drawBlock(b.x, b.y, b.h);
+              }
+              
+              element = canvas;
+          } else if (def.uuid === '3d-polygon-neon-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) {
+                  canvas.width = targetW; canvas.height = targetH;
+              }
+              const ctx = canvas.getContext('2d')!;
+              ctx.clearRect(0, 0, targetW, targetH);
+              
+              const grad = ctx.createRadialGradient(targetW/2, targetH/2, 0, targetW/2, targetH/2, targetW);
+              grad.addColorStop(0, '#3a4a5a');
+              grad.addColorStop(1, '#1a202c');
+              ctx.fillStyle = grad;
+              ctx.fillRect(0, 0, targetW, targetH);
+              
+              // draw dusty particles
+              ctx.fillStyle = 'rgba(255,255,255,0.05)';
+              for(let i=0; i<100; i++) {
+                 const px = (Math.sin(i*12.3) * 0.5 + 0.5) * targetW;
+                 const py = (Math.cos(i*32.1) * 0.5 + 0.5) * targetH;
+                 ctx.beginPath(); ctx.arc(px, py, 2, 0, Math.PI*2); ctx.fill();
+              }
+              
+              const { speed, glow, complexity } = modifiedSettings;
+              const spd = speed ?? 1.0;
+              const g = glow ?? 20.0;
+              const numSides = Math.floor(modifiedSettings.sides ?? 6);
+              const symm = modifiedSettings.symmetry ?? 1.0;
+              const sz = modifiedSettings.size ?? 1.0;
+              
+              const t = nowSec * spd;
+              
+              const pts = [];
+              const edges = [];
+              const faces = [];
+              
+              // Top and bottom vertices
+              pts.push({x:0, y:1, z:0}); // 0
+              pts.push({x:0, y:-1, z:0}); // 1
+              
+              // Equatorial vertices
+              for(let i=0; i<numSides; i++) {
+                 const angle = (i / numSides) * Math.PI * 2;
+                 const rad = 1.0 - (1.0 - symm) * (i % 2 === 0 ? 0.5 : 0.0);
+                 pts.push({
+                     x: Math.cos(angle) * rad,
+                     y: 0,
+                     z: Math.sin(angle) * rad
+                 });
+              }
+              
+              for(let i=0; i<numSides; i++) {
+                 const current = 2 + i;
+                 const next = 2 + ((i + 1) % numSides);
+                 edges.push([0, current]);
+                 edges.push([1, current]);
+                 edges.push([current, next]);
+                 
+                 // Face orientation: ensure they point outwards
+                 faces.push([0, next, current]);
+                 faces.push([1, current, next]);
+              }
+              
+              const scale = Math.min(targetW, targetH) * 0.3 * sz;
+              
+              const rotX = t * 0.5;
+              const rotY = t * 0.7;
+              
+              const project = (p: any) => {
+                 // rotX
+                 const y1 = p.y * Math.cos(rotX) - p.z * Math.sin(rotX);
+                 const z1 = p.y * Math.sin(rotX) + p.z * Math.cos(rotX);
+                 // rotY
+                 const x2 = p.x * Math.cos(rotY) + z1 * Math.sin(rotY);
+                 const z2 = -p.x * Math.sin(rotY) + z1 * Math.cos(rotY);
+                 
+                 const f = 400 / (400 + z2 * scale);
+                 return { x: targetW/2 + x2 * scale * f, y: targetH/2 + y1 * scale * f, z: z2 };
+              };
+              
+              const projPts = pts.map(project);
+              
+              // Draw back faces
+              faces.forEach(face => {
+                 const p0 = projPts[face[0]]; const p1 = projPts[face[1]]; const p2 = projPts[face[2]];
+                 const normZ = (p1.x - p0.x)*(p2.y - p0.y) - (p1.y - p0.y)*(p2.x - p0.x);
+                 if (normZ < 0) {
+                     ctx.fillStyle = 'rgba(255, 100, 50, 0.15)';
+                     ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.closePath(); ctx.fill();
+                 }
+              });
+              
+              // Draw front faces
+              faces.forEach(face => {
+                 const p0 = projPts[face[0]]; const p1 = projPts[face[1]]; const p2 = projPts[face[2]];
+                 const normZ = (p1.x - p0.x)*(p2.y - p0.y) - (p1.y - p0.y)*(p2.x - p0.x);
+                 if (normZ >= 0) {
+                     ctx.fillStyle = 'rgba(255, 150, 50, 0.25)';
+                     ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.closePath(); ctx.fill();
+                 }
+              });
+              
+              // Draw edges
+              ctx.strokeStyle = '#fff0a0';
+              ctx.lineWidth = 3;
+              ctx.shadowColor = '#ff6a00';
+              ctx.shadowBlur = g;
+              edges.forEach(edge => {
+                 ctx.beginPath();
+                 ctx.moveTo(projPts[edge[0]].x, projPts[edge[0]].y);
+                 ctx.lineTo(projPts[edge[1]].x, projPts[edge[1]].y);
+                 ctx.stroke();
+              });
+              ctx.shadowBlur = 0;
+              
+              element = canvas;
+          } else if (def.uuid === 'stacked-balls-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) {
+                  canvas.width = targetW; canvas.height = targetH;
+              }
+              const ctx = canvas.getContext('2d')!;
+              ctx.clearRect(0, 0, targetW, targetH);
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, targetW, targetH);
+              
+              const { count, max_size, speed, movement, chaos } = modifiedSettings;
+              const num = Math.floor(count ?? 40);
+              const maxS = max_size ?? 100;
+              const spd = speed ?? 1.0;
+              const mov = movement ?? 30.0;
+              const cha = chaos ?? 1.0;
+              
+              const t = nowSec * spd;
+              
+              const balls = [];
+              for(let i=0; i<num; i++) {
+                 const seed = i * 13.37;
+                 const size = maxS * (0.2 + 0.8 * (Math.sin(seed*91.1)*0.5+0.5));
+                 const baseOx = (Math.sin(seed*11.2) * 0.4) * targetW;
+                 const baseOy = (Math.cos(seed*31.4) * 0.4) * targetH;
+                 
+                 // drift
+                 const ox = baseOx + Math.sin(t*cha + seed) * mov;
+                 const oy = baseOy + Math.cos(t*0.8*cha + seed) * mov;
+                 
+                 balls.push({ x: targetW/2 + ox, y: targetH/2 + oy, r: size, z: Math.sin(seed*44.4) });
+              }
+              
+              balls.sort((a,b) => a.z - b.z);
+              
+              for(const b of balls) {
+                 ctx.fillStyle = '#0a0a0a';
+                 ctx.beginPath();
+                 ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
+                 ctx.fill();
+                 
+                 // tiny white sparkle cross
+                 ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+                 ctx.lineWidth = 1.5;
+                 const sx = b.x + b.r * 0.3;
+                 const sy = b.y - b.r * 0.4;
+                 ctx.beginPath();
+                 ctx.moveTo(sx - 4, sy); ctx.lineTo(sx + 4, sy);
+                 ctx.moveTo(sx, sy - 4); ctx.lineTo(sx, sy + 4);
+                 ctx.stroke();
+              }
+              element = canvas;
+          } else if (def.uuid === '3d-debris-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) {
+                  canvas.width = targetW; canvas.height = targetH;
+              }
+              const ctx = canvas.getContext('2d')!;
+              ctx.clearRect(0, 0, targetW, targetH);
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, targetW, targetH);
+              
+              const { count, scatter, speed, size } = modifiedSettings;
+              const num = Math.floor(count ?? 80);
+              const scat = scatter ?? 400;
+              const spd = speed ?? 1.0;
+              const sz = size ?? 1.0;
+              const t = nowSec * spd;
+              
+              const project = (p: any, camZ: number) => {
+                 const f = 600 / (600 + p.z + camZ);
+                 return { x: targetW/2 + p.x * f, y: targetH/2 + p.y * f, z: p.z, f };
+              };
+              
+              const shapes = [];
+              for(let i=0; i<num; i++) {
+                 const seed = i * 21.1;
+                 const type = Math.floor((Math.sin(seed)*0.5+0.5) * 3); // 0=cube, 1=tetra, 2=octa
+                 const size = (10 + (Math.cos(seed*3.3)*0.5+0.5) * 40) * sz;
+                 
+                 const rOffset = scat * (Math.sin(seed*7.7)*0.5+0.5);
+                 const angle = t*0.5 + seed*11.1;
+                 const yPos = (Math.sin(seed*13.3) * scat * 1.5);
+                 
+                 const cx = Math.sin(angle) * rOffset;
+                 const cy = yPos + Math.sin(t + seed)*50;
+                 const cz = Math.cos(angle) * rOffset;
+                 
+                 const rotX = t * (Math.sin(seed)*2);
+                 const rotY = t * (Math.cos(seed)*2);
+                 
+                 shapes.push({ cx, cy, cz, size, type, rotX, rotY, baseColor: Math.sin(seed*5)*0.5+0.5 });
+              }
+              
+              // We sort shapes by their center Z
+              shapes.sort((a,b) => b.cz - a.cz);
+              
+              for(const s of shapes) {
+                 let pts: any[] = [];
+                 let faces: any[] = [];
+                 if (s.type === 0) { // cube
+                    pts = [
+                       {x:-1,y:-1,z:-1}, {x:1,y:-1,z:-1}, {x:1,y:1,z:-1}, {x:-1,y:1,z:-1},
+                       {x:-1,y:-1,z:1}, {x:1,y:-1,z:1}, {x:1,y:1,z:1}, {x:-1,y:1,z:1}
+                    ];
+                    faces = [[0,1,2,3],[5,4,7,6],[4,0,3,7],[1,5,6,2],[4,5,1,0],[3,2,6,7]];
+                 } else if (s.type === 1) { // tetra
+                    pts = [ {x:1,y:1,z:1}, {x:-1,y:-1,z:1}, {x:-1,y:1,z:-1}, {x:1,y:-1,z:-1} ];
+                    faces = [[0,1,2],[0,3,1],[0,2,3],[1,3,2]];
+                 } else { // octa
+                    pts = [ {x:0,y:1,z:0}, {x:1,y:0,z:0}, {x:0,y:-1,z:0}, {x:-1,y:0,z:0}, {x:0,y:0,z:1}, {x:0,y:0,z:-1} ];
+                    faces = [[4,0,1],[4,1,2],[4,2,3],[4,3,0],[5,1,0],[5,2,1],[5,3,2],[5,0,3]];
+                 }
+                 
+                 // Rotate and translate
+                 const transformedPts = pts.map(p => {
+                    const y1 = p.y * Math.cos(s.rotX) - p.z * Math.sin(s.rotX);
+                    const z1 = p.y * Math.sin(s.rotX) + p.z * Math.cos(s.rotX);
+                    const x2 = p.x * Math.cos(s.rotY) + z1 * Math.sin(s.rotY);
+                    const z2 = -p.x * Math.sin(s.rotY) + z1 * Math.cos(s.rotY);
+                    return { x: s.cx + x2 * s.size, y: s.cy + y1 * s.size, z: s.cz + z2 * s.size };
+                 });
+                 
+                 const projPts = transformedPts.map(p => project(p, 0));
+                 
+                 // Draw faces
+                 faces.forEach(face => {
+                    const p0 = projPts[face[0]]; const p1 = projPts[face[1]]; const p2 = projPts[face[2]];
+                    const normZ = (p1.x - p0.x)*(p2.y - p0.y) - (p1.y - p0.y)*(p2.x - p0.x);
+                    if (normZ >= 0) {
+                        // calculate simple lighting based on normal in 3d space (approx)
+                        const tp0 = transformedPts[face[0]]; const tp1 = transformedPts[face[1]]; const tp2 = transformedPts[face[2]];
+                        const nx = (tp1.y - tp0.y)*(tp2.z - tp0.z) - (tp1.z - tp0.z)*(tp2.y - tp0.y);
+                        const ny = (tp1.z - tp0.z)*(tp2.x - tp0.x) - (tp1.x - tp0.x)*(tp2.z - tp0.z);
+                        const nz = (tp1.x - tp0.x)*(tp2.y - tp0.y) - (tp1.y - tp0.y)*(tp2.x - tp0.x);
+                        const len = Math.hypot(nx, ny, nz) || 1;
+                        const lightDot = Math.max(0, (nx/len)*0.5 + (ny/len)*0.8 + (nz/len)*0.3);
+                        
+                        const shade = Math.floor(lightDot * 100 + s.baseColor * 50);
+                        ctx.fillStyle = `rgb(${shade},${shade},${shade})`;
+                        ctx.beginPath();
+                        ctx.moveTo(p0.x, p0.y);
+                        for(let i=1; i<face.length; i++) ctx.lineTo(projPts[face[i]].x, projPts[face[i]].y);
+                        ctx.closePath();
+                        ctx.fill();
+                        ctx.strokeStyle = '#000';
+                        ctx.lineWidth = 0.5;
+                        ctx.stroke();
+                    }
+                 });
+              }
+              element = canvas;
+          } else if (def.uuid === 'random-symbols-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) {
+                  canvas.width = targetW; canvas.height = targetH;
+              }
+              const ctx = canvas.getContext('2d')!;
+              ctx.clearRect(0, 0, targetW, targetH);
+              ctx.fillStyle = '#e5e5e5';
+              ctx.fillRect(0, 0, targetW, targetH);
+              
+              const { speed, density, scale: sclValue, movement, chaos } = modifiedSettings;
+              const spd = speed ?? 1.0;
+              const dens = Math.floor(density ?? 250);
+              const scl = sclValue ?? 1.0;
+              const mov = movement ?? 20.0;
+              const cha = chaos ?? 1.0;
+              const t = nowSec * spd;
+              
+              ctx.globalCompositeOperation = 'multiply';
+              
+              for(let i=0; i<dens; i++) {
+                 const seed = i * 17.3;
+                 const type = Math.floor((Math.sin(seed)*0.5+0.5) * 4); // 0=circle, 1=triangle, 2=line, 3=dot
+                 const color = Math.sin(seed*11.1) > 0 ? '#fa3b5c' : '#2a4b56';
+                 const x = (Math.sin(seed*5.1)*0.5+0.5) * targetW + Math.sin(t*cha + seed)*mov;
+                 const y = (Math.cos(seed*7.1)*0.5+0.5) * targetH + Math.cos(t*0.8*cha + seed)*mov;
+                 const size = (10 + (Math.sin(seed*13.1)*0.5+0.5) * 50) * scl;
+                 const rot = t * (Math.sin(seed)*0.5) + seed;
+                 
+                 ctx.save();
+                 ctx.translate(x, y);
+                 ctx.rotate(rot);
+                 ctx.fillStyle = color;
+                 ctx.strokeStyle = color;
+                 
+                 if (type === 0) {
+                     ctx.beginPath(); ctx.arc(0,0, size*0.5, 0, Math.PI*2); ctx.fill();
+                 } else if (type === 1) {
+                     ctx.beginPath(); ctx.moveTo(0, -size*0.5); ctx.lineTo(size*0.5, size*0.5); ctx.lineTo(-size*0.5, size*0.5); ctx.closePath(); ctx.fill();
+                 } else if (type === 2) {
+                     ctx.lineWidth = size * 0.2;
+                     ctx.beginPath(); ctx.moveTo(-size, 0); ctx.lineTo(size, 0); ctx.stroke();
+                 } else {
+                     ctx.beginPath(); ctx.arc(0,0, size*0.15, 0, Math.PI*2); ctx.fill();
+                 }
+                 ctx.restore();
+              }
+              ctx.globalCompositeOperation = 'source-over';
+              element = canvas;
+          } else if (def.uuid === 'text-umbrella-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
               const canvas = sphereCanvasRef.current[layer.id];
               if (canvas.width !== targetW || canvas.height !== targetH) {

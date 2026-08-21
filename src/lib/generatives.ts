@@ -18,6 +18,251 @@ export interface GenerativeDefinition {
 export const GENERATIVES_DATA = [
   {
     header: `/*{
+  "description": "Neon 3D Polygon",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "glow", "min": 5.0, "max": 50.0, "default": 20.0, "type": "number" },
+    { "name": "complexity", "min": 0.0, "max": 2.0, "default": 0.0, "type": "number" }
+  ],
+  "uuid": "3d-polygon-neon-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation`
+  },
+  {
+    header: `/*{
+  "description": "3D Ferrofluid",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "blobbiness", "min": 0.1, "max": 2.0, "default": 0.8, "type": "number" },
+    { "name": "droplets", "min": 1.0, "max": 10.0, "default": 5.0, "type": "number" }
+  ],
+  "uuid": "ferrofluid-3d-1"
+}*/`,
+    code: `
+#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform float time;
+uniform vec2 resolution;
+uniform float speed;
+uniform float blobbiness;
+uniform float droplets;
+
+varying vec2 texCoord;
+
+float smin(float a, float b, float k) {
+    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return mix(b, a, h) - k * h * (1.0 - h);
+}
+
+float sdSphere(vec3 p, float s) {
+    return length(p) - s;
+}
+
+float map(vec3 p) {
+    float t = time * speed;
+    
+    // Main central blob
+    float d = sdSphere(p - vec3(0.0, sin(t*1.3)*0.2, 0.0), 1.0 + sin(t*2.0)*0.1);
+    
+    // Add droplets
+    int numDrops = int(droplets);
+    for(int i=1; i<=10; i++) {
+        if(i > numDrops) break;
+        float fi = float(i);
+        vec3 pos = vec3(
+            sin(t * 0.8 + fi * 2.1) * 1.5,
+            cos(t * 1.1 + fi * 1.7) * 1.5,
+            sin(t * 0.9 + fi * 3.3) * 1.5
+        );
+        float size = 0.2 + 0.2 * sin(fi * 7.2);
+        float drop = sdSphere(p - pos, size);
+        d = smin(d, drop, blobbiness);
+    }
+    
+    // A few micro droplets
+    for(int i=1; i<=5; i++) {
+        float fi = float(i);
+        vec3 pos = vec3(
+            sin(t * 1.5 + fi * 8.1) * 2.5,
+            cos(t * 1.8 + fi * 6.7) * 2.5,
+            sin(t * 1.3 + fi * 9.3) * 2.5
+        );
+        float drop = sdSphere(p - pos, 0.08);
+        d = smin(d, drop, blobbiness * 0.5);
+    }
+    
+    return d;
+}
+
+vec3 calcNormal(vec3 p) {
+    const vec2 e = vec2(0.001, 0.0);
+    return normalize(vec3(
+        map(p + e.xyy) - map(p - e.xyy),
+        map(p + e.yxy) - map(p - e.yxy),
+        map(p + e.yyx) - map(p - e.yyx)
+    ));
+}
+
+void main() {
+    vec2 uv = texCoord * 2.0 - 1.0;
+    uv.x *= resolution.x / resolution.y;
+    
+    vec3 ro = vec3(0.0, 0.0, 4.0); // ray origin
+    vec3 rd = normalize(vec3(uv, -1.5)); // ray direction
+    
+    float t = 0.0;
+    float maxD = 10.0;
+    float d = 0.0;
+    
+    for(int i=0; i<100; i++) {
+        vec3 p = ro + rd * t;
+        d = map(p);
+        if(d < 0.001 || t > maxD) break;
+        t += d;
+    }
+    
+    vec3 bg = vec3(0.95, 0.95, 0.97); // light background
+    vec3 col = bg;
+    
+    if(t < maxD) {
+        vec3 p = ro + rd * t;
+        vec3 n = calcNormal(p);
+        
+        // Lighting
+        vec3 lig = normalize(vec3(0.8, 0.7, 0.6));
+        vec3 lig2 = normalize(vec3(-0.8, -0.2, -0.6));
+        
+        float dif = clamp(dot(n, lig), 0.0, 1.0);
+        float dif2 = clamp(dot(n, lig2), 0.0, 1.0);
+        
+        vec3 ref = reflect(rd, n);
+        float spe = pow(clamp(dot(ref, lig), 0.0, 1.0), 32.0);
+        float fre = pow(clamp(1.0 + dot(n, rd), 0.0, 1.0), 2.0);
+        
+        // Very dark material (ferrofluid)
+        vec3 mat = vec3(0.02, 0.02, 0.02);
+        
+        col = mat;
+        // subtle rim light
+        col += vec3(0.1) * fre;
+        // sharp specular highlights
+        col += vec3(1.0) * spe * 1.5;
+        // subtle secondary reflection
+        col += vec3(0.05) * dif2;
+    }
+    
+    gl_FragColor = vec4(col, 1.0);
+}
+`
+  },
+  {
+    header: `/*{
+  "description": "Stacked Balls",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "count", "min": 10.0, "max": 100.0, "default": 40.0, "type": "number" },
+    { "name": "max_size", "min": 20.0, "max": 200.0, "default": 100.0, "type": "number" }
+  ],
+  "uuid": "stacked-balls-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation`
+  },
+  {
+    header: `/*{
+  "description": "3D Debris Rocks",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "count", "min": 10.0, "max": 150.0, "default": 80.0, "type": "number" },
+    { "name": "scatter", "min": 100.0, "max": 800.0, "default": 400.0, "type": "number" }
+  ],
+  "uuid": "3d-debris-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation`
+  },
+  {
+    header: `/*{
+  "description": "Random Symbols Mix",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "density", "min": 50.0, "max": 500.0, "default": 250.0, "type": "number" },
+    { "name": "scale", "min": 0.1, "max": 3.0, "default": 1.0, "type": "number" }
+  ],
+  "uuid": "random-symbols-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation`
+  },
+
+  {
+    header: `/*{
+  "description": "Multicolor Terrain",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "amplitude", "min": 10.0, "max": 200.0, "default": 80.0, "type": "number" },
+    { "name": "density", "min": 0.1, "max": 2.0, "default": 1.0, "type": "number" }
+  ],
+  "uuid": "terrain-lines-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Squares Decomposition",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "count", "min": 5.0, "max": 50.0, "default": 20.0, "type": "number" },
+    { "name": "spread", "min": 10.0, "max": 200.0, "default": 80.0, "type": "number" }
+  ],
+  "uuid": "squares-noise-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Number Paths",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "nodes", "min": 5.0, "max": 40.0, "default": 15.0, "type": "number" },
+    { "name": "grid_size", "min": 20.0, "max": 100.0, "default": 50.0, "type": "number" }
+  ],
+  "uuid": "number-paths-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Buildings Rising",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "count", "min": 2.0, "max": 15.0, "default": 8.0, "type": "number" },
+    { "name": "max_height", "min": 50.0, "max": 400.0, "default": 200.0, "type": "number" }
+  ],
+  "uuid": "isometric-buildings-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+
+  {
+    header: `/*{
   "description": "Umbrella Rain Canvas",
   "color": "blue",
   "movement": true,
