@@ -1,8 +1,9 @@
 export interface GenerativeParameter {
   name: string;
-  min: number;
-  max: number;
-  default: number;
+  min?: number;
+  max?: number;
+  default: number | string;
+  type?: 'number' | 'string' | 'boolean';
 }
 
 export interface GenerativeDefinition {
@@ -15,6 +16,370 @@ export interface GenerativeDefinition {
 }
 
 export const GENERATIVES_DATA = [
+  {
+    header: `/*{
+  "description": "Umbrella Rain Canvas",
+  "color": "blue",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "font_size", "min": 10.0, "max": 60.0, "default": 16.0, "type": "number" },
+    { "name": "rain_density", "min": 0.1, "max": 2.0, "default": 1.0, "type": "number" },
+    { "name": "umbrella_size", "min": 0.1, "max": 3.0, "default": 1.0, "type": "number" },
+    { "name": "umbrella_x", "min": -100.0, "max": 100.0, "default": 0.0, "type": "number" },
+    { "name": "umbrella_y", "min": -100.0, "max": 100.0, "default": 0.0, "type": "number" },
+    { "name": "text_content", "default": "01", "type": "string" }
+  ],
+  "uuid": "text-umbrella-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation`
+  },
+  {
+    header: `/*{
+  "description": "Word Ripples Canvas",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 10.0, "default": 2.0, "type": "number" },
+    { "name": "font_size", "min": 10.0, "max": 60.0, "default": 20.0, "type": "number" },
+    { "name": "frequency", "min": 0.01, "max": 0.2, "default": 0.05, "type": "number" },
+    { "name": "amplitude", "min": 0.0, "max": 50.0, "default": 20.0, "type": "number" },
+    { "name": "text_content", "default": "滴水穿石 | 海纳百川 | 润物无声", "type": "string" }
+  ],
+  "uuid": "text-water-drop-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation`
+  },
+  {
+    header: `/*{
+  "description": "Sea of Words Canvas",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "font_size", "min": 10.0, "max": 60.0, "default": 18.0, "type": "number" },
+    { "name": "wave_height", "min": 0.0, "max": 100.0, "default": 30.0, "type": "number" },
+    { "name": "boat_size", "min": 0.1, "max": 3.0, "default": 1.0, "type": "number" },
+    { "name": "boat_speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "chaos", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "text_content", "default": "~波浪~海洋~航行~漂流~", "type": "string" }
+  ],
+  "uuid": "text-boat-sea-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation`
+  },
+  {
+    header: `/*{
+  "description": "Text Mask Canvas",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 10.0, "default": 1.0, "type": "number" },
+    { "name": "font_size", "min": 10.0, "max": 100.0, "default": 24.0, "type": "number" },
+    { "name": "dragon_size", "min": 0.1, "max": 3.0, "default": 1.0, "type": "number" },
+    { "name": "chaos", "min": 0.0, "max": 10.0, "default": 1.0, "type": "number" },
+    { "name": "thickness", "min": 0.1, "max": 3.0, "default": 1.0, "type": "number" },
+    { "name": "dir_x", "min": -5.0, "max": 5.0, "default": 0.0, "type": "number" },
+    { "name": "dir_y", "min": -5.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "displacement", "min": 0.0, "max": 150.0, "default": 50.0, "type": "number" },
+    { "name": "text_content", "default": "学而不思则罔，思而不学则殆。 | 温故而知新，可以为师矣。 | 三人行，必有我师焉。择其善者而从之，其不善者而改之。 | 己所不欲，勿施于人。 | 君子坦荡荡，小人长戚戚。 | 君子和而不同，小人同而不和。 | 知之为知之，不知为不知，是知也。 | 逝者如斯夫，不舍昼夜。", "type": "string" }
+  ],
+  "uuid": "dragon-text-mask-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+
+  {
+    header: `/*{
+  "description": "Brutalist Grid",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "columns", "min": 1.0, "max": 10.0, "default": 3.0 },
+    { "name": "rows", "min": 1.0, "max": 10.0, "default": 3.0 },
+    { "name": "shape_type", "min": 0.0, "max": 5.0, "default": 0.0 },
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0 },
+    { "name": "thickness", "min": 0.01, "max": 0.2, "default": 0.05 },
+    { "name": "aberration", "min": 0.0, "max": 0.1, "default": 0.02 }
+  ],
+  "uuid": "brutalist-grid-1"
+}*/`,
+    code: `
+#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform float time;
+uniform vec2 resolution;
+uniform float columns;
+uniform float rows;
+uniform float shape_type;
+uniform float speed;
+uniform float thickness;
+uniform float aberration;
+
+varying vec2 texCoord;
+
+const float PI = 3.14159265359;
+
+mat2 rot(float a) {
+    float s = sin(a), c = cos(a);
+    return mat2(c, -s, s, c);
+}
+
+float sdCircle(vec2 p, float r) { return length(p) - r; }
+float sdBox(vec2 p, vec2 b) {
+    vec2 d = abs(p) - b;
+    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+}
+float sdTriangle(vec2 p, float r) {
+    const float k = sqrt(3.0);
+    p.x = abs(p.x) - r;
+    p.y = p.y + r/k;
+    if(p.x + k*p.y > 0.0) p = vec2(p.x-k*p.y, -k*p.x-p.y)/2.0;
+    p.x -= clamp(p.x, -2.0*r, 0.0);
+    return -length(p)*sign(p.y);
+}
+float sdClover(vec2 p, float r) {
+    float d1 = length(p - vec2(r, r)*0.5) - r*0.5;
+    float d2 = length(p - vec2(-r, r)*0.5) - r*0.5;
+    float d3 = length(p - vec2(r, -r)*0.5) - r*0.5;
+    float d4 = length(p - vec2(-r, -r)*0.5) - r*0.5;
+    return min(min(d1, d2), min(d3, d4));
+}
+float sdSemiCircle(vec2 p, float r) {
+    p.y += r*0.25;
+    float d = length(p) - r;
+    return max(d, -p.y + r*0.25);
+}
+
+float getShape(vec2 p, float type, float r) {
+    int t = int(mod(type, 5.0));
+    if(t == 0) return sdBox(p, vec2(r*0.8));
+    if(t == 1) return sdClover(p, r*0.8);
+    if(t == 2) return sdSemiCircle(p, r);
+    if(t == 3) return sdTriangle(p, r);
+    if(t == 4) return sdCircle(p, r);
+    return sdCircle(p, r);
+}
+
+float scene(vec2 p, float seed) {
+    float t = time * speed + seed * 10.0;
+    float angle = floor(t) * PI * 0.5 + smoothstep(0.0, 0.5, fract(t)) * PI * 0.5;
+    p *= rot(angle);
+    float tType = mod(shape_type + floor(seed * 100.0), 5.0);
+    float d = getShape(p, tType, 0.6);
+    return abs(d) - thickness;
+}
+
+void main() {
+    vec2 uv = texCoord;
+    float aspect = resolution.x / resolution.y;
+    vec2 p = uv * vec2(columns, rows);
+    vec2 cellId = floor(p);
+    vec2 cellUv = fract(p) * 2.0 - 1.0;
+    
+    // adjust aspect ratio inside the cell so shapes aren't stretched
+    cellUv.x *= (resolution.x / columns) / (resolution.y / rows);
+    
+    float seed = fract(sin(dot(cellId, vec2(12.9898, 78.233))) * 43758.5453);
+    
+    float dR = scene(cellUv - vec2(aberration, 0.0), seed);
+    float dG = scene(cellUv, seed);
+    float dB = scene(cellUv + vec2(aberration, 0.0), seed);
+    
+    float blur = 0.02;
+    float r = smoothstep(blur, 0.0, dR);
+    float g = smoothstep(blur, 0.0, dG);
+    float b = smoothstep(blur, 0.0, dB);
+    
+    // red background
+    vec3 result = vec3(0.8, 0.1, 0.1); 
+    result = mix(result, vec3(1.0, 1.0, 0.0), r); 
+    result = mix(result, vec3(0.0, 1.0, 1.0), b); 
+    result = mix(result, vec3(1.0, 1.0, 1.0), g); 
+    
+    gl_FragColor = vec4(result, 1.0);
+}
+`
+  },
+  {
+    header: `/*{
+  "description": "Ferrofluid",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "blob_size", "min": 1.0, "max": 50.0, "default": 21.0 },
+    { "name": "blobs", "min": 1.0, "max": 10.0, "default": 1.0 },
+    { "name": "density", "min": 1.0, "max": 100.0, "default": 52.0 },
+    { "name": "speed", "min": 0.0, "max": 100.0, "default": 38.0 },
+    { "name": "opacity", "min": 0.0, "max": 1.0, "default": 1.0 }
+  ],
+  "uuid": "ferrofluid-1"
+}*/`,
+    code: `
+#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform float time;
+uniform vec2 resolution;
+uniform float blob_size;
+uniform float blobs;
+uniform float density;
+uniform float speed;
+uniform float opacity;
+
+varying vec2 texCoord;
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f*f*(3.0-2.0*f);
+    return mix(mix(hash(i + vec2(0.0,0.0)), hash(i + vec2(1.0,0.0)), u.x),
+               mix(hash(i + vec2(0.0,1.0)), hash(i + vec2(1.0,1.0)), u.x), u.y);
+}
+float fbm(vec2 p) {
+    float f = 0.0;
+    float amp = 0.5;
+    for(int i=0; i<4; i++) {
+        f += amp * noise(p);
+        p *= 2.0;
+        amp *= 0.5;
+    }
+    return f;
+}
+
+void main() {
+    vec2 uv = texCoord * 2.0 - 1.0;
+    uv.x *= resolution.x / resolution.y;
+    
+    float t = time * speed * 0.01;
+    
+    vec2 p = uv * (density * 0.1);
+    
+    vec2 q = vec2(fbm(p + vec2(0.0, t)), fbm(p + vec2(5.2, 1.3 - t)));
+    vec2 r = vec2(fbm(p + 4.0*q + vec2(1.7, 9.2)), fbm(p + 4.0*q + vec2(8.3, 2.8)));
+    
+    float n = fbm(p + 4.0*r);
+    
+    float ridges = abs(sin(n * blobs * 3.1415 + t));
+    ridges = smoothstep(0.0, blob_size * 0.01, ridges);
+    ridges = 1.0 - ridges;
+    
+    vec3 lightDir = normalize(vec3(1.0, 1.0, 0.5));
+    float eps = 0.01;
+    float nx = fbm(p + vec2(eps, 0.0) + 4.0*r) - n;
+    float ny = fbm(p + vec2(0.0, eps) + 4.0*r) - n;
+    vec3 normal = normalize(vec3(-nx, -ny, eps * 10.0));
+    
+    float diffuse = max(dot(normal, lightDir), 0.0);
+    float spec = pow(max(dot(reflect(-lightDir, normal), vec3(0.0, 0.0, 1.0)), 0.0), 16.0);
+    
+    vec3 color = vec3(0.8, 0.2, 0.05) * diffuse + vec3(1.0, 0.8, 0.6) * spec;
+    color *= ridges * 1.5; 
+    
+    color = mix(vec3(0.05, 0.0, 0.0), color, ridges);
+    
+    gl_FragColor = vec4(color, opacity);
+}
+`
+  },
+  {
+    header: `/*{
+  "description": "Cloudy Shader",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "smooth_bands", "default": 1.0, "type": "boolean" },
+    { "name": "warp_depth", "min": 0.0, "max": 10.0, "default": 1.0 },
+    { "name": "complexity", "min": 1.0, "max": 10.0, "default": 6.0 },
+    { "name": "bands", "min": 1.0, "max": 100.0, "default": 48.0 },
+    { "name": "speed", "min": 0.0, "max": 100.0, "default": 57.0 }
+  ],
+  "uuid": "shader-clouds-1"
+}*/`,
+    code: `
+#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform float time;
+uniform vec2 resolution;
+uniform float warp_depth;
+uniform float complexity;
+uniform float bands;
+uniform float speed;
+uniform float smooth_bands;
+
+varying vec2 texCoord;
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f*f*(3.0-2.0*f);
+    return mix(mix(hash(i + vec2(0.0,0.0)), hash(i + vec2(1.0,0.0)), u.x),
+               mix(hash(i + vec2(0.0,1.0)), hash(i + vec2(1.0,1.0)), u.x), u.y);
+}
+float fbm(vec2 p, float comp) {
+    float f = 0.0;
+    float amp = 0.5;
+    for(int i=0; i<10; i++) {
+        if(float(i) >= comp) break;
+        f += amp * noise(p);
+        p *= 2.0;
+        amp *= 0.5;
+    }
+    return f;
+}
+
+void main() {
+    vec2 uv = texCoord * 2.0 - 1.0;
+    uv.x *= resolution.x / resolution.y;
+    
+    float t = time * speed * 0.005;
+    
+    vec2 p = uv * 3.0;
+    
+    vec2 q = vec2(fbm(p + vec2(0.0, t), complexity), fbm(p + vec2(5.2, 1.3 - t), complexity));
+    vec2 r = vec2(fbm(p + warp_depth*q + vec2(1.7, 9.2), complexity), fbm(p + warp_depth*q + vec2(8.3, 2.8), complexity));
+    
+    float n = fbm(p + warp_depth*r, complexity);
+    
+    if (smooth_bands < 0.5) {
+        n = floor(n * bands) / bands;
+    } else {
+        n = sin(n * bands * 3.1415) * 0.5 + 0.5;
+    }
+    
+    vec3 col1 = vec3(0.05, 0.2, 0.4);
+    vec3 col2 = vec3(0.2, 0.5, 0.8);
+    vec3 col3 = vec3(0.8, 0.9, 1.0);
+    
+    vec3 color = mix(col1, col2, clamp(n*2.0, 0.0, 1.0));
+    color = mix(color, col3, clamp(n*2.0 - 1.0, 0.0, 1.0));
+    
+    gl_FragColor = vec4(color, 1.0);
+}
+`
+  },
+  {
+    header: `/*{
+  "description": "Bubble Spheres",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "count", "min": 1.0, "max": 20.0, "default": 6.0, "type": "number" },
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "size", "min": 0.1, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "connect_lines", "default": 1.0, "type": "boolean" }
+  ],
+  "uuid": "bubble-spheres-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
 
   {
     header: `/*{
@@ -418,7 +783,11 @@ export class WebGLGenerativeRenderer {
     def.parameters.forEach(p => {
       if (progData.uniforms[p.name]) {
         const val = settings[p.name] !== undefined ? settings[p.name] : p.default;
-        gl.uniform1f(progData.uniforms[p.name], val);
+        if (typeof val === 'number') {
+            gl.uniform1f(progData.uniforms[p.name], val);
+        } else if (typeof val === 'string' && !isNaN(Number(val))) {
+            gl.uniform1f(progData.uniforms[p.name], Number(val));
+        }
       }
     });
 
