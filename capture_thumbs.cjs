@@ -1,7 +1,6 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 
-// We will read generatives.ts and extract the uuids using a regex
 const genContent = fs.readFileSync('src/lib/generatives.ts', 'utf8');
 const uuids = [...genContent.matchAll(/"uuid":\s*"([^"]+)"/g)].map(m => m[1]);
 console.log('Found UUIDs:', uuids);
@@ -10,26 +9,40 @@ console.log('Found UUIDs:', uuids);
   const browser = await puppeteer.launch();
   const page = await browser.newPage();
   
-  await page.setViewport({ width: 800, height: 400 });
+  await page.setViewport({ width: 800, height: 800, deviceScaleFactor: 1 });
+
+  // Initial warmup navigation
+  try {
+    await page.goto('http://127.0.0.1:3000', { waitUntil: 'domcontentloaded', timeout: 10000 });
+    await new Promise(r => setTimeout(r, 2000));
+  } catch (e) {
+    console.log('Warmup note:', e.message);
+  }
 
   for (const uuid of uuids) {
     console.log(`Capturing ${uuid}...`);
     try {
-      await page.goto(`http://127.0.0.1:3000/?gen=${uuid}`, { waitUntil: 'load', timeout: 5000 });
+      await page.goto(`http://127.0.0.1:3000/?gen=${uuid}`, { waitUntil: 'domcontentloaded', timeout: 12000 });
     } catch (e) {
       console.log('Goto error (ignored):', e.message);
     }
     
     try {
-      // Brutalist Grid and some others take a second to compile shaders
-      await new Promise(r => setTimeout(r, 4000)); 
-      await page.screenshot({ path: `public/previews/${uuid}.png` });
-      console.log(`Saved ${uuid}.png`);
+      // Wait for WebGL shader compilation and canvas rendering
+      await new Promise(r => setTimeout(r, 4500));
+      
+      const canvasElement = await page.$('canvas');
+      if (canvasElement) {
+        await canvasElement.screenshot({ path: `public/previews/${uuid}.png` });
+      } else {
+        await page.screenshot({ path: `public/previews/${uuid}.png` });
+      }
+      console.log(`Saved square thumbnail: ${uuid}.png`);
     } catch(e) {
       console.log('Screenshot error:', e.message);
     }
   }
 
   await browser.close();
-  console.log('All screenshots captured!');
+  console.log('All square screenshots captured!');
 })();

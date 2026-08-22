@@ -31,7 +31,9 @@ import {
   Circle,
   Square,
   Menu,
-  Radio
+  Radio,
+  Blend,
+  Sun
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition } from './lib/generatives';
@@ -118,6 +120,10 @@ interface Layer {
   isMuted: boolean;
   isSoloed: boolean;
   ccBindings?: Record<string, { cc: number, min: number, max: number }>;
+  maskTargetId?: string | null;
+  maskInverted?: boolean;
+  maskMode?: 'alpha' | 'luma';
+  showMaskGraphic?: boolean;
 }
 
 interface Scene {
@@ -996,6 +1002,7 @@ export default function App() {
     ];
   });
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
+  const [activeMaskMenuLayerId, setActiveMaskMenuLayerId] = useState<string | null>(null);
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [isPlaying, setIsPlaying] = useState(true);
   const [midiAccess, setMidiAccess] = useState<MIDIAccess | null>(null);
@@ -1021,7 +1028,7 @@ export default function App() {
   const [showRoutingGuide, setShowRoutingGuide] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
   const [compositionLayout, setCompositionLayout] = useState<'stack' | 'split-vertical' | 'split-horizontal' | 'grid-2x2' | 'grid-3x3' | 'grid-4x4'>('stack');
-  const [aspectRatioValue, setAspectRatioValue] = useState(60); // 0 = 9:16, 100 = 16:9, ~50 = 1:1
+  const [aspectRatioValue, setAspectRatioValue] = useState<number>(() => { const p = new URLSearchParams(window.location.search); return p.get('gen') ? 50 : 60; });
   const [resolutionScale, setResolutionScale] = useState(1.0); // Default to 100% Quality
   const [sidebarTab, setSidebarTab] = useState<'config' | 'triggers'>('config');
   const [isRecording, setIsRecording] = useState(false);
@@ -1083,10 +1090,12 @@ export default function App() {
   const parameterEasingRef = useRef<Record<string, number>>({});
   const wavesCanvasRef = useRef<Record<string, HTMLCanvasElement>>({}); 
   const wavesNoiseRef = useRef<any>(null);
+  const terrainNoiseRef = useRef<any>(null);
   const topographyCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
   const sphereCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
   const sphereParticlesRef = useRef<Record<string, { count: number, particles: SphereParticle[] }>>({});
   const stickinessCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const layerOutputCanvasesRef = useRef<Record<string, HTMLCanvasElement>>({});
   
   // Accumulation Mode Refs
   const accumulateCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
@@ -1109,6 +1118,65 @@ export default function App() {
     }, 100);
     return () => clearInterval(interval);
   }, [audioPlaying]);
+
+  // Screen Wake Lock & Tablet Keep-Awake Manager
+  const wakeLockRef = useRef<any>(null);
+  const [isWakeLockActive, setIsWakeLockActive] = useState<boolean>(false);
+  const lastMidiActivityRef = useRef<number>(Date.now());
+
+  const requestWakeLock = useCallback(async () => {
+    if (typeof navigator !== 'undefined' && 'wakeLock' in navigator) {
+      try {
+        if (wakeLockRef.current && !wakeLockRef.current.released) return;
+        const lock = await (navigator as any).wakeLock.request('screen');
+        wakeLockRef.current = lock;
+        setIsWakeLockActive(true);
+        lock.addEventListener('release', () => {
+          setIsWakeLockActive(false);
+          wakeLockRef.current = null;
+        });
+      } catch (err) {
+        // Can fail if low battery or tab in background
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    requestWakeLock();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        requestWakeLock();
+      }
+    };
+
+    const handleUserInteraction = () => {
+      if (!wakeLockRef.current || wakeLockRef.current.released) {
+        requestWakeLock();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('touchstart', handleUserInteraction, { passive: true });
+    window.addEventListener('pointerdown', handleUserInteraction, { passive: true });
+
+    // Periodic check to keep tablet screen awake if receiving MIDI or playing
+    const keepAliveInterval = setInterval(() => {
+      if (isPlaying || Date.now() - lastMidiActivityRef.current < 300000) {
+        requestWakeLock();
+      }
+    }, 15000);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('touchstart', handleUserInteraction);
+      window.removeEventListener('pointerdown', handleUserInteraction);
+      clearInterval(keepAliveInterval);
+      if (wakeLockRef.current) {
+        try { wakeLockRef.current.release(); } catch (e) {}
+      }
+    };
+  }, [requestWakeLock, isPlaying]);
 
   const handleAddAudioStem = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
@@ -1371,6 +1439,12 @@ export default function App() {
   }, [requestMidiAccess]);
 
   const handleMidiMessage = useCallback((event: any) => {
+    // Keep tablet awake while receiving MIDI events
+    lastMidiActivityRef.current = Date.now();
+    if (!wakeLockRef.current || wakeLockRef.current.released) {
+      requestWakeLock();
+    }
+
     const [statusByte, note, velocity] = event.data;
     const channel = statusByte & 0xf;
     const type = statusByte >> 4;
@@ -1806,6 +1880,17 @@ export default function App() {
       return true;
     });
 
+    const renderedLayersMap: Record<string, {
+      canvas: HTMLCanvasElement;
+      opacityMult: number;
+      slotX: number;
+      slotY: number;
+      slotW: number;
+      slotH: number;
+      isGrid: boolean;
+      layer: Layer;
+    }> = {};
+
     layersToDraw.forEach(layer => {
       let audioVisualOpacity = 1.0;
       let audioIsActive = false;
@@ -2190,10 +2275,12 @@ export default function App() {
               ctx.fillStyle = '#000';
               ctx.fillRect(0, 0, targetW, targetH);
               ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-              ctx.lineWidth = 1;
+              
+              const { speed, freq, amp, lines, thickness } = modifiedSettings;
+              const lineThickness = thickness ?? 2.2;
+              ctx.lineWidth = lineThickness;
               ctx.lineJoin = 'round';
               
-              const { speed, freq, amp, lines } = modifiedSettings;
               const W = targetW;
               const H = targetH;
               const spacing = W / lines;
@@ -2241,7 +2328,8 @@ export default function App() {
               ctx.fillStyle = '#000';
               ctx.fillRect(0, 0, targetW, targetH);
               
-              const { speed, freq, amp, lines } = modifiedSettings;
+              const { speed, freq, amp, lines, thickness } = modifiedSettings;
+              const lineThickness = thickness ?? 2.2;
               const W = targetW;
               const H = targetH;
               const XSTEP = 3;
@@ -2288,7 +2376,7 @@ export default function App() {
                 ctx.moveTo(pts[0].x, ys[0]);
                 for (let j = 1; j < pts.length; j++) ctx.lineTo(pts[j].x, ys[j]);
                 ctx.strokeStyle = 'rgba(255,255,255,0.88)';
-                ctx.lineWidth = 0.9;
+                ctx.lineWidth = lineThickness;
                 ctx.stroke();
               }
               
@@ -2436,100 +2524,6 @@ export default function App() {
               ctx.globalCompositeOperation = 'source-over';
               
               element = canvas;
-          } else if (def.uuid === 'bubble-spheres-canvas-1') {
-              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
-              const canvas = sphereCanvasRef.current[layer.id];
-              if (canvas.width !== targetW || canvas.height !== targetH) {
-                  canvas.width = targetW;
-                  canvas.height = targetH;
-              }
-              const ctx = canvas.getContext('2d')!;
-              ctx.clearRect(0, 0, targetW, targetH);
-              
-              ctx.fillStyle = '#ebe7dc';
-              ctx.fillRect(0, 0, targetW, targetH);
-              
-              const { count, speed, size, connect_lines } = modifiedSettings;
-              const num = Math.floor(count ?? 6.0);
-              const spd = speed ?? 1.0;
-              const sz = size ?? 1.0;
-              const drawLines = (connect_lines ?? 1.0) > 0.5;
-              
-              const t = nowSec * spd;
-              const spheres: {x: number, y: number, r: number, colorIdx: number, z: number}[] = [];
-              
-              for(let i=0; i<num; i++) {
-                 const seed = i * 13.37;
-                 const rx = Math.sin(seed * 43.12);
-                 const ry = Math.cos(seed * 91.22);
-                 const rz = Math.sin(seed * 11.11);
-                 
-                 const cx = targetW * 0.5 + Math.sin(t * 0.5 + rx * Math.PI * 2) * targetW * 0.2;
-                 const cy = targetH * 0.5 + Math.cos(t * 0.7 + ry * Math.PI * 2) * targetH * 0.2;
-                 const cz = Math.sin(t * 0.6 + rz * Math.PI * 2);
-                 
-                 const baseR = Math.min(targetW, targetH) * 0.1 * sz;
-                 const r = baseR * (1.0 + cz * 0.5) * (0.5 + Math.abs(rx) * 1.5);
-                 
-                 spheres.push({ x: cx, y: cy, r: Math.max(1, r), z: cz, colorIdx: i % 3 });
-              }
-              
-              spheres.sort((a,b) => a.z - b.z);
-              
-              if (drawLines) {
-                  ctx.strokeStyle = 'rgba(196, 120, 103, 0.6)';
-                  ctx.lineWidth = 1.5;
-                  ctx.beginPath();
-                  for(let i=0; i<spheres.length; i++) {
-                     for(let j=i+1; j<spheres.length; j++) {
-                        const d = Math.hypot(spheres[i].x - spheres[j].x, spheres[i].y - spheres[j].y);
-                        if (d < targetW * 0.4) {
-                           ctx.moveTo(spheres[i].x, spheres[i].y);
-                           ctx.lineTo(spheres[j].x, spheres[j].y);
-                        }
-                     }
-                  }
-                  ctx.stroke();
-              }
-              
-              const colors = [
-                 ['#ff593a', '#c22f18'],
-                 ['#b4c8cf', '#738f97'],
-                 ['#faa8a2', '#d56f6c']
-              ];
-              
-              for(const s of spheres) {
-                  const grad = ctx.createRadialGradient(
-                      s.x - s.r * 0.3, s.y - s.r * 0.3, s.r * 0.1,
-                      s.x, s.y, s.r
-                  );
-                  grad.addColorStop(0, colors[s.colorIdx][0]);
-                  grad.addColorStop(1, colors[s.colorIdx][1]);
-                  
-                  ctx.fillStyle = 'rgba(0,0,0,0.15)';
-                  ctx.beginPath();
-                  ctx.arc(s.x + s.r*0.2, s.y + s.r*0.4, s.r, 0, Math.PI * 2);
-                  ctx.fill();
-                  
-                  ctx.fillStyle = grad;
-                  ctx.beginPath();
-                  ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
-                  ctx.fill();
-                  
-                  ctx.fillStyle = 'rgba(255,255,255,0.3)';
-                  ctx.beginPath();
-                  ctx.arc(s.x - s.r*0.3, s.y - s.r*0.3, s.r*0.15, 0, Math.PI * 2);
-                  ctx.fill();
-                  
-                  if (drawLines) {
-                     ctx.fillStyle = 'rgba(0,0,0,0.3)';
-                     ctx.beginPath();
-                     ctx.arc(s.x, s.y, s.r*0.06, 0, Math.PI * 2);
-                     ctx.fill();
-                  }
-              }
-              
-              element = canvas;
             } else if (def.uuid === 'terrain-lines-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
               const canvas = sphereCanvasRef.current[layer.id];
@@ -2541,53 +2535,151 @@ export default function App() {
               ctx.fillStyle = '#f5f4f2';
               ctx.fillRect(0, 0, targetW, targetH);
               
-              const { speed, amplitude, density } = modifiedSettings;
-              const spd = speed ?? 1.0;
-              const amp = amplitude ?? 80.0;
-              const dens = density ?? 1.0;
+              if (!terrainNoiseRef.current) terrainNoiseRef.current = createNoise2D();
+              const noise2D = terrainNoiseRef.current;
+              
+              const { speed, amplitude, density, ruggedness, thickness } = modifiedSettings;
+              const spd = speed ?? 0.8;
+              const amp = amplitude ?? 140.0;
+              const dens = density ?? 1.2;
+              const rugg = ruggedness ?? 1.8;
+              const lineThickness = thickness ?? 1.5;
               
               const t = nowSec * spd;
-              const gridW = 40 * dens;
-              const gridH = 40 * dens;
+              const gridW = Math.round(38 * dens);
+              const gridH = Math.round(38 * dens);
               const step = 20 / dens;
               
+              const totalExtentX = gridW * step;
+              const totalExtentY = gridH * step;
+              
+              // Mountain Massif Envelopes (Two distinct Alpine mountain groups separated by a valley pass)
+              const massif1X = -totalExtentX * 0.22 + Math.sin(t * 0.25) * (totalExtentX * 0.03);
+              const massif1Y = -totalExtentY * 0.16 + Math.cos(t * 0.22) * (totalExtentY * 0.03);
+              const massif1Width = totalExtentX * 0.26;
+              const massif1Height = totalExtentY * 0.24;
+              
+              const massif2X = totalExtentX * 0.22 + Math.cos(t * 0.28) * (totalExtentX * 0.03);
+              const massif2Y = totalExtentY * 0.18 + Math.sin(t * 0.24) * (totalExtentY * 0.03);
+              const massif2Width = totalExtentX * 0.25;
+              const massif2Height = totalExtentY * 0.23;
+              
+              const getElevation = (x: number, y: number) => {
+                  // 1. Massif Footprint Envelopes
+                  const dx1 = (x - massif1X) / massif1Width;
+                  const dy1 = (y - massif1Y) / massif1Height;
+                  const dSq1 = dx1 * dx1 + dy1 * dy1;
+                  const env1 = Math.exp(-0.5 * dSq1 * dSq1);
+                  
+                  const dx2 = (x - massif2X) / massif2Width;
+                  const dy2 = (y - massif2Y) / massif2Height;
+                  const dSq2 = dx2 * dx2 + dy2 * dy2;
+                  const env2 = Math.exp(-0.5 * dSq2 * dSq2);
+                  
+                  const env = Math.max(env1 * 1.0, env2 * 0.90);
+                  if (env < 0.005) return 0.0;
+                  
+                  // 2. Multi-Octave Ridged Fractal Noise for Multiple Clustered Mountain Peaks
+                  const fx = x * 0.0085;
+                  const fy = y * 0.0085;
+                  const timeDrift = t * 0.08;
+                  
+                  // Octave 1: Major mountain spines & peaks
+                  const n1 = noise2D(fx + timeDrift, fy + timeDrift * 0.5);
+                  const r1 = 1.0 - Math.abs(n1);
+                  
+                  // Octave 2: Secondary clustered peaks, arêtes, and cols
+                  const n2 = noise2D(fx * 2.15 + 17.3, fy * 2.15 + 43.7);
+                  const r2 = 1.0 - Math.abs(n2);
+                  
+                  // Octave 3: Jagged rock facets and cliffs
+                  const n3 = noise2D(fx * 4.6 + 89.1, fy * 4.6 + 131.5);
+                  const r3 = 1.0 - Math.abs(n3);
+                  
+                  // Octave 4: Fine crag details
+                  const n4 = noise2D(fx * 9.8 + 211.9, fy * 9.8 + 307.3);
+                  const r4 = 1.0 - Math.abs(n4);
+                  
+                  // Combined ridged multi-peak structure
+                  const rawStructure = (r1 * 1.0 + r2 * 0.60 + r3 * 0.32 + r4 * 0.15) / 2.07;
+                  const sharpened = Math.pow(rawStructure, rugg);
+                  
+                  // Smooth base transition so flat ground stays flat
+                  const smoothEnv = Math.pow(env, 0.85);
+                  const h = smoothEnv * sharpened;
+                  return Math.max(0.0, Math.min(1.0, h * 1.4));
+              };
+              
               const iso = (x: number, y: number, z: number) => {
-                 const angle = Math.PI / 6;
-                 return {
-                    x: targetW/2 + (x - y) * Math.cos(angle),
-                    y: targetH/2 + 100 + (x + y) * Math.sin(angle) - z
-                 };
+                  const angle = Math.PI / 6;
+                  const cosA = Math.cos(angle);
+                  const sinA = Math.sin(angle);
+                  return {
+                      x: targetW / 2 + (x - y) * cosA,
+                      y: targetH / 2 + 70 + (x + y) * sinA * 0.65 - z
+                  };
               };
               
-              const noise2D = (nx: number, ny: number) => {
-                 return Math.sin(nx * 0.1 + ny * 0.05 + t) * 0.5 + 
-                        Math.sin(nx * 0.2 - ny * 0.1 - t*0.5) * 0.25 + 
-                        Math.sin(nx * 0.05 + ny * 0.2 + t*0.2) * 0.25;
+              // Red on flat ground (h=0) to Deep Blue on highest peaks (h=1)
+              const getColorForHeight = (hNorm: number) => {
+                  const tVal = Math.max(0.0, Math.min(1.0, hNorm));
+                  // Flat red: rgb(238, 48, 76), Peak blue: rgb(24, 68, 122)
+                  const r = Math.round(238 + (24 - 238) * tVal);
+                  const g = Math.round(48 + (68 - 48) * tVal);
+                  const b = Math.round(76 + (122 - 76) * tVal);
+                  return `rgb(${r}, ${g}, ${b})`;
               };
               
-              const colors = ['#f68b1f', '#e67ba0', '#1a1cd4', '#16441b', '#f92002'];
-              ctx.lineWidth = 1.5;
+              ctx.lineWidth = lineThickness;
+              ctx.lineCap = 'square';
+              ctx.lineJoin = 'miter';
               
+              // 1. Draw horizontal terrain rows
               for (let yi = -gridH; yi <= gridH; yi++) {
-                 for (let xi = -gridW; xi <= gridW; xi++) {
-                     const x = xi * step;
-                     const y = yi * step;
-                     const z = noise2D(x, y) * amp;
-                     const zNext = noise2D(x + step, y) * amp;
-                     
-                     const p1 = iso(x, y, z);
-                     const p2 = iso(x + step, y, zNext);
-                     
-                     // Region color based on coarse grid
-                     const regionVal = Math.floor(Math.sin(xi*0.1) * 3 + Math.cos(yi*0.1) * 3 + 10) % colors.length;
-                     ctx.strokeStyle = colors[regionVal];
-                     
-                     ctx.beginPath();
-                     ctx.moveTo(p1.x, p1.y);
-                     ctx.lineTo(p2.x, p2.y);
-                     ctx.stroke();
-                 }
+                  for (let xi = -gridW; xi < gridW; xi++) {
+                      const x1 = xi * step;
+                      const y1 = yi * step;
+                      const h1 = getElevation(x1, y1);
+                      const p1 = iso(x1, y1, h1 * amp);
+                      
+                      const x2 = (xi + 1) * step;
+                      const y2 = yi * step;
+                      const h2 = getElevation(x2, y2);
+                      const p2 = iso(x2, y2, h2 * amp);
+                      
+                      const avgH = (h1 + h2) * 0.5;
+                      ctx.strokeStyle = getColorForHeight(avgH);
+                      
+                      ctx.beginPath();
+                      ctx.moveTo(p1.x, p1.y);
+                      ctx.lineTo(p2.x, p2.y);
+                      ctx.stroke();
+                  }
               }
+              
+              // 2. Draw longitudinal terrain columns for 3D wireframe mesh
+              for (let xi = -gridW; xi <= gridW; xi++) {
+                  for (let yi = -gridH; yi < gridH; yi++) {
+                      const x1 = xi * step;
+                      const y1 = yi * step;
+                      const h1 = getElevation(x1, y1);
+                      const p1 = iso(x1, y1, h1 * amp);
+                      
+                      const x2 = xi * step;
+                      const y2 = (yi + 1) * step;
+                      const h2 = getElevation(x2, y2);
+                      const p2 = iso(x2, y2, h2 * amp);
+                      
+                      const avgH = (h1 + h2) * 0.5;
+                      ctx.strokeStyle = getColorForHeight(avgH);
+                      
+                      ctx.beginPath();
+                      ctx.moveTo(p1.x, p1.y);
+                      ctx.lineTo(p2.x, p2.y);
+                      ctx.stroke();
+                  }
+              }
+              
               element = canvas;
           } else if (def.uuid === 'squares-noise-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
@@ -2600,56 +2692,176 @@ export default function App() {
               ctx.fillStyle = '#000000';
               ctx.fillRect(0, 0, targetW, targetH);
               
-              const { speed, count, spread, rotation } = modifiedSettings;
+              const { speed, count, size, spacing, movement, rotation, delay } = modifiedSettings;
               const spd = speed ?? 1.0;
-              const num = Math.floor(count ?? 20);
-              const spr = spread ?? 80;
+              const num = Math.max(3, Math.min(60, Math.floor(count ?? 22)));
+              const sz = size ?? 130.0;
+              const spc = spacing ?? 32.0;
+              const mov = movement ?? 15.0;
               const rot = rotation ?? 0.0;
-              
+              const dly = delay ?? 0.05;
               const t = nowSec * spd;
               
-              const iso = (x0: number, y0: number, z: number) => {
-                 const x = x0 * Math.cos(rot) - y0 * Math.sin(rot);
-                 const y = x0 * Math.sin(rot) + y0 * Math.cos(rot);
-                 const angle = Math.PI / 6;
-                 return {
-                    x: targetW/2 + (x - y) * Math.cos(angle),
-                    y: targetH/2 + (x + y) * Math.sin(angle) - z
-                 };
-              };
+              const angle = Math.PI / 6;
+              const cosA = Math.cos(angle);
+              const sinA = Math.sin(angle);
               
-              ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
-              ctx.setLineDash([2, 4]); // noise/grainy look
-              ctx.lineWidth = 1.5;
+              const iso = (x: number, y: number, z: number) => ({
+                 x: targetW / 2 + (x - y) * cosA,
+                 y: targetH / 2 + (x + y) * sinA - z
+              });
+              
+              interface SquareItem {
+                 depth: number;
+                 ptsOuter: { x: number; y: number }[];
+                 ptsInner?: { x: number; y: number }[];
+                 hasInner: boolean;
+                 alpha: number;
+                 stipples: { x: number; y: number }[];
+              }
+              
+              const squares: SquareItem[] = [];
+              const half = (num - 1) / 2;
               
               for (let i = 0; i < num; i++) {
-                 const offset = i * spr - (num * spr)/2;
-                 const zOff = Math.sin(t + i*0.5) * 50;
-                 const size = 100 + Math.sin(t*0.5 + i) * 30;
+                 const u = half > 0 ? (i - half) / half : 0; // -1 (left) to +1 (right)
                  
-                 const p1 = iso(offset - size, -size, zOff);
-                 const p2 = iso(offset + size, -size, zOff);
-                 const p3 = iso(offset + size, size, zOff);
-                 const p4 = iso(offset - size, size, zOff);
+                 // Bell curve size profile: middle squares significantly larger than outer ones
+                 const profile = Math.cos(u * Math.PI * 0.46);
+                 const baseRadius = sz * (0.2 + 0.8 * Math.pow(Math.max(0, profile), 1.3));
+                 
+                 // Left-to-right phase delay: ones on the left (smaller i) react/rotate first!
+                 const wavePhase = t * 2.0 - i * (dly * 3.0);
+                 
+                 // Size increases slightly with wave motion
+                 const sizePulse = 1.0 + Math.sin(wavePhase) * 0.12 * (mov / 15.0);
+                 const r = baseRadius * sizePulse;
+                 
+                 // Small left-to-right drift movement
+                 const driftX = Math.sin(wavePhase * 0.7) * (mov * 0.8);
+                 const driftY = Math.cos(wavePhase * 0.7) * (mov * 0.3);
+                 
+                 // Rotation across main axis with progressive left-to-right delay
+                 const rotWave = Math.sin(t * 1.5 - i * (dly * 3.5)) * (0.4 + rot * 0.3);
+                 const curRot = rot + rotWave;
+                 
+                 // Axis coordinate
+                 const distAlongAxis = (i - half) * spc;
+                 const axisX = distAlongAxis + driftX;
+                 const axisY = -distAlongAxis * 0.3 + driftY;
+                 const axisZ = distAlongAxis * 0.45;
+                 
+                 // Local square corners rotated by curRot
+                 const localCorners = [
+                    { u: -r, v: -r },
+                    { u: r, v: -r },
+                    { u: r, v: r },
+                    { u: -r, v: r }
+                 ];
+                 
+                 const cosR = Math.cos(curRot);
+                 const sinR = Math.sin(curRot);
+                 
+                 const ptsOuter = localCorners.map(c => {
+                    const ru = c.u * cosR - c.v * sinR;
+                    const rv = c.u * sinR + c.v * cosR;
+                    const x3d = axisX + ru * 0.8;
+                    const y3d = axisY + ru * 0.5;
+                    const z3d = axisZ + rv;
+                    return iso(x3d, y3d, z3d);
+                 });
+                 
+                 const hasInner = (i % 2 === 0 || profile > 0.6);
+                 let ptsInner: { x: number; y: number }[] | undefined;
+                 if (hasInner) {
+                    const rIn = r * 0.65;
+                    const localIn = [
+                       { u: -rIn, v: -rIn },
+                       { u: rIn, v: -rIn },
+                       { u: rIn, v: rIn },
+                       { u: -rIn, v: rIn }
+                    ];
+                    ptsInner = localIn.map(c => {
+                       const ru = c.u * cosR - c.v * sinR;
+                       const rv = c.u * sinR + c.v * cosR;
+                       const x3d = axisX + ru * 0.8;
+                       const y3d = axisY + ru * 0.5;
+                       const z3d = axisZ + rv;
+                       return iso(x3d, y3d, z3d);
+                    });
+                 }
+                 
+                 // Generate stipples along edges for pointillist grainy texture
+                 const stipples: { x: number; y: number }[] = [];
+                 const dotsCount = Math.floor(15 + profile * 25);
+                 for (let d = 0; d < dotsCount; d++) {
+                    const edgeIdx = d % 4;
+                    const nextEdge = (edgeIdx + 1) % 4;
+                    const alphaLerp = ((d * 7 + i * 13) % 100) / 100;
+                    const pA = ptsOuter[edgeIdx];
+                    const pB = ptsOuter[nextEdge];
+                    const jitter = (Math.sin(d * 17.3 + i * 31.7) * 2.5);
+                    stipples.push({
+                       x: pA.x + (pB.x - pA.x) * alphaLerp + jitter,
+                       y: pA.y + (pB.y - pA.y) * alphaLerp + jitter
+                    });
+                 }
+                 
+                 const depth = (axisX + axisY) * sinA - axisZ;
+                 squares.push({
+                    depth,
+                    ptsOuter,
+                    ptsInner,
+                    hasInner,
+                    alpha: 0.5 + 0.5 * profile,
+                    stipples
+                 });
+              }
+              
+              // Sort back to front
+              squares.sort((a, b) => a.depth - b.depth);
+              
+              for (const sq of squares) {
+                 // 1. Draw outer stippled frame (bold and visible)
+                 ctx.strokeStyle = `rgba(255, 255, 255, ${Math.min(1.0, sq.alpha * 1.15)})`;
+                 ctx.lineWidth = 2.4;
+                 ctx.setLineDash([4, 2]); // distinct tech dashed frame
                  
                  ctx.beginPath();
-                 ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y);
-                 ctx.lineTo(p3.x, p3.y); ctx.lineTo(p4.x, p4.y);
+                 ctx.moveTo(sq.ptsOuter[0].x, sq.ptsOuter[0].y);
+                 for (let k = 1; k < 4; k++) ctx.lineTo(sq.ptsOuter[k].x, sq.ptsOuter[k].y);
                  ctx.closePath();
                  ctx.stroke();
                  
-                 // draw inner noisy dots
-                 ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-                 for(let d=0; d<20; d++) {
-                    const dx = offset + (Math.random()*2-1)*size;
-                    const dy = (Math.random()*2-1)*size;
-                    const pt = iso(dx, dy, zOff);
-                    ctx.fillRect(pt.x, pt.y, 1.5, 1.5);
+                 // 2. Draw inner nested frame if present
+                 if (sq.hasInner && sq.ptsInner) {
+                    ctx.strokeStyle = `rgba(255, 255, 255, ${Math.min(1.0, sq.alpha * 0.9)})`;
+                    ctx.lineWidth = 1.6;
+                    ctx.setLineDash([2, 2]);
+                    ctx.beginPath();
+                    ctx.moveTo(sq.ptsInner[0].x, sq.ptsInner[0].y);
+                    for (let k = 1; k < 4; k++) ctx.lineTo(sq.ptsInner[k].x, sq.ptsInner[k].y);
+                    ctx.closePath();
+                    ctx.stroke();
+                 }
+                 
+                 // 3. Draw edge stipple noise particles
+                 ctx.fillStyle = `rgba(255, 255, 255, ${Math.min(1.0, sq.alpha * 0.95)})`;
+                 for (const dot of sq.stipples) {
+                    ctx.fillRect(dot.x - 1, dot.y - 1, 2, 2);
+                 }
+                 
+                 // 4. Corner dot highlights
+                 ctx.fillStyle = `rgba(255, 255, 255, 1.0)`;
+                 for (const pt of sq.ptsOuter) {
+                    ctx.beginPath();
+                    ctx.arc(pt.x, pt.y, 2.2, 0, Math.PI * 2);
+                    ctx.fill();
                  }
               }
+              
               ctx.setLineDash([]);
-              element = canvas;
-          } else if (def.uuid === 'number-paths-canvas-1') {
+              element = canvas; } else if (def.uuid === 'number-paths-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
               const canvas = sphereCanvasRef.current[layer.id];
               if (canvas.width !== targetW || canvas.height !== targetH) {
@@ -2657,65 +2869,129 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              ctx.fillStyle = '#e5e5e3';
+              ctx.fillStyle = '#e6e5e2'; // Light warm paper background
               ctx.fillRect(0, 0, targetW, targetH);
               
-              const { speed, nodes, grid_size, movement, chaos } = modifiedSettings;
-              const gs = grid_size ?? 50.0;
-              const mov = movement ?? 0.0;
-              const cha = chaos ?? 1.0;
-              const t = nowSec * (speed ?? 1.0);
+              const { speed, nodes, grid_size, spread, movement, chaos } = modifiedSettings;
+              const gs = grid_size ?? 45.0;
+              const numNodes = Math.max(4, Math.min(60, Math.floor(nodes ?? 16)));
+              const spr = spread ?? 0.4;
+              const mov = movement ?? 15.0;
+              const cha = chaos ?? 0.0;
+              const spd = speed ?? 1.0;
+              const t = nowSec * spd;
               
-              // Draw grid
-              ctx.strokeStyle = '#d0cfca';
+              // Draw subtle grid lines
+              ctx.strokeStyle = '#d2d0cb';
               ctx.lineWidth = 1;
-              const ox = (targetW/2) % gs;
-              const oy = (targetH/2) % gs;
-              for(let x = ox; x < targetW; x+=gs) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, targetH); ctx.stroke(); }
-              for(let y = oy; y < targetH; y+=gs) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(targetW, y); ctx.stroke(); }
+              const ox = (targetW / 2) % gs;
+              const oy = (targetH / 2) % gs;
+              for (let x = ox; x < targetW; x += gs) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, targetH); ctx.stroke(); }
+              for (let y = oy; y < targetH; y += gs) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(targetW, y); ctx.stroke(); }
               
-              // Draw nodes and lines
-              const cols = ['#f16543', '#f6b8c9', '#7eb2dc', '#facb2a', '#1a1d20', '#76a68b'];
-              const pts: {x: number, y: number, c: string, num: number}[] = [];
-              const numNodes = Math.floor(nodes ?? 15);
+              const nodeColors = ['#ea5738', '#f3b2c1', '#72a3cf', '#fac528', '#202224', '#6da089'];
               
-              for(let i=0; i<numNodes; i++) {
-                 const xGrid = Math.floor(Math.sin(i * 12.3 + t*0.2) * 5);
-                 const yGrid = Math.floor(Math.cos(i * 32.1 + t*0.25) * 5);
+              interface PathNode {
+                 gx: number;
+                 gy: number;
+                 x: number;
+                 y: number;
+                 parent: number;
+                 color: string;
+                 num: number;
+              }
+              
+              const pts: PathNode[] = [];
+              const gridSpan = Math.max(2, Math.floor(2 + mov * 0.08));
+              
+              for (let i = 0; i < numNodes; i++) {
+                 // Dynamic time shift along the grid lines
+                 const timeShift = t * (0.25 + (i % 4) * 0.08);
+                 const rawGx = Math.sin(i * 12.31 + timeShift) * gridSpan;
+                 const rawGy = Math.cos(i * 32.17 + timeShift * 0.85) * gridSpan;
+                 
+                 const gxGrid = Math.round(rawGx);
+                 const gyGrid = Math.round(rawGy);
+                 
+                 // On-grid position
+                 const gridX = targetW / 2 + gxGrid * gs;
+                 const gridY = targetH / 2 + gyGrid * gs;
+                 
+                 // Chaotic floating offset (only active when chaos > 0)
+                 const continuousFloatX = (targetW / 2 + rawGx * gs) * Math.min(1, cha * 0.5) + gridX * (1.0 - Math.min(1, cha * 0.5));
+                 const continuousFloatY = (targetH / 2 + rawGy * gs) * Math.min(1, cha * 0.5) + gridY * (1.0 - Math.min(1, cha * 0.5));
+                 
+                 const chaoticJitterX = Math.sin(t * 1.5 + i * 2.13) * (mov * 0.4) * cha;
+                 const chaoticJitterY = Math.cos(t * 1.2 + i * 2.87) * (mov * 0.4) * cha;
+                 
+                 const finalX = (cha <= 0.001) ? gridX : (continuousFloatX + chaoticJitterX);
+                 const finalY = (cha <= 0.001) ? gridY : (continuousFloatY + chaoticJitterY);
+                 
+                 // Determine parent for tree branching vs single path
+                 let pIdx = i - 1;
+                 if (spr > 0.05 && i > 1) {
+                    const branchHash = Math.sin(i * 99.73 + 1.23) * 0.5 + 0.5;
+                    if (branchHash < spr) {
+                       const pick = Math.floor(((Math.sin(i * 37.19 + 4.56) * 0.5 + 0.5) * spr) * (i - 1));
+                       pIdx = Math.max(0, Math.min(i - 1, pick));
+                    }
+                 }
+                 
                  pts.push({
-                    x: targetW/2 + xGrid * gs + Math.sin(t*cha + i*13.3)*mov,
-                    y: targetH/2 + yGrid * gs + Math.cos(t*cha + i*17.7)*mov,
-                    c: cols[i % cols.length],
+                    gx: gxGrid,
+                    gy: gyGrid,
+                    x: finalX,
+                    y: finalY,
+                    parent: pIdx,
+                    color: nodeColors[i % nodeColors.length],
                     num: i + 1
                  });
               }
               
-              // Draw lines between sequential nodes
-              ctx.strokeStyle = '#111';
-              ctx.lineWidth = 2;
-              ctx.beginPath();
-              for(let i=0; i<pts.length-1; i++) {
-                 ctx.moveTo(pts[i].x, pts[i].y);
-                 // Manhattan routing or diagonal
-                 ctx.lineTo(pts[i+1].x, pts[i].y);
-                 ctx.lineTo(pts[i+1].x, pts[i+1].y);
-              }
-              ctx.stroke();
+              // Draw connecting lines
+              ctx.strokeStyle = '#181a1b';
+              ctx.lineWidth = 2.0;
+              ctx.lineCap = 'round';
+              ctx.lineJoin = 'round';
               
-              // Draw nodes
-              ctx.font = '10px monospace';
-              ctx.fillStyle = '#333';
-              for(const p of pts) {
-                 ctx.fillStyle = p.c;
+              for (let i = 1; i < pts.length; i++) {
+                 const node = pts[i];
+                 const parent = pts[node.parent];
                  ctx.beginPath();
-                 ctx.arc(p.x, p.y, gs * 0.4, 0, Math.PI*2);
+                 ctx.moveTo(parent.x, parent.y);
+                 
+                 // When chaos is 0, routing is strictly Manhattan on the grid lines (horizontal then vertical)
+                 if (cha <= 0.2) {
+                    ctx.lineTo(node.x, parent.y);
+                    ctx.lineTo(node.x, node.y);
+                 } else {
+                    // With higher chaos, allow direct diagonal/curved connections
+                    const useElbow = (Math.sin(i * 31.7) > (cha * 0.5));
+                    if (useElbow) {
+                       ctx.lineTo(node.x, parent.y);
+                       ctx.lineTo(node.x, node.y);
+                    } else {
+                       ctx.lineTo(node.x, node.y);
+                    }
+                 }
+                 ctx.stroke();
+              }
+              
+              // Draw nodes and numbers
+              const radius = gs * 0.36;
+              ctx.font = 'bold 11px monospace';
+              
+              for (const p of pts) {
+                 ctx.fillStyle = p.color;
+                 ctx.beginPath();
+                 ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
                  ctx.fill();
                  
-                 ctx.fillStyle = '#333';
-                 ctx.fillText(p.num.toString(), p.x + gs*0.6, p.y + gs*0.6);
+                 ctx.fillStyle = '#222426';
+                 ctx.fillText(p.num.toString(), p.x + radius + 4, p.y + radius * 0.7);
               }
-              element = canvas;
-          } else if (def.uuid === 'isometric-buildings-canvas-1') {
+              
+              element = canvas; } else if (def.uuid === 'isometric-buildings-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
               const canvas = sphereCanvasRef.current[layer.id];
               if (canvas.width !== targetW || canvas.height !== targetH) {
@@ -2723,24 +2999,29 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              ctx.fillStyle = '#ff7a7a'; // coral background
+              ctx.fillStyle = '#fc6c70'; // Rich coral pink background
               ctx.fillRect(0, 0, targetW, targetH);
               
-              const { speed, count, max_height } = modifiedSettings;
+              const { speed, count, size, spacing, max_height, movement, chaos } = modifiedSettings;
               const spd = speed ?? 1.0;
-              const num = Math.floor(count ?? 8);
-              const maxH = max_height ?? 200;
+              const n = Math.max(2, Math.min(20, Math.round(count ?? 7)));
+              const sz = size ?? 1.0;
+              const spc = spacing ?? 2.0;
+              const maxH = max_height ?? 220.0;
+              const mov = movement ?? 1.0;
+              const cha = chaos ?? 1.0;
               const t = nowSec * spd;
+              
+              const bWidth = 36 * sz;
+              const step = bWidth + spc;
               
               const iso = (x: number, y: number, z: number) => {
                  const angle = Math.PI / 6;
                  return {
-                    x: targetW/2 + (x - y) * Math.cos(angle),
-                    y: targetH/2 + 100 + (x + y) * Math.sin(angle) - z
+                    x: targetW / 2 + (x - y) * Math.cos(angle),
+                    y: targetH / 2 + 50 + (x + y) * Math.sin(angle) - z
                  };
               };
-              
-              const bWidth = 40;
               
               const drawBlock = (bx: number, by: number, height: number) => {
                  const pTop0 = iso(bx - bWidth/2, by - bWidth/2, height);
@@ -2755,8 +3036,8 @@ export default function App() {
                  
                  // Draw left face
                  const gradLeft = ctx.createLinearGradient(pTop3.x, pTop3.y, pBot3.x, pBot3.y);
-                 gradLeft.addColorStop(0, '#537188');
-                 gradLeft.addColorStop(1, '#ff7a7a');
+                 gradLeft.addColorStop(0, '#506e88');
+                 gradLeft.addColorStop(1, '#fc6c70');
                  ctx.fillStyle = gradLeft;
                  ctx.beginPath();
                  ctx.moveTo(pTop0.x, pTop0.y); ctx.lineTo(pTop3.x, pTop3.y);
@@ -2766,8 +3047,8 @@ export default function App() {
                  
                  // Draw right face
                  const gradRight = ctx.createLinearGradient(pTop2.x, pTop2.y, pBot2.x, pBot2.y);
-                 gradRight.addColorStop(0, '#36536b');
-                 gradRight.addColorStop(1, '#ff7a7a');
+                 gradRight.addColorStop(0, '#334e66');
+                 gradRight.addColorStop(1, '#fc6c70');
                  ctx.fillStyle = gradRight;
                  ctx.beginPath();
                  ctx.moveTo(pTop3.x, pTop3.y); ctx.lineTo(pTop2.x, pTop2.y);
@@ -2776,31 +3057,593 @@ export default function App() {
                  ctx.fill();
                  
                  // Draw top face
-                 ctx.fillStyle = '#ff9898';
+                 ctx.fillStyle = '#ff8e91';
                  ctx.beginPath();
                  ctx.moveTo(pTop0.x, pTop0.y); ctx.lineTo(pTop1.x, pTop1.y);
                  ctx.lineTo(pTop2.x, pTop2.y); ctx.lineTo(pTop3.x, pTop3.y);
                  ctx.closePath();
                  ctx.fill();
+                 
+                 // Subtle top edge highlight
+                 ctx.strokeStyle = '#ffa8ab';
+                 ctx.lineWidth = 1;
+                 ctx.stroke();
               };
               
-              const buildings = [];
-              for(let ix=-num; ix<=num; ix++) {
-                 for(let iy=-num; iy<=num; iy++) {
-                    const noise = Math.sin(ix*0.5 + t) + Math.cos(iy*0.5 + t*0.8);
-                    if (noise > 0.5) {
-                       const h = (noise - 0.5) * maxH * 2;
-                       buildings.push({x: ix * bWidth, y: iy * bWidth, h});
-                    }
+              const buildings: { x: number; y: number; h: number; order: number }[] = [];
+              const half = (n - 1) / 2;
+              
+              for (let ix = 0; ix < n; ix++) {
+                 for (let iy = 0; iy < n; iy++) {
+                    const cx = (ix - half) * step;
+                    const cy = (iy - half) * step;
+                    
+                    const distCenter = Math.hypot(ix - half, iy - half) / Math.max(1, half);
+                    const baseProfile = 0.35 + 0.65 * Math.max(0, 1.0 - distCenter * 0.6);
+                    
+                    const freq = 0.75 * cha;
+                    const w1 = Math.sin((ix * 0.7 - iy * 0.4) * freq + t * 1.5);
+                    const w2 = Math.cos((ix * 0.3 + iy * 0.8) * freq - t * 1.2);
+                    const w3 = Math.sin(distCenter * Math.PI * cha - t * 2.0);
+                    const wave = w1 * 0.45 + w2 * 0.35 + w3 * 0.2;
+                    
+                    const dynamicFactor = (1.0 - mov * 0.5) + (wave * 0.5 + 0.5) * mov;
+                    const h = Math.max(20, maxH * baseProfile * dynamicFactor);
+                    
+                    buildings.push({ x: cx, y: cy, h, order: ix + iy });
                  }
               }
               
-              // Sort by painter's algorithm (x + y)
-              buildings.sort((a,b) => (b.x + b.y) - (a.x + a.y));
+              buildings.sort((a, b) => a.order - b.order);
               
-              for(const b of buildings) {
+              for (const b of buildings) {
                  drawBlock(b.x, b.y, b.h);
               }
+              
+              element = canvas;
+            } else if (def.uuid === 'growing-circles-canvas-1') {
+                if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+                const canvas = sphereCanvasRef.current[layer.id];
+                if (canvas.width !== targetW || canvas.height !== targetH) {
+                    canvas.width = targetW; canvas.height = targetH;
+                }
+                const ctx = canvas.getContext('2d')!;
+                ctx.clearRect(0, 0, targetW, targetH);
+                
+                const { count, size, speed, duration, delay, transparency } = modifiedSettings;
+                const numCircles = Math.max(1, Math.min(200, Math.floor(count ?? 25.0)));
+                const maxSize = Math.max(10.0, Math.min(2400.0, size ?? 280.0));
+                const spd = Math.max(0.05, speed ?? 1.0);
+                const lifeDuration = Math.max(0.5, Math.min(60.0, duration ?? 6.0));
+                const birthDelay = Math.max(0.0, Math.min(5.0, delay ?? 0.25));
+                const transp = Math.max(0.0, Math.min(1.0, transparency ?? 0.0));
+                
+                // Continuous background transparency: 0.0 = solid warm-white, 1.0 = transparent
+                if (transp < 0.999) {
+                    const bgAlpha = 1.0 - transp;
+                    ctx.fillStyle = `rgba(243, 242, 238, ${bgAlpha})`;
+                    ctx.fillRect(0, 0, targetW, targetH);
+                }
+                
+                // Growth phase time: how long to grow from 0 to full size
+                const growthTime = 1.0 / spd;
+                // Total cycle length for each circle slot (holds full size during the remaining duration)
+                const totalLife = Math.max(growthTime + 0.1, lifeDuration);
+                
+                for (let i = 0; i < numCircles; i++) {
+                    // Staggered birth delay between consecutive circles
+                    const birthOffset = i * birthDelay;
+                    const shiftedTime = nowSec + 5000.0 - birthOffset;
+                    
+                    if (shiftedTime < 0) continue;
+                    
+                    const cycleIdx = Math.floor(shiftedTime / totalLife);
+                    const timeInCycle = shiftedTime % totalLife;
+                    
+                    // Deterministic pseudo-random position across entire canvas per (cycle, circle)
+                    const posSeed = Math.abs((i * 9301 + cycleIdx * 49297 + 1337) % 233280);
+                    const rand1 = ((posSeed * 9301 + 49297) % 233280) / 233280;
+                    const rand2 = ((posSeed * 1337 + 1013904223) % 233280) / 233280;
+                    
+                    const cx = rand1 * targetW;
+                    const cy = rand2 * targetH;
+                    
+                    // Current radius: grows smoothly from 0 to maxSize in growthTime, then stays at maxSize
+                    let currentRadius = 0.0;
+                    if (timeInCycle < growthTime) {
+                        const growthProgress = timeInCycle / growthTime;
+                        currentRadius = growthProgress * maxSize;
+                    } else {
+                        // Stays alive at full size, accumulating on screen!
+                        currentRadius = maxSize;
+                    }
+                    
+                    // Smooth 0.35s fade-out right before resetting to the next cycle
+                    let alpha = 1.0;
+                    const fadeWindow = 0.35;
+                    if (timeInCycle > (totalLife - fadeWindow)) {
+                        alpha = Math.max(0.0, (totalLife - timeInCycle) / fadeWindow);
+                    }
+                    
+                    if (currentRadius > 0.5 && alpha > 0.01) {
+                        ctx.fillStyle = `rgba(234, 56, 77, ${alpha})`;
+                        ctx.beginPath();
+                        ctx.arc(cx, cy, currentRadius, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+                
+                element = canvas;
+            } else if (def.uuid === 'cubes-matrix-3d-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) {
+                  canvas.width = targetW; canvas.height = targetH;
+              }
+              const ctx = canvas.getContext('2d')!;
+              ctx.clearRect(0, 0, targetW, targetH);
+              
+              // Clean white background matching user palette
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, targetW, targetH);
+              
+              const { speed, rotation, count, cube_size, spacing, size_randomization, dispersion, opacity } = modifiedSettings;
+              const spd = speed ?? 1.0;
+              const rotVal = rotation ?? 0.0;
+              const n = Math.max(1, Math.min(6, Math.round(count ?? 3)));
+              const baseSz = cube_size ?? 64.0;
+              const spc = spacing ?? 55.0;
+              const sizeRand = size_randomization ?? 0.5;
+              const disp = dispersion ?? 90.0;
+              const alpha = opacity ?? 0.70;
+              const t = nowSec * spd;
+              
+              // Standard Isometric angles (35.264 deg pitch, 45 deg yaw)
+              // Rotation parameter rotates around the vertical Y axis (default 0 = static isometric view)
+              const rotX = 0.61548; // Math.atan(1 / Math.SQRT2)
+              const rotY = (Math.PI / 4) + t * rotVal * 0.6;
+              const rotZ = 0.0;
+              
+              // Light direction (from upper right front for isometric shading)
+              const lx = 0.5, ly = -0.85, lz = 0.6;
+              const lLen = Math.hypot(lx, ly, lz) || 1;
+              const lightNorm = { x: lx / lLen, y: ly / lLen, z: lz / lLen };
+              
+              const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
+              const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+              const cosZ = Math.cos(rotZ), sinZ = Math.sin(rotZ);
+              
+              const rotate3D = (x: number, y: number, z: number) => {
+                  // Rotate Y (Yaw)
+                  const x1 = x * cosY + z * sinY;
+                  const z1 = -x * sinY + z * cosY;
+                  // Rotate X (Isometric Pitch)
+                  const y2 = y * cosX - z1 * sinX;
+                  const z2 = y * sinX + z1 * cosX;
+                  return { x: x1, y: y2, z: z2 };
+              };
+              
+              // True Orthographic Isometric Projection
+              const isoScale = Math.min(targetW, targetH) / 480;
+              const project = (p: { x: number; y: number; z: number }) => {
+                  return {
+                      x: targetW / 2 + p.x * isoScale,
+                      y: targetH / 2 + p.y * isoScale,
+                      z: p.z
+                  };
+              };
+              
+              interface QuadFace {
+                  p0: { x: number; y: number; z: number };
+                  p1: { x: number; y: number; z: number };
+                  p2: { x: number; y: number; z: number };
+                  p3: { x: number; y: number; z: number };
+                  centerZ: number;
+                  fillColor: string;
+                  strokeColor: string;
+                  isFront: boolean;
+              }
+              
+              const allFaces: QuadFace[] = [];
+              const half = (n - 1) / 2.0;
+              
+              const redColor = { r: 250, g: 59, b: 92 };
+              const blueColor = { r: 38, g: 68, b: 78 };
+              
+              const localVerts = [
+                  { x: -1, y: -1, z: -1 },
+                  { x:  1, y: -1, z: -1 },
+                  { x:  1, y:  1, z: -1 },
+                  { x: -1, y:  1, z: -1 },
+                  { x: -1, y: -1, z:  1 },
+                  { x:  1, y: -1, z:  1 },
+                  { x:  1, y:  1, z:  1 },
+                  { x: -1, y:  1, z:  1 }
+              ];
+              
+              const cubeFaces = [
+                  { v: [4, 5, 6, 7], n: { x: 0, y: 0, z: 1 } },
+                  { v: [1, 0, 3, 2], n: { x: 0, y: 0, z: -1 } },
+                  { v: [3, 2, 6, 7], n: { x: 0, y: 1, z: 0 } },
+                  { v: [0, 1, 5, 4], n: { x: 0, y: -1, z: 0 } },
+                  { v: [1, 2, 6, 5], n: { x: 1, y: 0, z: 0 } },
+                  { v: [0, 3, 7, 4], n: { x: -1, y: 0, z: 0 } }
+              ];
+              
+              for (let ix = 0; ix < n; ix++) {
+                  for (let iy = 0; iy < n; iy++) {
+                      for (let iz = 0; iz < n; iz++) {
+                          const seed = ix * 73.1 + iy * 31.7 + iz * 19.3 + 5.7;
+                          
+                          const stepDist = baseSz + spc;
+                          const bx = (ix - half) * stepDist;
+                          const by = (iy - half) * stepDist;
+                          const bz = (iz - half) * stepDist;
+                          
+                          const sizeJitter = Math.sin(seed * 7.1) * 0.5 + 0.5;
+                          const curRadius = (baseSz / 2) * (1.0 - sizeRand * 0.55 + sizeRand * sizeJitter * 1.1);
+                          
+                          // Dispersion: random axis direction (+X, -X, +Y, -Y, +Z, -Z)
+                          const dirChoice = Math.floor((Math.sin(seed * 13.3) * 0.5 + 0.5) * 6);
+                          const dispPulse = Math.sin(t * 1.5 + seed * 2.3) * 0.5 + 0.5;
+                          const dispAmount = disp * dispPulse;
+                          
+                          let dx = 0, dy = 0, dz = 0;
+                          if (dirChoice === 0) dx = dispAmount;
+                          else if (dirChoice === 1) dx = -dispAmount;
+                          else if (dirChoice === 2) dy = dispAmount;
+                          else if (dirChoice === 3) dy = -dispAmount;
+                          else if (dirChoice === 4) dz = dispAmount;
+                          else dz = -dispAmount;
+                          
+                          const curCx = bx + dx;
+                          const curCy = by + dy;
+                          const curCz = bz + dz;
+                          
+                          const isRed = Math.sin(seed * 11.3) > 0;
+                          const baseCol = isRed ? redColor : blueColor;
+                          
+                          const rotatedCubeVerts = localVerts.map(v => {
+                              const wx = curCx + v.x * curRadius;
+                              const wy = curCy + v.y * curRadius;
+                              const wz = curCz + v.z * curRadius;
+                              return rotate3D(wx, wy, wz);
+                          });
+                          
+                          const projVerts = rotatedCubeVerts.map(project);
+                          
+                          for (let f = 0; f < cubeFaces.length; f++) {
+                              const faceDef = cubeFaces[f];
+                              const p0 = projVerts[faceDef.v[0]];
+                              const p1 = projVerts[faceDef.v[1]];
+                              const p2 = projVerts[faceDef.v[2]];
+                              const p3 = projVerts[faceDef.v[3]];
+                              
+                              const norm2D = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
+                              const isFront = norm2D >= 0;
+                              
+                              const rotNorm = rotate3D(faceDef.n.x, faceDef.n.y, faceDef.n.z);
+                              const dotLight = rotNorm.x * lightNorm.x + rotNorm.y * lightNorm.y + rotNorm.z * lightNorm.z;
+                              const lightFactor = Math.max(0.25, Math.min(1.0, 0.65 + dotLight * 0.35));
+                              
+                              const r = Math.round(baseCol.r * lightFactor);
+                              const g = Math.round(baseCol.g * lightFactor);
+                              const b = Math.round(baseCol.b * lightFactor);
+                              
+                              const faceAlpha = isFront ? (alpha * 0.85) : (alpha * 0.35);
+                              const strokeAlpha = isFront ? Math.min(1.0, alpha * 1.1) : (alpha * 0.4);
+                              
+                              const fillColor = `rgba(${r}, ${g}, ${b}, ${faceAlpha})`;
+                              const strokeColor = isRed ? `rgba(210, 30, 60, ${strokeAlpha})` : `rgba(25, 45, 55, ${strokeAlpha})`;
+                              
+                              const centerZ = (p0.z + p1.z + p2.z + p3.z) / 4.0;
+                              
+                              allFaces.push({
+                                  p0, p1, p2, p3,
+                                  centerZ,
+                                  fillColor,
+                                  strokeColor,
+                                  isFront
+                              });
+                          }
+                      }
+                  }
+              }
+              
+              allFaces.sort((a, b) => a.centerZ - b.centerZ);
+              
+              for (let f = 0; f < allFaces.length; f++) {
+                  const face = allFaces[f];
+                  ctx.fillStyle = face.fillColor;
+                  ctx.strokeStyle = face.strokeColor;
+                  ctx.lineWidth = face.isFront ? 1.4 : 0.8;
+                  
+                  ctx.beginPath();
+                  ctx.moveTo(face.p0.x, face.p0.y);
+                  ctx.lineTo(face.p1.x, face.p1.y);
+                  ctx.lineTo(face.p2.x, face.p2.y);
+                  ctx.lineTo(face.p3.x, face.p3.y);
+                  ctx.closePath();
+                  
+                  ctx.fill();
+                  ctx.stroke();
+              }
+              
+              element = canvas; } else if (def.uuid === 'vein-labyrinth-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) {
+                  canvas.width = targetW; canvas.height = targetH;
+              }
+              const ctx = canvas.getContext('2d')!;
+              ctx.clearRect(0, 0, targetW, targetH);
+              
+              // 1. Clean warm-white background
+              ctx.fillStyle = '#f5f5f3';
+              ctx.fillRect(0, 0, targetW, targetH);
+              
+              const { growth, branch_chance, split_mode, segment_size, grid_mesh } = modifiedSettings;
+              const currentStep = Math.max(0.0, growth ?? 25.0);
+              const brChance = branch_chance ?? 0.45;
+              const splitRatio = split_mode ?? 2.5;
+              const segSize = Math.max(10.0, Math.min(45.0, segment_size ?? 20.0));
+              const meshAlpha = grid_mesh ?? 0.35;
+              
+              const cx = targetW / 2;
+              const cy = targetH / 2;
+              
+              // 2. Draw subtle background triangulation guide mesh across canvas
+              if (meshAlpha > 0.01) {
+                  ctx.strokeStyle = `rgba(0, 0, 0, ${0.065 * meshAlpha})`;
+                  ctx.lineWidth = 0.75;
+                  const gridStep = segSize * 2.2;
+                  const cols = Math.ceil(targetW / gridStep) + 2;
+                  const rows = Math.ceil(targetH / gridStep) + 2;
+                  
+                  ctx.beginPath();
+                  for (let r = 0; r <= rows; r++) {
+                      for (let c = 0; c <= cols; c++) {
+                          const px = (c - 1) * gridStep + ((r % 2) * (gridStep * 0.5));
+                          const py = (r - 1) * (gridStep * 0.866);
+                          
+                          const pRight = px + gridStep;
+                          const pDownLeft = px - gridStep * 0.5;
+                          const pDownRight = px + gridStep * 0.5;
+                          const pDownY = py + gridStep * 0.866;
+                          
+                          ctx.moveTo(px, py); ctx.lineTo(pRight, py);
+                          ctx.moveTo(px, py); ctx.lineTo(pDownLeft, pDownY);
+                          ctx.moveTo(px, py); ctx.lineTo(pDownRight, pDownY);
+                      }
+                  }
+                  ctx.stroke();
+              }
+              
+              // 3. Deterministic Self-Avoiding Dendritic Maze with Synchronous Generation Steps
+              interface MazeSegment {
+                  x1: number;
+                  y1: number;
+                  x2: number;
+                  y2: number;
+                  generation: number;
+                  isFork: boolean;
+              }
+              
+              const cacheKey = `vein_sync_norad_${targetW}_${targetH}_${brChance.toFixed(2)}_${splitRatio.toFixed(2)}_${segSize.toFixed(1)}`;
+              const storage = (window as any)._veinCache = (window as any)._veinCache || {};
+              
+              let segments: MazeSegment[];
+              let totalGenerations: number;
+              
+              if (storage.key === cacheKey && storage.segments) {
+                  segments = storage.segments;
+                  totalGenerations = storage.totalGenerations;
+              } else {
+                  segments = [];
+                  
+                  // Spatial Hash Grid for collision detection
+                  const cellSize = segSize * 0.72;
+                  const grid: Record<string, { x: number; y: number; id: number }[]> = {};
+                  
+                  const getCellKey = (x: number, y: number) => {
+                      const gx = Math.floor(x / cellSize);
+                      const gy = Math.floor(y / cellSize);
+                      return `${gx},${gy}`;
+                  };
+                  
+                  const insertPoint = (x: number, y: number, id: number) => {
+                      const key = getCellKey(x, y);
+                      if (!grid[key]) grid[key] = [];
+                      grid[key].push({ x, y, id });
+                  };
+                  
+                  let nodeIdCounter = 0;
+                  insertPoint(cx, cy, nodeIdCounter++);
+                  
+                  const isTooClose = (x: number, y: number, parentId: number, minDist: number) => {
+                      const gx = Math.floor(x / cellSize);
+                      const gy = Math.floor(y / cellSize);
+                      const minDistSq = minDist * minDist;
+                      
+                      for (let dx = -1; dx <= 1; dx++) {
+                          for (let dy = -1; dy <= 1; dy++) {
+                              const list = grid[`${gx + dx},${gy + dy}`];
+                              if (!list) continue;
+                              for (let i = 0; i < list.length; i++) {
+                                  const p = list[i];
+                                  if (p.id === parentId) continue;
+                                  const distSq = (x - p.x) * (x - p.x) + (y - p.y) * (y - p.y);
+                                  if (distSq < minDistSq) return true;
+                              }
+                          }
+                      }
+                      return false;
+                  };
+                  
+                  // Deterministic pseudo-random generator
+                  let rndSeed = 1337;
+                  const random = () => {
+                      rndSeed = (rndSeed * 16807) % 2147483647;
+                      return (rndSeed - 1) / 2147483646;
+                  };
+                  
+                  interface FrontierTip {
+                      x: number;
+                      y: number;
+                      angle: number;
+                      id: number;
+                  }
+                  
+                  let currentFrontier: FrontierTip[] = [];
+                  
+                  // Generation 0: 8 primary radial trunk branches from center seed
+                  const initialBranches = 8;
+                  for (let b = 0; b < initialBranches; b++) {
+                      const angle = (b / initialBranches) * Math.PI * 2 + (random() - 0.5) * 0.15;
+                      const nextX = cx + Math.cos(angle) * segSize;
+                      const nextY = cy + Math.sin(angle) * segSize;
+                      const nid = nodeIdCounter++;
+                      
+                      insertPoint(nextX, nextY, nid);
+                      
+                      segments.push({
+                          x1: cx, y1: cy,
+                          x2: nextX, y2: nextY,
+                          generation: 0,
+                          isFork: false
+                      });
+                      
+                      currentFrontier.push({
+                          x: nextX, y: nextY,
+                          angle: angle,
+                          id: nid
+                      });
+                  }
+                  
+                  // Advance synchronously generation by generation (step by step)
+                  const maxGenerations = 50;
+                  const boundMargin = 30;
+                  let gen = 1;
+                  
+                  for (; gen < maxGenerations; gen++) {
+                      const nextFrontier: FrontierTip[] = [];
+                      
+                      for (let i = 0; i < currentFrontier.length; i++) {
+                          const curr = currentFrontier[i];
+                          
+                          if (curr.x < -boundMargin || curr.x > targetW + boundMargin ||
+                              curr.y < -boundMargin || curr.y > targetH + boundMargin) {
+                              continue;
+                          }
+                          
+                          // Decide branching count: 1 (grow straight) vs 2 or 3 (fork)
+                          const doSplit = random() < brChance;
+                          let branchAngles: number[] = [];
+                          
+                          if (!doSplit) {
+                              // Continue straight with slight angular wandering
+                              const angleOffset = (random() - 0.5) * 0.45;
+                              branchAngles.push(curr.angle + angleOffset);
+                          } else {
+                              // Fork into 2 or 3 branches
+                              const split3Chance = (splitRatio - 2.0);
+                              const do3Split = random() < split3Chance;
+                              
+                              if (do3Split) {
+                                  const spread = 0.55 + random() * 0.25;
+                                  branchAngles.push(curr.angle - spread);
+                                  branchAngles.push(curr.angle);
+                                  branchAngles.push(curr.angle + spread);
+                              } else {
+                                  const spread = 0.50 + random() * 0.35;
+                                  branchAngles.push(curr.angle - spread);
+                                  branchAngles.push(curr.angle + spread);
+                              }
+                          }
+                          
+                          for (const branchAngle of branchAngles) {
+                              const nextX = curr.x + Math.cos(branchAngle) * segSize;
+                              const nextY = curr.y + Math.sin(branchAngle) * segSize;
+                              
+                              const minDist = segSize * 0.72;
+                              if (!isTooClose(nextX, nextY, curr.id, minDist)) {
+                                  const nid = nodeIdCounter++;
+                                  insertPoint(nextX, nextY, nid);
+                                  
+                                  segments.push({
+                                      x1: curr.x, y1: curr.y,
+                                      x2: nextX, y2: nextY,
+                                      generation: gen,
+                                      isFork: branchAngles.length > 1
+                                  });
+                                  
+                                  nextFrontier.push({
+                                      x: nextX, y: nextY,
+                                      angle: branchAngle,
+                                      id: nid
+                                  });
+                              }
+                          }
+                      }
+                      
+                      currentFrontier = nextFrontier;
+                      if (currentFrontier.length === 0) break;
+                  }
+                  
+                  totalGenerations = gen;
+                  storage.key = cacheKey;
+                  storage.segments = segments;
+                  storage.totalGenerations = totalGenerations;
+              }
+              
+              // 4. Synchronous Step-by-Step Tree Growth Development:
+              // currentStep = 0 is just the dark black center dot.
+              // currentStep = 1 is generation 0 completed.
+              // currentStep = 2 is generation 1 completed (showing initial bifurcations), etc.
+              const completedGens = Math.floor(currentStep);
+              const stepFraction = currentStep - completedGens;
+              
+              ctx.lineCap = 'round';
+              ctx.lineJoin = 'round';
+              
+              for (let i = 0; i < segments.length; i++) {
+                  const seg = segments[i];
+                  
+                  if (seg.generation < completedGens) {
+                      // Fully grown segment
+                      const normGen = seg.generation / (totalGenerations || 1);
+                      const w = 3.6 * (1.0 - normGen * 0.62);
+                      
+                      ctx.strokeStyle = '#181a1b';
+                      ctx.lineWidth = Math.max(1.1, w);
+                      
+                      ctx.beginPath();
+                      ctx.moveTo(seg.x1, seg.y1);
+                      ctx.lineTo(seg.x2, seg.y2);
+                      ctx.stroke();
+                  } else if (seg.generation === completedGens && stepFraction > 0.001) {
+                      // Developing frontier step: extending length in unison
+                      const drawX2 = seg.x1 + (seg.x2 - seg.x1) * stepFraction;
+                      const drawY2 = seg.y1 + (seg.y2 - seg.y1) * stepFraction;
+                      
+                      const normGen = seg.generation / (totalGenerations || 1);
+                      const w = 3.6 * (1.0 - normGen * 0.62);
+                      
+                      ctx.strokeStyle = '#181a1b';
+                      ctx.lineWidth = Math.max(1.1, w);
+                      
+                      ctx.beginPath();
+                      ctx.moveTo(seg.x1, seg.y1);
+                      ctx.lineTo(drawX2, drawY2);
+                      ctx.stroke();
+                  }
+              }
+              
+              // 5. Dark Black Starting Seed Point in the Center
+              ctx.fillStyle = '#181a1b';
+              ctx.beginPath();
+              ctx.arc(cx, cy, 3.8, 0, Math.PI * 2);
+              ctx.fill();
               
               element = canvas;
           } else if (def.uuid === '3d-polygon-neon-1') {
@@ -2812,110 +3655,202 @@ export default function App() {
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
               
-              const grad = ctx.createRadialGradient(targetW/2, targetH/2, 0, targetW/2, targetH/2, targetW);
-              grad.addColorStop(0, '#3a4a5a');
-              grad.addColorStop(1, '#1a202c');
-              ctx.fillStyle = grad;
+              // Clean white / off-white background matching the user palette
+              ctx.fillStyle = '#ffffff';
               ctx.fillRect(0, 0, targetW, targetH);
               
-              // draw dusty particles
-              ctx.fillStyle = 'rgba(255,255,255,0.05)';
-              for(let i=0; i<100; i++) {
-                 const px = (Math.sin(i*12.3) * 0.5 + 0.5) * targetW;
-                 const py = (Math.cos(i*32.1) * 0.5 + 0.5) * targetH;
-                 ctx.beginPath(); ctx.arc(px, py, 2, 0, Math.PI*2); ctx.fill();
-              }
-              
-              const { speed, glow, complexity } = modifiedSettings;
+              const { speed, shadows, sides, symmetry, size } = modifiedSettings;
               const spd = speed ?? 1.0;
-              const g = glow ?? 20.0;
-              const numSides = Math.floor(modifiedSettings.sides ?? 6);
-              const symm = modifiedSettings.symmetry ?? 1.0;
-              const sz = modifiedSettings.size ?? 1.0;
-              
+              const shd = shadows ?? 1.0;
+              const numSides = Math.max(3, Math.min(16, Math.floor(sides ?? 6)));
+              const symm = symmetry ?? 1.0;
+              const sz = size ?? 1.0;
               const t = nowSec * spd;
               
-              const pts = [];
-              const edges = [];
-              const faces = [];
+              interface Vec3 { x: number; y: number; z: number; }
               
-              // Top and bottom vertices
-              pts.push({x:0, y:1, z:0}); // 0
-              pts.push({x:0, y:-1, z:0}); // 1
+              const rawPts: Vec3[] = [];
+              const edges: [number, number][] = [];
+              const faces: [number, number, number][] = [];
+              
+              // Top & bottom vertices
+              rawPts.push({ x: 0, y: 1.25, z: 0 });  // 0: top
+              rawPts.push({ x: 0, y: -1.25, z: 0 }); // 1: bottom
               
               // Equatorial vertices
-              for(let i=0; i<numSides; i++) {
+              for (let i = 0; i < numSides; i++) {
                  const angle = (i / numSides) * Math.PI * 2;
-                 const rad = 1.0 - (1.0 - symm) * (i % 2 === 0 ? 0.5 : 0.0);
-                 pts.push({
+                 const rad = 1.0 - (1.0 - symm) * (i % 2 === 0 ? 0.45 : 0.0);
+                 rawPts.push({
                      x: Math.cos(angle) * rad,
                      y: 0,
                      z: Math.sin(angle) * rad
                  });
               }
               
-              for(let i=0; i<numSides; i++) {
-                 const current = 2 + i;
+              for (let i = 0; i < numSides; i++) {
+                 const curr = 2 + i;
                  const next = 2 + ((i + 1) % numSides);
-                 edges.push([0, current]);
-                 edges.push([1, current]);
-                 edges.push([current, next]);
+                 edges.push([0, curr]);
+                 edges.push([1, curr]);
+                 edges.push([curr, next]);
                  
-                 // Face orientation: ensure they point outwards
-                 faces.push([0, next, current]);
-                 faces.push([1, current, next]);
+                 // Face triangles
+                 faces.push([0, next, curr]);
+                 faces.push([1, curr, next]);
               }
               
-              const scale = Math.min(targetW, targetH) * 0.3 * sz;
-              
+              const scale = Math.min(targetW, targetH) * 0.28 * sz;
               const rotX = t * 0.5;
               const rotY = t * 0.7;
               
-              const project = (p: any) => {
-                 // rotX
+              // 3D rotation function
+              const rotate3D = (p: Vec3): Vec3 => {
+                 // Rotate X
                  const y1 = p.y * Math.cos(rotX) - p.z * Math.sin(rotX);
                  const z1 = p.y * Math.sin(rotX) + p.z * Math.cos(rotX);
-                 // rotY
+                 // Rotate Y
                  const x2 = p.x * Math.cos(rotY) + z1 * Math.sin(rotY);
                  const z2 = -p.x * Math.sin(rotY) + z1 * Math.cos(rotY);
-                 
-                 const f = 400 / (400 + z2 * scale);
-                 return { x: targetW/2 + x2 * scale * f, y: targetH/2 + y1 * scale * f, z: z2 };
+                 return { x: x2, y: y1, z: z2 };
               };
               
-              const projPts = pts.map(project);
+              const rotatedPts = rawPts.map(rotate3D);
               
-              // Draw back faces
-              faces.forEach(face => {
-                 const p0 = projPts[face[0]]; const p1 = projPts[face[1]]; const p2 = projPts[face[2]];
-                 const normZ = (p1.x - p0.x)*(p2.y - p0.y) - (p1.y - p0.y)*(p2.x - p0.x);
-                 if (normZ < 0) {
-                     ctx.fillStyle = 'rgba(255, 100, 50, 0.15)';
-                     ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.closePath(); ctx.fill();
-                 }
+              // Project to screen
+              const projPts = rotatedPts.map(p => {
+                 const f = 450 / (450 + p.z * scale);
+                 return {
+                     x: targetW / 2 + p.x * scale * f,
+                     y: targetH / 2 + p.y * scale * f,
+                     z: p.z
+                 };
               });
               
-              // Draw front faces
-              faces.forEach(face => {
-                 const p0 = projPts[face[0]]; const p1 = projPts[face[1]]; const p2 = projPts[face[2]];
-                 const normZ = (p1.x - p0.x)*(p2.y - p0.y) - (p1.y - p0.y)*(p2.x - p0.x);
-                 if (normZ >= 0) {
-                     ctx.fillStyle = 'rgba(255, 150, 50, 0.25)';
-                     ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.closePath(); ctx.fill();
-                 }
-              });
+              // Light direction vector (from upper right front)
+              const lx = 0.55, ly = -0.7, lz = 0.45;
+              const lLen = Math.hypot(lx, ly, lz);
+              const lightNorm = { x: lx / lLen, y: ly / lLen, z: lz / lLen };
               
-              // Draw edges
-              ctx.strokeStyle = '#fff0a0';
-              ctx.lineWidth = 3;
-              ctx.shadowColor = '#ff6a00';
-              ctx.shadowBlur = g;
-              edges.forEach(edge => {
+              // Palette:
+              // Highlight (brighter color): Vibrant Red [250, 59, 92]
+              // Shadow (darker color): Deep Dark Blue / Slate Teal [38, 68, 78]
+              const redColor = { r: 250, g: 59, b: 92 };
+              const blueColor = { r: 38, g: 68, b: 78 };
+              
+              interface FaceData {
+                 indices: [number, number, number];
+                 p0: { x: number; y: number; z: number };
+                 p1: { x: number; y: number; z: number };
+                 p2: { x: number; y: number; z: number };
+                 isFront: boolean;
+                 fillColor: string;
+                 centerZ: number;
+              }
+              
+              const faceList: FaceData[] = [];
+              
+              for (const face of faces) {
+                 const p0 = projPts[face[0]];
+                 const p1 = projPts[face[1]];
+                 const p2 = projPts[face[2]];
+                 
+                 // Screen normal Z for winding
+                 const normScreenZ = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
+                 const isFront = normScreenZ >= 0;
+                 
+                 // 3D normal vector
+                 const v0 = rotatedPts[face[0]];
+                 const v1 = rotatedPts[face[1]];
+                 const v2 = rotatedPts[face[2]];
+                 
+                 const e1x = v1.x - v0.x, e1y = v1.y - v0.y, e1z = v1.z - v0.z;
+                 const e2x = v2.x - v0.x, e2y = v2.y - v0.y, e2z = v2.z - v0.z;
+                 
+                 const nx = e1y * e2z - e1z * e2y;
+                 const ny = e1z * e2x - e1x * e2z;
+                 const nz = e1x * e2y - e1y * e2x;
+                 const nLen = Math.hypot(nx, ny, nz) || 1;
+                 
+                 const norm3D = { x: nx / nLen, y: ny / nLen, z: nz / nLen };
+                 
+                 // Dot light
+                 const dot = norm3D.x * lightNorm.x + norm3D.y * lightNorm.y + norm3D.z * lightNorm.z;
+                 
+                 // Shading calculation based on `shadows` parameter:
+                 // When shd is low (0.0): one single uniform color with no highlights or shadows
+                 // When shd > 0: highlights are brighter red, shadows are darker blue!
+                 let fillColor: string;
+                 if (shd <= 0.02) {
+                    fillColor = isFront ? 'rgba(250, 59, 92, 0.35)' : 'rgba(250, 59, 92, 0.18)';
+                 } else {
+                    // Normalize dot from [-1, 1] to [0, 1] where 1 is facing light (Red Highlight), 0 is in shadow (Blue Shadow)
+                    const lightFactor = Math.max(0, Math.min(1, 0.5 + dot * 0.5 * Math.min(2.0, shd)));
+                    
+                    const r = Math.round(blueColor.r + (redColor.r - blueColor.r) * lightFactor);
+                    const g = Math.round(blueColor.g + (redColor.g - blueColor.g) * lightFactor);
+                    const b = Math.round(blueColor.b + (redColor.b - blueColor.b) * lightFactor);
+                    const a = isFront ? (0.35 + 0.35 * lightFactor) : (0.15 + 0.2 * lightFactor);
+                    
+                    fillColor = `rgba(${r}, ${g}, ${b}, ${a})`;
+                 }
+                 
+                 const centerZ = (p0.z + p1.z + p2.z) / 3;
+                 faceList.push({ indices: face, p0, p1, p2, isFront, fillColor, centerZ });
+              }
+              
+              // Draw back faces first
+              for (const f of faceList) {
+                 if (!f.isFront) {
+                    ctx.fillStyle = f.fillColor;
+                    ctx.beginPath();
+                    ctx.moveTo(f.p0.x, f.p0.y);
+                    ctx.lineTo(f.p1.x, f.p1.y);
+                    ctx.lineTo(f.p2.x, f.p2.y);
+                    ctx.closePath();
+                    ctx.fill();
+                 }
+              }
+              
+              // Draw back wireframe edges
+              ctx.strokeStyle = 'rgba(38, 68, 78, 0.3)';
+              ctx.lineWidth = 1.2;
+              for (const edge of edges) {
                  ctx.beginPath();
                  ctx.moveTo(projPts[edge[0]].x, projPts[edge[0]].y);
                  ctx.lineTo(projPts[edge[1]].x, projPts[edge[1]].y);
                  ctx.stroke();
-              });
+              }
+              
+              // Draw front faces
+              for (const f of faceList) {
+                 if (f.isFront) {
+                    ctx.fillStyle = f.fillColor;
+                    ctx.beginPath();
+                    ctx.moveTo(f.p0.x, f.p0.y);
+                    ctx.lineTo(f.p1.x, f.p1.y);
+                    ctx.lineTo(f.p2.x, f.p2.y);
+                    ctx.closePath();
+                    ctx.fill();
+                 }
+              }
+              
+              // Draw front wireframe edges
+              ctx.strokeStyle = '#26444e';
+              ctx.lineWidth = 2.4;
+              if (shd > 0.02) {
+                 ctx.shadowColor = 'rgba(250, 59, 92, 0.5)';
+                 ctx.shadowBlur = shd * 10;
+              } else {
+                 ctx.shadowBlur = 0;
+              }
+              
+              for (const edge of edges) {
+                 ctx.beginPath();
+                 ctx.moveTo(projPts[edge[0]].x, projPts[edge[0]].y);
+                 ctx.lineTo(projPts[edge[1]].x, projPts[edge[1]].y);
+                 ctx.stroke();
+              }
               ctx.shadowBlur = 0;
               
               element = canvas;
@@ -3081,7 +4016,7 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              ctx.fillStyle = '#e5e5e5';
+              ctx.fillStyle = '#e8e8e6';
               ctx.fillRect(0, 0, targetW, targetH);
               
               const { speed, density, scale: sclValue, movement, chaos } = modifiedSettings;
@@ -3094,14 +4029,41 @@ export default function App() {
               
               ctx.globalCompositeOperation = 'multiply';
               
-              for(let i=0; i<dens; i++) {
-                 const seed = i * 17.3;
-                 const type = Math.floor((Math.sin(seed)*0.5+0.5) * 4); // 0=circle, 1=triangle, 2=line, 3=dot
-                 const color = Math.sin(seed*11.1) > 0 ? '#fa3b5c' : '#2a4b56';
-                 const x = (Math.sin(seed*5.1)*0.5+0.5) * targetW + Math.sin(t*cha + seed)*mov;
-                 const y = (Math.cos(seed*7.1)*0.5+0.5) * targetH + Math.cos(t*0.8*cha + seed)*mov;
-                 const size = (10 + (Math.sin(seed*13.1)*0.5+0.5) * 50) * scl;
-                 const rot = t * (Math.sin(seed)*0.5) + seed;
+              // Quasi-random R2 low-discrepancy sequence:
+              // Guarantees completely even, homogeneous coverage across the entire canvas
+              // with zero empty holes in the middle or anywhere!
+              const a1 = 0.7548776662466927;
+              const a2 = 0.5698402909980532;
+              
+              for (let i = 0; i < dens; i++) {
+                 // Low-discrepancy 2D coordinates
+                 const u = (0.5 + i * a1) % 1.0;
+                 const v = (0.5 + i * a2) % 1.0;
+                 
+                 const baseX = u * targetW;
+                 const baseY = v * targetH;
+                 
+                 // Dynamic organic floating drift
+                 const driftX = Math.sin(t * 0.8 * cha + i * 2.13) * mov;
+                 const driftY = Math.cos(t * 0.6 * cha + i * 3.17) * mov;
+                 
+                 const x = (baseX + driftX + targetW) % targetW;
+                 const y = (baseY + driftY + targetH) % targetH;
+                 
+                 // Shape distribution
+                 const typeHash = (i * 7 + 3) % 10;
+                 let type = 0; // 0=circle, 1=triangle, 2=rect bar, 3=small dot, 4=sharp triangle
+                 if (typeHash < 3) type = 1;
+                 else if (typeHash < 6) type = 0;
+                 else if (typeHash < 8) type = 2;
+                 else if (typeHash < 9) type = 4;
+                 else type = 3;
+                 
+                 const color = (i % 2 === 0 || (i % 5 === 0)) ? '#fa3b5c' : '#26444e';
+                 
+                 const sizeRand = ((i * 13 + 7) % 100) / 100;
+                 const size = (12 + sizeRand * 55) * scl;
+                 const rot = t * (Math.sin(i * 1.7) * 0.5) + i * 0.9;
                  
                  ctx.save();
                  ctx.translate(x, y);
@@ -3110,14 +4072,17 @@ export default function App() {
                  ctx.strokeStyle = color;
                  
                  if (type === 0) {
-                     ctx.beginPath(); ctx.arc(0,0, size*0.5, 0, Math.PI*2); ctx.fill();
+                     ctx.beginPath(); ctx.arc(0, 0, size * 0.48, 0, Math.PI * 2); ctx.fill();
                  } else if (type === 1) {
-                     ctx.beginPath(); ctx.moveTo(0, -size*0.5); ctx.lineTo(size*0.5, size*0.5); ctx.lineTo(-size*0.5, size*0.5); ctx.closePath(); ctx.fill();
+                     ctx.beginPath(); ctx.moveTo(0, -size * 0.55); ctx.lineTo(size * 0.5, size * 0.45); ctx.lineTo(-size * 0.5, size * 0.45); ctx.closePath(); ctx.fill();
                  } else if (type === 2) {
-                     ctx.lineWidth = size * 0.2;
-                     ctx.beginPath(); ctx.moveTo(-size, 0); ctx.lineTo(size, 0); ctx.stroke();
+                     const barW = size * 1.3;
+                     const barH = size * 0.26;
+                     ctx.fillRect(-barW / 2, -barH / 2, barW, barH);
+                 } else if (type === 3) {
+                     ctx.beginPath(); ctx.arc(0, 0, Math.max(2, size * 0.18), 0, Math.PI * 2); ctx.fill();
                  } else {
-                     ctx.beginPath(); ctx.arc(0,0, size*0.15, 0, Math.PI*2); ctx.fill();
+                     ctx.beginPath(); ctx.moveTo(0, -size * 0.7); ctx.lineTo(size * 0.35, size * 0.35); ctx.lineTo(-size * 0.35, size * 0.35); ctx.closePath(); ctx.fill();
                  }
                  ctx.restore();
               }
@@ -4681,14 +5646,6 @@ export default function App() {
 
     } // <-- Added closing bracket for if (mappingsToProcess.length > 0)
 
-      // Finally, composite this layer's fully processed canvas onto the main canvas
-      mainCtx.save();
-      if (isGrid) {
-        mainCtx.beginPath();
-        mainCtx.rect(slotX, slotY, slotW, slotH);
-        mainCtx.clip();
-      }
-      
       let opacityMult = 1.0;
       if (layer.midiMode) {
           // Advance mode: always visible
@@ -4710,24 +5667,136 @@ export default function App() {
           else opacityMult = midiVisualOpacity;
       }
 
-      mainCtx.globalAlpha = layer.opacity * opacityMult;
+      if (!layerOutputCanvasesRef.current[layer.id]) {
+        layerOutputCanvasesRef.current[layer.id] = document.createElement('canvas');
+      }
+      const layerCanvas = layerOutputCanvasesRef.current[layer.id];
+      if (layerCanvas.width !== targetW || layerCanvas.height !== targetH) {
+        layerCanvas.width = targetW;
+        layerCanvas.height = targetH;
+      }
+      const layerCtx = layerCanvas.getContext('2d')!;
+      layerCtx.clearRect(0, 0, targetW, targetH);
+      layerCtx.drawImage(canvas, 0, 0);
+
+      renderedLayersMap[layer.id] = {
+        canvas: layerCanvas,
+        opacityMult,
+        slotX,
+        slotY,
+        slotW,
+        slotH,
+        isGrid,
+        layer
+      };
+    } // End if (element)
+    });
+
+    // --- PASS 2: COMPOSITING & TRACK MATTE MASKING ---
+    const maskSourceForTarget: Record<string, Layer> = {};
+    for (const l of layers) {
+      if (l.maskTargetId && l.isVisible && !l.isMuted) {
+        maskSourceForTarget[l.maskTargetId] = l;
+      }
+    }
+    const maskSourceIds = new Set(Object.values(maskSourceForTarget).map(m => m.id));
+
+    layersToDraw.forEach(layer => {
+      // If this layer is an active mask for another layer, don't draw it as a standalone background layer
+      if (maskSourceIds.has(layer.id)) return;
+
+      const info = renderedLayersMap[layer.id];
+      if (!info) return;
+
+      let finalSourceCanvas = info.canvas;
+      const maskLayer = maskSourceForTarget[layer.id];
+      let maskTriggerFactor = 1.0;
+
+      if (maskLayer && renderedLayersMap[maskLayer.id]) {
+        const maskInfo = renderedLayersMap[maskLayer.id];
+        const maskBuffer = maskInfo.canvas;
+
+        // If the mask layer is modulated by MIDI/Audio/Rhythm triggers, apply its trigger envelope
+        if (maskLayer.midiMode || maskLayer.audioMapping?.enabled || maskLayer.rhythmMapping?.enabled) {
+          maskTriggerFactor = maskInfo.opacityMult;
+        }
+
+        if (!(window as any).matteCanvas) {
+          (window as any).matteCanvas = document.createElement('canvas');
+          (window as any).matteCtx = (window as any).matteCanvas.getContext('2d', { willReadFrequently: true });
+        }
+        const matteCanvas = (window as any).matteCanvas as HTMLCanvasElement;
+        const matteCtx = (window as any).matteCtx as CanvasRenderingContext2D;
+        if (matteCanvas.width !== targetW || matteCanvas.height !== targetH) {
+          matteCanvas.width = targetW;
+          matteCanvas.height = targetH;
+        }
+        matteCtx.clearRect(0, 0, targetW, targetH);
+        matteCtx.globalCompositeOperation = 'source-over';
+        matteCtx.drawImage(finalSourceCanvas, 0, 0);
+
+        const isLuma = maskLayer.maskMode === 'luma';
+        const isInverted = Boolean(maskLayer.maskInverted);
+
+        if (isLuma) {
+          const imgDataT = matteCtx.getImageData(0, 0, targetW, targetH);
+          const maskCtx = maskBuffer.getContext('2d', { willReadFrequently: true })!;
+          const imgDataM = maskCtx.getImageData(0, 0, targetW, targetH);
+          const dataT = imgDataT.data;
+          const dataM = imgDataM.data;
+          for (let p = 0; p < dataT.length; p += 4) {
+            const luma = (dataM[p] * 0.299 + dataM[p+1] * 0.587 + dataM[p+2] * 0.114) / 255;
+            const mAlpha = (dataM[p+3] / 255) * luma;
+            const factor = isInverted ? (1.0 - mAlpha) : mAlpha;
+            dataT[p+3] = Math.round(dataT[p+3] * factor);
+          }
+          matteCtx.putImageData(imgDataT, 0, 0);
+        } else {
+          // Alpha Matte
+          if (isInverted) {
+            matteCtx.globalCompositeOperation = 'destination-out';
+            matteCtx.drawImage(maskBuffer, 0, 0);
+          } else {
+            matteCtx.globalCompositeOperation = 'destination-in';
+            matteCtx.drawImage(maskBuffer, 0, 0);
+          }
+          matteCtx.globalCompositeOperation = 'source-over';
+        }
+
+        // If enabled, also composite the generative mask graphic on top of the masked content
+        if (maskLayer.showMaskGraphic) {
+          matteCtx.globalCompositeOperation = 'source-over';
+          matteCtx.drawImage(maskBuffer, 0, 0);
+        }
+
+        finalSourceCanvas = matteCanvas;
+      }
+
+      const finalAlpha = Math.max(0, Math.min(1, layer.opacity * info.opacityMult * maskTriggerFactor));
+
+      mainCtx.save();
+      if (info.isGrid) {
+        mainCtx.beginPath();
+        mainCtx.rect(info.slotX, info.slotY, info.slotW, info.slotH);
+        mainCtx.clip();
+      }
+      mainCtx.globalAlpha = finalAlpha;
       mainCtx.globalCompositeOperation = layer.blendMode;
-      mainCtx.drawImage(canvas, 0, 0, targetW, targetH);
+      mainCtx.drawImage(finalSourceCanvas, 0, 0, targetW, targetH);
       mainCtx.restore();
-      
+
       if (bufferCtxRef.current) {
         bufferCtxRef.current.save();
-        if (isGrid) {
+        if (info.isGrid) {
           bufferCtxRef.current.beginPath();
-          bufferCtxRef.current.rect(slotX, slotY, slotW, slotH);
+          bufferCtxRef.current.rect(info.slotX, info.slotY, info.slotW, info.slotH);
           bufferCtxRef.current.clip();
         }
-        bufferCtxRef.current.globalAlpha = layer.opacity * opacityMult;
+        bufferCtxRef.current.globalAlpha = finalAlpha;
         bufferCtxRef.current.globalCompositeOperation = layer.blendMode;
-        bufferCtxRef.current.drawImage(canvas, 0, 0, targetW, targetH);
+        bufferCtxRef.current.drawImage(finalSourceCanvas, 0, 0, targetW, targetH);
         bufferCtxRef.current.restore();
       }
-    } // End if (element)
     });
 
     requestRef.current = requestAnimationFrame(processFrame);
@@ -4956,36 +6025,45 @@ export default function App() {
         <div className="w-8" /> {/* Spacer */}
       </header>
 
-      {/* Main Header (Desktop) */}
-      <header className="hidden lg:flex relative z-10 p-6 justify-between items-center border-b border-white/5">
-        <div className="flex items-center">
-          <div className="flex items-center gap-4">
+      {/* Main Header (Desktop/Tablet) */}
+      <header className="hidden lg:flex relative z-10 px-4 py-3 justify-between items-center border-b border-white/5 gap-2">
+        <div className="flex items-center flex-wrap gap-2 sm:gap-3 min-w-0">
+          <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-none ${isPlaying ? 'bg-red-500 animate-pulse' : 'bg-white/20'}`} />
-            <span className="text-[10px] font-mono tracking-widest opacity-40 uppercase">{status}</span>
+            <span className="text-[9px] font-mono tracking-widest opacity-40 uppercase">{status}</span>
           </div>
           
-          <div className="flex items-center gap-2 ml-6 pl-6 border-l border-white/10" title={midiAccess ? 'MIDI Connected' : 'MIDI Offline'}>
+          <div className="flex items-center gap-1.5 pl-3 border-l border-white/10" title={midiAccess ? 'MIDI Connected' : 'MIDI Offline'}>
             <Activity size={12} className={midiAccess ? 'text-emerald-500' : 'text-red-500 opacity-50'} />
-            <span className="text-[10px] font-mono tracking-widest opacity-40 uppercase">MIDI IN</span>
+            <span className="text-[9px] font-mono tracking-widest opacity-40 uppercase">MIDI IN</span>
           </div>
           
           <button
             onClick={() => setIsMidiLearnMode(!isMidiLearnMode)}
-            className={`ml-4 px-3 py-1.5 rounded-full border text-[9px] uppercase tracking-widest transition-all flex items-center gap-1.5 cursor-pointer ${
+            className={`px-2.5 py-1 rounded-full border text-[8px] uppercase tracking-widest transition-all flex items-center gap-1 cursor-pointer ${
               isMidiLearnMode ? 'bg-red-600 border-red-500 text-white animate-pulse shadow-[0_0_15px_rgba(239,68,68,0.5)]' : 'bg-black/40 border-white/20 text-white/70 hover:text-white hover:border-white'
             }`}
             title="Toggle Global MIDI Learn Mode"
           >
-            <Radio size={12} className={isMidiLearnMode ? 'animate-spin' : ''} />
+            <Radio size={11} className={isMidiLearnMode ? 'animate-spin' : ''} />
             MIDI Learn {isMidiLearnMode ? 'ACTIVE' : ''}
           </button>
 
-
+          <button 
+            onClick={requestWakeLock}
+            className={`flex items-center gap-1.5 pl-3 border-l border-white/10 transition-colors ${isWakeLockActive ? 'text-amber-400 opacity-90' : 'text-white/30 hover:text-white/60'}`}
+            title={isWakeLockActive ? 'Tablet Screen Keep-Awake Active (Screen will not sleep during MIDI activity)' : 'Click to enable Screen Keep-Awake'}
+          >
+            <Sun size={11} className={isWakeLockActive ? 'animate-pulse' : ''} />
+            <span className="text-[8px] font-mono tracking-widest uppercase">
+              {isWakeLockActive ? 'AWAKE' : 'KEEP AWAKE'}
+            </span>
+          </button>
         </div>
         
-        <h1 className="text-sm font-light tracking-[0.8em] uppercase opacity-80 absolute left-1/2 -translate-x-1/2">Glitch Pulse</h1>
+        <h1 className="text-xs font-light tracking-[0.5em] uppercase opacity-80 hidden xl:block absolute left-1/2 -translate-x-1/2 pointer-events-none">Glitch Pulse</h1>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 shrink-0">
           <button 
             onClick={() => {
               const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({ layers, aspectRatioValue, compositionLayout }));
@@ -4996,12 +6074,12 @@ export default function App() {
               downloadAnchorNode.click();
               downloadAnchorNode.remove();
             }}
-            className="px-4 py-2 rounded border transition-all text-[10px] uppercase tracking-widest bg-transparent border-white/10 hover:border border-white hover:bg-white hover:text-black hover:border-white/20 text-white flex items-center gap-2 cursor-pointer"
+            className="px-3 py-1.5 rounded border transition-all text-[9px] uppercase tracking-widest bg-transparent border-white/10 hover:border border-white hover:bg-white hover:text-black hover:border-white/20 text-white flex items-center gap-1.5 cursor-pointer"
           >
-            <Download size={12} /> Save
+            <Download size={11} /> Save
           </button>
-          <label className="px-4 py-2 rounded border transition-all text-[10px] uppercase tracking-widest bg-transparent border-white/10 hover:border border-white hover:bg-white hover:text-black hover:border-white/20 text-white flex items-center gap-2 cursor-pointer">
-            <Upload size={12} /> Load
+          <label className="px-3 py-1.5 rounded border transition-all text-[9px] uppercase tracking-widest bg-transparent border-white/10 hover:border border-white hover:bg-white hover:text-black hover:border-white/20 text-white flex items-center gap-1.5 cursor-pointer">
+            <Upload size={11} /> Load
             <input 
               type="file" accept=".json" className="hidden" 
               onChange={(e) => {
@@ -5031,13 +6109,13 @@ export default function App() {
           </label>
         <button 
           onClick={stopAll}
-          className={`px-4 py-2 rounded border transition-all flex items-center gap-2 text-[10px] uppercase tracking-widest ${
+          className={`px-3 py-1.5 rounded border transition-all flex items-center gap-1.5 text-[9px] uppercase tracking-widest ${
             isPanic 
               ? 'bg-red-600 border-red-500 text-white scale-95' 
               : 'bg-red-600/10 border-red-500/30 text-red-500 hover:bg-red-600 hover:text-white hover:border-red-500'
           }`}
         >
-          <Power size={12} />
+          <Power size={11} />
           Stop All
         </button>
         </div>
@@ -5047,7 +6125,7 @@ export default function App() {
         {/* Left Sidebar */}
         <aside className={`
           fixed inset-x-0 bottom-0 z-40 w-full bg-black/95  border-t border-white/10
-          lg:relative lg:inset-auto lg:z-0 lg:w-96 lg:border-t-0 lg:border-r lg:bg-black/20 lg:
+          lg:relative lg:inset-auto lg:z-0 lg:w-72 xl:w-80 lg:border-t-0 lg:border-r lg:bg-black/20 lg:
           flex flex-col transition-all duration-500 ease-in-out
           ${showSidebar ? 'h-[70vh] lg:h-full translate-y-0' : 'h-0 lg:h-full translate-y-full lg:translate-y-0'}
         `}>
@@ -5114,10 +6192,16 @@ export default function App() {
                           <button 
                             onClick={(e) => {
                               e.stopPropagation();
-                              setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, triggerMapping: { ...l.triggerMapping, triggerBehavior: l.triggerMapping.triggerBehavior === 'toggle' ? 'momentary' : 'toggle' } } : l));
+                              setLayers(prev => prev.map(l => l.id === layer.id ? { 
+                                ...l, 
+                                triggerMapping: { 
+                                  ...(l.triggerMapping || DEFAULT_TRIGGER_MAPPING), 
+                                  triggerBehavior: (l.triggerMapping?.triggerBehavior || DEFAULT_TRIGGER_MAPPING.triggerBehavior) === 'toggle' ? 'momentary' : 'toggle' 
+                                } 
+                              } : l));
                             }}
-                            className={`p-1 rounded hover:text-white transition-colors ${layer.triggerMapping.triggerBehavior === 'toggle' ? 'text-red-500 bg-red-500/10' : 'text-white/30'}`}
-                            title={`Trigger Mode: ${layer.triggerMapping.triggerBehavior === 'toggle' ? 'Toggle (Retrigger)' : 'Momentary'}`}
+                            className={`p-1 rounded hover:text-white transition-colors ${(layer.triggerMapping?.triggerBehavior || 'momentary') === 'toggle' ? 'text-red-500 bg-red-500/10' : 'text-white/30'}`}
+                            title={`Trigger Mode: ${(layer.triggerMapping?.triggerBehavior || 'momentary') === 'toggle' ? 'Toggle (Retrigger)' : 'Momentary'}`}
                           >
                             <RefreshCw size={12} />
                           </button>
@@ -5145,7 +6229,32 @@ export default function App() {
                         >
                           <Zap size={12} />
                         </button>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveMaskMenuLayerId(prev => prev === layer.id ? null : layer.id);
+                          }}
+                          className={`p-1 rounded transition-colors ${layer.maskTargetId ? 'text-purple-400 bg-purple-500/20' : 'text-white/30 hover:text-white hover:bg-white/5'}`}
+                          title={layer.maskTargetId ? `Masking Layer (Click to configure)` : `Track Matte / Mask settings`}
+                        >
+                          <Blend size={12} />
+                        </button>
                         <span className="text-[11px] font-medium truncate opacity-80 ml-1" title={layer.name}>Layer {layers.findIndex(l => l.id === layer.id) + 1}: {layer.name.length > 20 ? layer.name.slice(0, 20) + '...' : layer.name}</span>
+                        {layer.maskTargetId && (
+                          <span className="px-1.5 py-0.5 rounded text-[8px] font-mono font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex-shrink-0" title={`Masking Layer`}>
+                            MASK ➔ L{layers.findIndex(l => l.id === layer.maskTargetId) + 1}{layer.maskInverted ? ' [INV]' : ''}
+                          </span>
+                        )}
+                        {(() => {
+                          const maskSource = layers.find(l => l.maskTargetId === layer.id);
+                          if (!maskSource) return null;
+                          const maskIdx = layers.findIndex(l => l.id === maskSource.id) + 1;
+                          return (
+                            <span className="px-1.5 py-0.5 rounded text-[8px] font-mono font-bold bg-blue-500/20 text-blue-300 border border-blue-500/30 flex-shrink-0" title={`Masked by Layer ${maskIdx}`}>
+                              MASKED BY L{maskIdx}
+                            </span>
+                          );
+                        })()}
                       </div>
                       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button 
@@ -5182,6 +6291,93 @@ export default function App() {
                         </button>
                       </div>
                     </div>
+
+                    {activeMaskMenuLayerId === layer.id && (
+                      <div className="mt-2 p-2.5 bg-[#161618] border border-purple-500/40 rounded space-y-2.5" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
+                          <div className="flex items-center gap-1.5 text-[11px] font-bold text-purple-300 tracking-wide">
+                            <Blend size={13} className="text-purple-400" />
+                            <span>TRACK MATTE / MASK</span>
+                          </div>
+                          <button onClick={() => setActiveMaskMenuLayerId(null)} className="text-white/40 hover:text-white p-0.5">
+                            <X size={12} />
+                          </button>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[9px] font-mono uppercase text-gray-400 block">Use this layer as mask for:</label>
+                          <select
+                            value={layer.maskTargetId || ''}
+                            onChange={(e) => {
+                              const targetId = e.target.value || null;
+                              setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, maskTargetId: targetId } : l));
+                            }}
+                            className="w-full bg-black/70 border border-white/20 rounded px-2 py-1 text-[11px] text-white focus:outline-none focus:border-purple-500"
+                          >
+                            <option value="">None (Standard Layer)</option>
+                            {layers.filter(l => l.id !== layer.id).map(other => {
+                              const otherIdx = layers.findIndex(l => l.id === other.id) + 1;
+                              return (
+                                <option key={other.id} value={other.id}>
+                                  Layer {otherIdx}: {other.name} ({other.type})
+                                </option>
+                              );
+                            })}
+                          </select>
+                        </div>
+
+                        {layer.maskTargetId && (
+                          <div className="space-y-2 pt-1 border-t border-white/5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[9px] font-mono uppercase text-gray-400">Invert Mask:</span>
+                              <button
+                                onClick={() => {
+                                  setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, maskInverted: !l.maskInverted } : l));
+                                }}
+                                className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold transition-colors border ${layer.maskInverted ? 'bg-purple-600 text-white border-purple-400' : 'bg-black/40 text-gray-400 border-white/10 hover:border-white/30'}`}
+                              >
+                                {layer.maskInverted ? 'INVERTED (OUT)' : 'NORMAL (IN)'}
+                              </button>
+                            </div>
+
+                            <div className="flex items-center justify-between">
+                              <span className="text-[9px] font-mono uppercase text-gray-400">Matte Mode:</span>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => {
+                                    setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, maskMode: 'alpha' } : l));
+                                  }}
+                                  className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold border ${(layer.maskMode || 'alpha') === 'alpha' ? 'bg-purple-600/40 text-purple-200 border-purple-400' : 'text-gray-500 border-transparent hover:text-white'}`}
+                                >
+                                  ALPHA
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, maskMode: 'luma' } : l));
+                                  }}
+                                  className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold border ${layer.maskMode === 'luma' ? 'bg-purple-600/40 text-purple-200 border-purple-400' : 'text-gray-500 border-transparent hover:text-white'}`}
+                                >
+                                  LUMA
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center justify-between">
+                              <span className="text-[9px] font-mono uppercase text-gray-400">Show Graphic:</span>
+                              <button
+                                onClick={() => {
+                                  setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, showMaskGraphic: !l.showMaskGraphic } : l));
+                                }}
+                                className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold transition-colors border ${layer.showMaskGraphic ? 'bg-purple-600 text-white border-purple-400' : 'bg-black/40 text-gray-400 border-white/10 hover:border-white/30'}`}
+                                title="Overlay the mask's original visual graphic on top of the masked content"
+                              >
+                                {layer.showMaskGraphic ? 'OVERLAY ON' : 'MASK ONLY'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     {activeLayerId === layer.id && (
                       <motion.div 
                         initial={{ height: 0, opacity: 0 }}
@@ -5862,7 +7058,7 @@ return (
 {/* Right Sidebar: Effect Config */}
         
         {/* Right Sidebar (Triggers & Inputs) */}
-        <aside className="w-96 border-l border-white/5 bg-black/20 hidden lg:flex flex-col shrink-0">
+        <aside className="w-72 lg:w-72 xl:w-80 border-l border-white/5 bg-black/20 hidden lg:flex flex-col shrink-0">
            <div className="p-4 bg-black/40 border-b border-white/5 text-[10px] uppercase tracking-widest font-bold opacity-80 shrink-0">
              Triggers & Routing
            </div>
@@ -6337,14 +7533,14 @@ return (
                           ) : (
                             <MidiConfigUI 
                               label="Layer Visibility Trigger"
-                              mapping={layerTarget.triggerMapping!}
+                              mapping={layerTarget.triggerMapping || DEFAULT_TRIGGER_MAPPING}
                               isLearnActive={midiLearnTarget?.layerId === layerTarget.id && !midiLearnTarget?.effectId ? midiLearnTarget : false}
                               onToggleLearn={(field) => setMidiLearnTarget(prev => prev?.layerId === layerTarget.id && !prev?.effectId && prev?.field === field ? null : { layerId: layerTarget.id, field })}
-                              onUpdate={(field, val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping!, [field]: val } } : l))}
-                              onUpdateNote={(field, val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping!, noteSettings: { ...l.triggerMapping!.noteSettings, [field]: val } } } : l))}
-                              onToggleChannel={(ch) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping!, channels: l.triggerMapping!.channels.includes(ch) ? l.triggerMapping!.channels.filter(c => c !== ch) : [...l.triggerMapping!.channels, ch] } } : l))}
-                              onSetAllChannels={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping!, channels: Array.from({ length: 16 }, (_, i) => i) } } : l))}
-                              onSetNoChannels={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...l.triggerMapping!, channels: [] } } : l))}
+                              onUpdate={(field, val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...(l.triggerMapping || DEFAULT_TRIGGER_MAPPING), [field]: val } } : l))}
+                              onUpdateNote={(field, val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...(l.triggerMapping || DEFAULT_TRIGGER_MAPPING), noteSettings: { ...(l.triggerMapping?.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } } } : l))}
+                              onToggleChannel={(ch) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...(l.triggerMapping || DEFAULT_TRIGGER_MAPPING), channels: (l.triggerMapping?.channels || []).includes(ch) ? (l.triggerMapping?.channels || []).filter(c => c !== ch) : [...(l.triggerMapping?.channels || []), ch] } } : l))}
+                              onSetAllChannels={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...(l.triggerMapping || DEFAULT_TRIGGER_MAPPING), channels: Array.from({ length: 16 }, (_, i) => i) } } : l))}
+                              onSetNoChannels={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...(l.triggerMapping || DEFAULT_TRIGGER_MAPPING), channels: [] } } : l))}
                             />
                           )}
                         </div>
@@ -6470,7 +7666,7 @@ return (
                                    className={`group p-4 rounded-none border transition-all flex flex-col justify-between ${isActive ? 'bg-red-600/5 border-red-500/20 opacity-50' : 'bg-transparent border-white/10 hover:border-white'}`}
                                  >
                                    <div>
-                                     <div className="w-full h-24 mb-4 border border-white/5 bg-black/50 flex flex-col items-center justify-center opacity-70 group-hover:opacity-100 transition-opacity relative overflow-hidden">
+                                     <div className="w-full aspect-square mb-4 border border-white/10 bg-black/60 flex flex-col items-center justify-center opacity-85 group-hover:opacity-100 transition-opacity relative overflow-hidden rounded-sm">
                                         <img 
                                           src={`/previews/${g.uuid}.png`} 
                                           alt={g.description} 

@@ -18,13 +18,352 @@ export interface GenerativeDefinition {
 export const GENERATIVES_DATA = [
   {
     header: `/*{
+  "description": "3D Cubes Matrix",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "rotation", "min": 0.0, "max": 5.0, "default": 0.0, "type": "number" },
+    { "name": "count", "min": 2.0, "max": 6.0, "default": 3.0, "type": "number" },
+    { "name": "cube_size", "min": 20.0, "max": 160.0, "default": 64.0, "type": "number" },
+    { "name": "spacing", "min": 0.0, "max": 200.0, "default": 55.0, "type": "number" },
+    { "name": "size_randomization", "min": 0.0, "max": 1.0, "default": 0.5, "type": "number" },
+    { "name": "dispersion", "min": 0.0, "max": 350.0, "default": 90.0, "type": "number" },
+    { "name": "opacity", "min": 0.1, "max": 1.0, "default": 0.70, "type": "number" }
+  ],
+  "uuid": "cubes-matrix-3d-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Growing Red Circles",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "count", "min": 1.0, "max": 100.0, "default": 25.0, "type": "number" },
+    { "name": "size", "min": 10.0, "max": 1200.0, "default": 280.0, "type": "number" },
+    { "name": "speed", "min": 0.1, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "duration", "min": 0.5, "max": 30.0, "default": 6.0, "type": "number" },
+    { "name": "delay", "min": 0.0, "max": 3.0, "default": 0.25, "type": "number" },
+    { "name": "transparency", "min": 0.0, "max": 1.0, "default": 0.0, "type": "number" }
+  ],
+  "uuid": "growing-circles-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "3D Studio Still Life",
+  "color": "white",
+  "movement": true,
+  "parameters": [
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
+    { "name": "light_angle", "min": 0.0, "max": 6.28, "default": 1.15, "type": "number" },
+    { "name": "balance", "min": 0.0, "max": 1.0, "default": 0.5, "type": "number" },
+    { "name": "roughness", "min": 0.1, "max": 2.0, "default": 1.0, "type": "number" },
+    { "name": "camera_orbit", "min": -1.0, "max": 1.0, "default": 0.0, "type": "number" }
+  ],
+  "uuid": "studio-still-life-3d"
+}*/`,
+    code: `
+#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform float time;
+uniform vec2 resolution;
+uniform float speed;
+uniform float light_angle;
+uniform float balance;
+uniform float roughness;
+uniform float camera_orbit;
+
+varying vec2 texCoord;
+
+// --- Procedural Hash & Noise for PBR Textures ---
+float hash(vec3 p) {
+    p = fract(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float noise(vec3 x) {
+    vec3 p = floor(x);
+    vec3 w = fract(x);
+    vec3 u = w * w * (3.0 - 2.0 * w);
+    return mix(mix(mix(hash(p + vec3(0.0,0.0,0.0)), hash(p + vec3(1.0,0.0,0.0)), u.x),
+                   mix(hash(p + vec3(0.0,1.0,0.0)), hash(p + vec3(1.0,1.0,0.0)), u.x), u.y),
+               mix(mix(hash(p + vec3(0.0,0.0,1.0)), hash(p + vec3(1.0,0.0,1.0)), u.x),
+                   mix(hash(p + vec3(0.0,1.0,1.0)), hash(p + vec3(1.0,1.0,1.0)), u.x), u.y), u.z);
+}
+
+// --- SDF Primitives ---
+float sdSphere(vec3 p, float r) {
+    return length(p) - r;
+}
+
+float sdBox(vec3 p, vec3 b) {
+    vec3 q = abs(p) - b;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+// Global material ID:
+// 1 = Floor (sandstone ground)
+// 2 = Left Wall (dusty teal)
+// 3 = Right Wall (terracotta red)
+// 4 = Pedestal Box (sandstone)
+// 5 = Bottom Red Ceramic Sphere (Left)
+// 6 = Top Red Lacquer Sphere (Left)
+// 7 = Travertine Stone Sphere (Right)
+// 8 = Small Turquoise Enamel Sphere (Foreground)
+
+vec2 map(vec3 p) {
+    float t = time * speed;
+    
+    // 1. Floor Plane
+    float dFloor = p.y - (-1.15);
+    vec2 res = vec2(dFloor, 1.0);
+    
+    // 2. Corner Walls: Left Teal Wall & Right Terracotta Wall
+    // Left Teal Wall at x <= 0.0, z = 0.95
+    float dLeftWall = sdBox(p - vec3(-2.0, 1.5, 0.95), vec3(2.0, 3.0, 0.05));
+    if (dLeftWall < res.x) res = vec2(dLeftWall, 2.0);
+    
+    // Right Terracotta Wall at x > 0.0, z = 0.95
+    float dRightWall = sdBox(p - vec3(2.0, 1.5, 0.95), vec3(2.0, 3.0, 0.05));
+    if (dRightWall < res.x) res = vec2(dRightWall, 3.0);
+    
+    // 3. Sandstone Pedestal Block on Right
+    vec3 bPos = p - vec3(0.65, -0.75, 0.10);
+    float dBox = sdBox(bPos, vec3(0.60, 0.40, 0.50)) - 0.02;
+    if (dBox < res.x) res = vec2(dBox, 4.0);
+    
+    // 4. Large Bottom Red Sphere (textured ceramic) on Left
+    vec3 posRed1 = vec3(-0.45, -0.36, -0.05);
+    float dRed1 = sdSphere(p - posRed1, 0.76);
+    if (dRed1 < res.x) res = vec2(dRed1, 5.0);
+    
+    // 5. Top Red Sphere (balanced on bottom sphere with subtle breathing wobble)
+    float wobble = sin(t * 1.2) * (0.02 * balance);
+    float breath = cos(t * 0.8) * (0.015 * balance);
+    vec3 posRed2 = vec3(-0.38 + wobble, 0.70 + breath, -0.02);
+    float dRed2 = sdSphere(p - posRed2, 0.44);
+    if (dRed2 < res.x) res = vec2(dRed2, 6.0);
+    
+    // 6. Large Travertine Limestone Sphere (sitting on pedestal) on Right
+    vec3 posStone = vec3(0.52, 0.04, 0.08);
+    float dStone = sdSphere(p - posStone, 0.65);
+    if (dStone < res.x) res = vec2(dStone, 7.0);
+    
+    // 7. Small Turquoise Enamel Sphere in foreground
+    float floatTurq = sin(t * 1.5 + 1.0) * (0.02 * balance);
+    vec3 posTurq = vec3(0.14, -0.80 + floatTurq, -0.70);
+    float dTurq = sdSphere(p - posTurq, 0.32);
+    if (dTurq < res.x) res = vec2(dTurq, 8.0);
+    
+    return res;
+}
+
+vec3 calcNormal(vec3 p) {
+    const float eps = 0.001;
+    vec2 h = vec2(eps, 0.0);
+    return normalize(vec3(
+        map(p + h.xyy).x - map(p - h.xyy).x,
+        map(p + h.yxy).x - map(p - h.yxy).x,
+        map(p + h.yyx).x - map(p - h.yyx).x
+    ));
+}
+
+// Raymarching soft shadows
+float calcShadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
+    float res = 1.0;
+    float t = mint;
+    for (int i = 0; i < 56; i++) {
+        float h = map(ro + rd * t).x;
+        res = min(res, k * h / t);
+        t += clamp(h, 0.015, 0.22);
+        if (res < 0.001 || t > maxt) break;
+    }
+    return clamp(res, 0.0, 1.0);
+}
+
+// Ambient occlusion
+float calcAO(vec3 p, vec3 n) {
+    float occ = 0.0;
+    float sca = 1.0;
+    for (int i = 0; i < 5; i++) {
+        float h = 0.01 + 0.12 * float(i) / 4.0;
+        float d = map(p + h * n).x;
+        occ += (h - d) * sca;
+        sca *= 0.85;
+    }
+    return clamp(1.0 - 2.5 * occ, 0.0, 1.0);
+}
+
+void main() {
+    vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / resolution.y;
+    float t = time * speed;
+    
+    // Camera setup with interactive orbit
+    float camAngle = 0.02 + camera_orbit * 0.45;
+    float camDist = 3.8;
+    vec3 ro = vec3(sin(camAngle) * camDist, 0.20, -cos(camAngle) * camDist);
+    vec3 ta = vec3(0.02, -0.05, 0.0);
+    
+    vec3 ww = normalize(ta - ro);
+    vec3 uu = normalize(cross(vec3(0.0, 1.0, 0.0), ww)); // Right-handed view matrix
+    vec3 vv = normalize(cross(ww, uu));
+    
+    // Ray direction with balanced studio lens
+    vec3 rd = normalize(uv.x * uu + uv.y * vv + 1.35 * ww);
+    
+    // Sun key light direction from top-right casting diagonal shadow across left teal wall
+    float sunA = light_angle;
+    vec3 lightDir = normalize(vec3(-cos(sunA) * 1.5, 1.7, -sin(sunA) * 1.2 - 0.2));
+    vec3 lightCol = vec3(1.0, 0.95, 0.88) * 1.45;
+    
+    // Raymarch
+    float dO = 0.0;
+    float matID = 0.0;
+    for (int i = 0; i < 115; i++) {
+        vec3 p = ro + rd * dO;
+        vec2 dMat = map(p);
+        if (dMat.x < 0.001) {
+            matID = dMat.y;
+            break;
+        }
+        if (dO > 22.0) break;
+        dO += dMat.x;
+    }
+    
+    vec3 col = vec3(0.92, 0.86, 0.80); // Warm ambient background fallback
+    
+    if (dO < 22.0) {
+        vec3 p = ro + rd * dO;
+        vec3 n = calcNormal(p);
+        vec3 v = -rd;
+        
+        // Procedural micro-texture
+        float nVal = noise(p * 32.0);
+        float speckle = noise(p * 95.0);
+        
+        vec3 albedo = vec3(1.0);
+        float specPower = 32.0;
+        float specIntensity = 0.6;
+        float fresnelPower = 4.0;
+        
+        // Assign Material Properties
+        if (matID < 1.5) {
+            // Floor: Sandstone / Terracotta Floor
+            albedo = vec3(0.92, 0.78, 0.64) * (0.93 + 0.12 * nVal);
+            specPower = 14.0 / max(0.1, roughness);
+            specIntensity = 0.18;
+        }
+        else if (matID < 2.5) {
+            // Left Wall: Dusty Sage / Teal Cyan
+            albedo = vec3(0.36, 0.58, 0.60) * (0.95 + 0.08 * nVal);
+            specPower = 8.0 / max(0.1, roughness);
+            specIntensity = 0.08;
+        }
+        else if (matID < 3.5) {
+            // Right Wall: Rich Terracotta Red
+            albedo = vec3(0.68, 0.20, 0.18) * (0.95 + 0.08 * nVal);
+            specPower = 8.0 / max(0.1, roughness);
+            specIntensity = 0.08;
+        }
+        else if (matID < 4.5) {
+            // Pedestal Box: Sandy Limestone Block
+            albedo = vec3(0.90, 0.74, 0.58) * (0.9 + 0.15 * nVal);
+            specPower = 18.0 / max(0.1, roughness);
+            specIntensity = 0.22;
+        }
+        else if (matID < 5.5) {
+            // Bottom Large Red Ceramic Sphere (speckled micro-glaze)
+            albedo = vec3(0.76, 0.12, 0.09) * (0.88 + 0.2 * speckle);
+            specPower = 64.0 / max(0.1, roughness);
+            specIntensity = 1.35;
+        }
+        else if (matID < 6.5) {
+            // Top Red Lacquer Sphere (smooth high-gloss)
+            albedo = vec3(0.84, 0.16, 0.12);
+            specPower = 84.0 / max(0.1, roughness);
+            specIntensity = 1.5;
+        }
+        else if (matID < 7.5) {
+            // Travertine / Sandstone Sphere (matte stone with pores)
+            albedo = vec3(0.84, 0.85, 0.74) * (0.86 + 0.22 * nVal + 0.12 * speckle);
+            specPower = 22.0 / max(0.1, roughness);
+            specIntensity = 0.38;
+        }
+        else {
+            // Small Turquoise Enamel Sphere
+            albedo = vec3(0.38, 0.72, 0.72) * (0.95 + 0.08 * speckle);
+            specPower = 76.0 / max(0.1, roughness);
+            specIntensity = 1.4;
+        }
+        
+        // Lighting Computation
+        float diff = max(dot(n, lightDir), 0.0);
+        float shadow = calcShadow(p + n * 0.02, lightDir, 0.03, 7.0, 26.0);
+        float ao = calcAO(p, n);
+        
+        // Specular Blinn-Phong
+        vec3 h = normalize(lightDir + v);
+        float spec = pow(max(dot(n, h), 0.0), specPower) * specIntensity;
+        
+        // Fresnel Rim Reflection
+        float fresnel = pow(clamp(1.0 - dot(n, v), 0.0, 1.0), fresnelPower);
+        
+        // Ambient Fill / Indirect Color Bleed
+        vec3 skyLight = vec3(0.40, 0.55, 0.68) * max(n.y * 0.5 + 0.5, 0.0) * 0.35;
+        vec3 bounceLight = vec3(0.85, 0.40, 0.30) * max(-n.y * 0.5 + 0.5, 0.0) * 0.28;
+        
+        // Direct Sun Light + Specular
+        vec3 direct = lightCol * diff * shadow;
+        vec3 specular = lightCol * spec * shadow;
+        
+        col = albedo * (direct + skyLight + bounceLight) * ao + specular + fresnel * 0.16 * albedo;
+    }
+    
+    // Tone mapping & gamma correction
+    col = col / (col + vec3(0.82)) * 1.82;
+    col = pow(col, vec3(1.0 / 2.2));
+    
+    // Subtle Vignette
+    col *= 1.0 - 0.22 * dot(uv, uv);
+    
+    gl_FragColor = vec4(col, 1.0);
+}
+`
+  },
+  {
+    header: `/*{
+  "description": "Vein Labyrinth",
+  "color": "white",
+  "movement": false,
+  "parameters": [
+    { "name": "growth", "min": 0.0, "max": 45.0, "default": 25.0, "type": "number" },
+    { "name": "branch_chance", "min": 0.0, "max": 1.0, "default": 0.45, "type": "number" },
+    { "name": "split_mode", "min": 2.0, "max": 3.0, "default": 2.5, "type": "number" },
+    { "name": "segment_size", "min": 10.0, "max": 45.0, "default": 20.0, "type": "number" },
+    { "name": "grid_mesh", "min": 0.0, "max": 1.0, "default": 0.35, "type": "number" }
+  ],
+  "uuid": "vein-labyrinth-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
   "description": "Neon 3D Polygon",
   "color": "white",
   "movement": true,
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "glow", "min": 5.0, "max": 50.0, "default": 20.0, "type": "number" },
-    { "name": "complexity", "min": 0.0, "max": 2.0, "default": 0.0, "type": "number" }
+    { "name": "shadows", "min": 0.0, "max": 2.0, "default": 1.0, "type": "number" },
+    { "name": "sides", "min": 4.0, "max": 12.0, "default": 6.0, "type": "number" },
+    { "name": "symmetry", "min": 0.0, "max": 1.0, "default": 1.0, "type": "number" },
+    { "name": "size", "min": 0.1, "max": 3.0, "default": 1.0, "type": "number" }
   ],
   "uuid": "3d-polygon-neon-1"
 }*/`,
@@ -38,7 +377,9 @@ export const GENERATIVES_DATA = [
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "blobbiness", "min": 0.1, "max": 2.0, "default": 0.8, "type": "number" },
-    { "name": "droplets", "min": 1.0, "max": 10.0, "default": 5.0, "type": "number" }
+    { "name": "droplets", "min": 1.0, "max": 10.0, "default": 5.0, "type": "number" },
+    { "name": "size", "min": 0.5, "max": 3.0, "default": 1.0, "type": "number" },
+    { "name": "gravity", "min": 0.5, "max": 5.0, "default": 1.5, "type": "number" }
   ],
   "uuid": "ferrofluid-3d-1"
 }*/`,
@@ -169,7 +510,9 @@ void main() {
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "count", "min": 10.0, "max": 100.0, "default": 40.0, "type": "number" },
-    { "name": "max_size", "min": 20.0, "max": 200.0, "default": 100.0, "type": "number" }
+    { "name": "max_size", "min": 20.0, "max": 200.0, "default": 100.0, "type": "number" },
+    { "name": "movement", "min": 0.0, "max": 100.0, "default": 30.0, "type": "number" },
+    { "name": "chaos", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" }
   ],
   "uuid": "stacked-balls-canvas-1"
 }*/`,
@@ -183,7 +526,8 @@ void main() {
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "count", "min": 10.0, "max": 150.0, "default": 80.0, "type": "number" },
-    { "name": "scatter", "min": 100.0, "max": 800.0, "default": 400.0, "type": "number" }
+    { "name": "scatter", "min": 100.0, "max": 800.0, "default": 400.0, "type": "number" },
+    { "name": "size", "min": 0.5, "max": 3.0, "default": 1.0, "type": "number" }
   ],
   "uuid": "3d-debris-canvas-1"
 }*/`,
@@ -197,7 +541,9 @@ void main() {
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "density", "min": 50.0, "max": 500.0, "default": 250.0, "type": "number" },
-    { "name": "scale", "min": 0.1, "max": 3.0, "default": 1.0, "type": "number" }
+    { "name": "scale", "min": 0.1, "max": 3.0, "default": 1.0, "type": "number" },
+    { "name": "movement", "min": 0.0, "max": 100.0, "default": 20.0, "type": "number" },
+    { "name": "chaos", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" }
   ],
   "uuid": "random-symbols-canvas-1"
 }*/`,
@@ -210,9 +556,11 @@ void main() {
   "color": "white",
   "movement": true,
   "parameters": [
-    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "amplitude", "min": 10.0, "max": 200.0, "default": 80.0, "type": "number" },
-    { "name": "density", "min": 0.1, "max": 2.0, "default": 1.0, "type": "number" }
+    { "name": "speed", "min": 0.0, "max": 5.0, "default": 0.8, "type": "number" },
+    { "name": "amplitude", "min": 30.0, "max": 300.0, "default": 140.0, "type": "number" },
+    { "name": "density", "min": 0.5, "max": 2.5, "default": 1.2, "type": "number" },
+    { "name": "ruggedness", "min": 0.5, "max": 3.0, "default": 1.8, "type": "number" },
+    { "name": "thickness", "min": 0.5, "max": 5.0, "default": 1.5, "type": "number" }
   ],
   "uuid": "terrain-lines-canvas-1"
 }*/`,
@@ -225,8 +573,12 @@ void main() {
   "movement": true,
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "count", "min": 5.0, "max": 50.0, "default": 20.0, "type": "number" },
-    { "name": "spread", "min": 10.0, "max": 200.0, "default": 80.0, "type": "number" }
+    { "name": "count", "min": 5.0, "max": 50.0, "default": 22.0, "type": "number" },
+    { "name": "size", "min": 20.0, "max": 300.0, "default": 130.0, "type": "number" },
+    { "name": "spacing", "min": 10.0, "max": 100.0, "default": 32.0, "type": "number" },
+    { "name": "movement", "min": 0.0, "max": 50.0, "default": 15.0, "type": "number" },
+    { "name": "rotation", "min": 0.0, "max": 6.28, "default": 0.0, "type": "number" },
+    { "name": "delay", "min": 0.0, "max": 1.0, "default": 0.05, "type": "number" }
   ],
   "uuid": "squares-noise-canvas-1"
 }*/`,
@@ -239,8 +591,11 @@ void main() {
   "movement": true,
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "nodes", "min": 5.0, "max": 40.0, "default": 15.0, "type": "number" },
-    { "name": "grid_size", "min": 20.0, "max": 100.0, "default": 50.0, "type": "number" }
+    { "name": "nodes", "min": 5.0, "max": 40.0, "default": 16.0, "type": "number" },
+    { "name": "grid_size", "min": 20.0, "max": 100.0, "default": 45.0, "type": "number" },
+    { "name": "spread", "min": 0.0, "max": 1.0, "default": 0.4, "type": "number" },
+    { "name": "movement", "min": 0.0, "max": 100.0, "default": 15.0, "type": "number" },
+    { "name": "chaos", "min": 0.0, "max": 5.0, "default": 0.0, "type": "number" }
   ],
   "uuid": "number-paths-canvas-1"
 }*/`,
@@ -253,8 +608,12 @@ void main() {
   "movement": true,
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "count", "min": 2.0, "max": 15.0, "default": 8.0, "type": "number" },
-    { "name": "max_height", "min": 50.0, "max": 400.0, "default": 200.0, "type": "number" }
+    { "name": "count", "min": 2.0, "max": 15.0, "default": 7.0, "type": "number" },
+    { "name": "size", "min": 0.2, "max": 3.0, "default": 1.0, "type": "number" },
+    { "name": "spacing", "min": 0.0, "max": 30.0, "default": 2.0, "type": "number" },
+    { "name": "max_height", "min": 50.0, "max": 500.0, "default": 220.0, "type": "number" },
+    { "name": "movement", "min": 0.0, "max": 2.0, "default": 1.0, "type": "number" },
+    { "name": "chaos", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" }
   ],
   "uuid": "isometric-buildings-canvas-1"
 }*/`,
@@ -610,21 +969,6 @@ void main() {
 }
 `
   },
-  {
-    header: `/*{
-  "description": "Bubble Spheres",
-  "color": "white",
-  "movement": true,
-  "parameters": [
-    { "name": "count", "min": 1.0, "max": 20.0, "default": 6.0, "type": "number" },
-    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "size", "min": 0.1, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "connect_lines", "default": 1.0, "type": "boolean" }
-  ],
-  "uuid": "bubble-spheres-canvas-1"
-}*/`,
-    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
-  },
 
   {
     header: `/*{
@@ -780,87 +1124,13 @@ void main(void) {
   "color": "white",
   "movement": true,
   "parameters": [
-    { "name": "speed", "min": 0.5, "max": 20.0, "default": 4.0 },
-    { "name": "freq",  "min": 0.1, "max": 4.0,  "default": 0.8 },
-    { "name": "amp",   "min": 1.0, "max": 60.0, "default": 18.0 },
-    { "name": "lines", "min": 5.0, "max": 150.0,"default": 45.0 }
+    { "name": "speed",     "min": 0.5, "max": 20.0, "default": 4.0 },
+    { "name": "freq",      "min": 0.1, "max": 4.0,  "default": 0.8 },
+    { "name": "amp",       "min": 1.0, "max": 60.0, "default": 18.0 },
+    { "name": "lines",     "min": 5.0, "max": 150.0,"default": 45.0 },
+    { "name": "thickness", "min": 0.5, "max": 8.0,  "default": 2.2 }
   ],
   "uuid": "waves-canvas-gen-1"
-}*/`,
-    code: `
-#ifdef GL_ES
-precision highp float;
-#endif
-
-uniform float time;
-uniform vec2 resolution;
-uniform float randomness;
-uniform float spacing;
-uniform float speed;
-
-varying vec2 texCoord;
-
-vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-vec2 mod289(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-vec3 permute(vec3 x) { return mod289(((x*34.0)+1.0)*x); }
-float snoise(vec2 v) {
-  const vec4 C = vec4(0.211324865, 0.366025403, -0.577350269, 0.024390243);
-  vec2 i  = floor(v + dot(v, C.yy) );
-  vec2 x0 = v -   i + dot(i, C.xx);
-  vec2 i1;
-  i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
-  vec4 x12 = x0.xyxy + C.xxzz;
-  x12.xy -= i1;
-  i = mod289(i);
-  vec3 p = permute( permute( i.y + vec3(0.0, i1.y, 1.0 )) + i.x + vec3(0.0, i1.x, 1.0 ));
-  vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
-  m = m*m ; m = m*m ;
-  vec3 x = 2.0 * fract(p * C.www) - 1.0;
-  vec3 h = abs(x) - 0.5;
-  vec3 ox = floor(x + 0.5);
-  vec3 a0 = x - ox;
-  m *= 1.792842914 - 0.8537347209 * ( a0*a0 + h*h );
-  vec3 g;
-  g.x  = a0.x  * x0.x  + h.x  * x0.y;
-  g.yz = a0.yz * x12.xz + h.yz * x12.yw;
-  return 130.0 * dot(m, g);
-}
-
-void main() {
-    vec2 uv = texCoord * 2.0 - 1.0;
-    uv.x *= resolution.x / resolution.y;
-    
-    float t = time * speed;
-    
-    float n = snoise(vec2(uv.y * 1.5, t * 0.4)) * 0.5 + 
-              snoise(vec2(uv.y * 3.0, t * 0.8)) * 0.25 +
-              snoise(vec2(uv.y * 6.0, t * 1.2)) * 0.125;
-              
-    float displacedX = uv.x + n * randomness * 0.6;
-    float dist = abs(fract(displacedX / spacing + 0.5) - 0.5) * spacing;
-    
-    float lineT = 0.003; 
-    float aa = 0.002;
-    
-    float line = smoothstep(lineT + aa, lineT, dist);
-    
-    gl_FragColor = vec4(1.0, 1.0, 1.0, clamp(line, 0.0, 1.0));
-}`
-  },
-  {
-    header: `/*{
-  "description": "Particle Sphere",
-  "color": "white",
-  "movement": true,
-  "parameters": [
-    { "name": "particles", "min": 20.0,  "max": 2000.0, "default": 800.0 },
-    { "name": "wiggle",    "min": 0.0,   "max": 1.0,    "default": 0.22 },
-    { "name": "radius",    "min": 50.0,  "max": 220.0,  "default": 140.0 },
-    { "name": "ball_size", "min": 1.0,   "max": 10.0,   "default": 3.5 },
-    { "name": "speed",     "min": 0.0,   "max": 3.0,    "default": 0.5 },
-    { "name": "light_x",   "min": -1.0,  "max": 1.0,    "default": -0.5 }
-  ],
-  "uuid": "particles-sphere-canvas-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   },
@@ -870,10 +1140,11 @@ void main() {
   "color": "white",
   "movement": true,
   "parameters": [
-    { "name": "speed",  "min": 0.0, "max": 10.0,  "default": 1.0 },
-    { "name": "freq",   "min": 0.2, "max": 6.0,   "default": 1.5 },
-    { "name": "amp",    "min": 10.0,"max": 400.0, "default": 320.0 },
-    { "name": "lines",  "min": 5.0, "max": 100.0, "default": 25.0 }
+    { "name": "speed",     "min": 0.0, "max": 10.0,  "default": 1.0 },
+    { "name": "freq",      "min": 0.2, "max": 6.0,   "default": 1.5 },
+    { "name": "amp",       "min": 10.0,"max": 400.0, "default": 320.0 },
+    { "name": "lines",     "min": 5.0, "max": 100.0, "default": 25.0 },
+    { "name": "thickness", "min": 0.5, "max": 8.0,   "default": 2.2 }
   ],
   "uuid": "topography-canvas-gen-1"
 }*/`,
