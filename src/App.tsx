@@ -33,10 +33,20 @@ import {
   Menu,
   Radio,
   Blend,
-  Sun
+  Sun,
+  RotateCcw,
+  Box,
+  Lock,
+  Unlock,
+  Pipette,
+  Palette,
+  Check,
+  Copy,
+  Sparkles,
+  Mic
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
-import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition } from './lib/generatives';
+import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition, BUILTIN_PALETTES, GenerativeElement, ColorPalettePreset } from './lib/generatives';
 import { engine, AudioStemNode } from './lib/audioEngine';
 import { AudioSpectrogram } from './components/AudioSpectrogram';
 import { Waves } from './components/Waves';
@@ -102,8 +112,12 @@ interface Layer {
   videoStart?: number;
   videoEnd?: number;
   videoDuration?: number;
+  speed?: number;
   videoTriggerMode?: 'restart' | 'continuous' | 'advance' | 'rewind' | 'frame-accumulator';
   accumulateThreshold?: number;
+  accumulateOpacity?: number;
+  accumulateMaxFrames?: number;
+  accumulateBlendMode?: GlobalCompositeOperation;
   videoAdvanceUnit?: 'frames' | 'seconds';
   videoAdvanceAmount?: number;
   videoFrameRate?: number;
@@ -112,6 +126,10 @@ interface Layer {
   generativeSettings?: Record<string, number>;
   generativeTriggerActive?: Record<string, boolean>;
   generativeTriggerAmount?: Record<string, number>;
+  generativeColors?: Record<string, string>;
+  generativeLockedColors?: Record<string, boolean>;
+  generativeActivePaletteId?: string;
+  generativeColorCycleIndex?: number;
   triggerMapping: LayerTriggerMapping;
   mappings: EffectMapping[];
   missingMedia?: boolean;
@@ -182,6 +200,10 @@ interface EffectMapping {
   activeUntil: number | null;
   velocity: number;
   triggerBehavior: 'momentary' | 'toggle';
+  audioMapping?: AudioMapping;
+  rhythmMapping?: RhythmMapping;
+  triggerActive?: Record<string, boolean>;
+  triggerAmount?: Record<string, number>;
 }
 
 interface EffectDefinition {
@@ -404,6 +426,425 @@ const INITIAL_MAPPINGS: EffectMapping[] = [
   },
 ];
 
+// --- Color Utilities ---
+
+export function isTransparentColor(c?: string): boolean {
+  if (!c) return false;
+  const s = c.trim().toLowerCase();
+  return s === 'transparent' || s === 'none' || s === 'rgba(0, 0, 0, 0)' || s === 'rgba(0,0,0,0)' || s === '#00000000' || s === '#0000';
+}
+
+function hexToRgb(hex: string): { r: number, g: number, b: number } {
+  if (!hex || isTransparentColor(hex)) return { r: 0, g: 0, b: 0 };
+  let c = hex.replace('#', '');
+  if (c.length === 3) c = c.split('').map(x => x + x).join('');
+  const num = parseInt(c, 16);
+  if (isNaN(num)) return { r: 255, g: 255, b: 255 };
+  return {
+    r: (num >> 16) & 255,
+    g: (num >> 8) & 255,
+    b: num & 255
+  };
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+  const toHex = (v: number) => clamp(v).toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function rgbToHsv(r: number, g: number, b: number): { h: number, s: number, v: number } {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0, v = max;
+  const d = max - min;
+  s = max === 0 ? 0 : d / max;
+  if (max !== min) {
+    switch (max) {
+      case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+      case g: h = (b - r) / d + 2; break;
+      case b: h = (r - g) / d + 4; break;
+    }
+    h /= 6;
+  }
+  return { h: h * 360, s: s * 100, v: v * 100 };
+}
+
+function hsvToRgb(h: number, s: number, v: number): { r: number, g: number, b: number } {
+  h = ((h % 360) + 360) % 360;
+  h /= 60;
+  s = Math.max(0, Math.min(100, s)) / 100;
+  v = Math.max(0, Math.min(100, v)) / 100;
+  const i = Math.floor(h);
+  const f = h - i;
+  const p = v * (1 - s);
+  const q = v * (1 - s * f);
+  const t = v * (1 - s * (1 - f));
+  let r = 0, g = 0, b = 0;
+  switch (i % 6) {
+    case 0: r = v; g = t; b = p; break;
+    case 1: r = q; g = v; b = p; break;
+    case 2: r = p; g = v; b = t; break;
+    case 3: r = p; g = q; b = v; break;
+    case 4: r = t; g = p; b = v; break;
+    case 5: r = v; g = p; b = q; break;
+  }
+  return { r: r * 255, g: g * 255, b: b * 255 };
+}
+
+function adjustHexBrightness(hex: string, factor: number): string {
+  if (isTransparentColor(hex)) return 'transparent';
+  const { r, g, b } = hexToRgb(hex);
+  if (factor >= 0) {
+    return rgbToHex(
+      r + (255 - r) * factor,
+      g + (255 - g) * factor,
+      b + (255 - b) * factor
+    );
+  } else {
+    const f = 1 + factor;
+    return rgbToHex(r * f, g * f, b * f);
+  }
+}
+
+function isColorDark(hex: string): boolean {
+  if (isTransparentColor(hex)) return true;
+  const { r, g, b } = hexToRgb(hex);
+  return (r * 0.299 + g * 0.587 + b * 0.114) < 128;
+}
+
+
+function ColorPickerPopover({
+  color,
+  onChange,
+  onClose,
+  title,
+  anchorRect,
+  paletteColors = [],
+  paletteName
+}: {
+  color: string;
+  onChange: (newHex: string) => void;
+  onClose: () => void;
+  title: string;
+  anchorRect?: DOMRect | null;
+  paletteColors?: string[];
+  paletteName?: string;
+}) {
+  const isTransparent = isTransparentColor(color);
+  const rgb = hexToRgb(color);
+  const hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+
+  const [hue, setHue] = useState(isTransparent ? 120 : hsv.h);
+  const [sat, setSat] = useState(isTransparent ? 100 : hsv.s);
+  const [val, setVal] = useState(isTransparent ? 100 : hsv.v);
+  const [copied, setCopied] = useState(false);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const svBoxRef = useRef<HTMLDivElement>(null);
+
+  // Sync internal HSV when incoming color prop changes
+  useEffect(() => {
+    if (!isTransparentColor(color)) {
+      const currRgb = hexToRgb(color);
+      const currHsv = rgbToHsv(currRgb.r, currRgb.g, currRgb.b);
+      setHue(currHsv.h);
+      setSat(currHsv.s);
+      setVal(currHsv.v);
+    }
+  }, [color]);
+
+  // Click outside to dismiss
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [onClose]);
+
+  const updateFromHsv = (newH: number, newS: number, newV: number) => {
+    setHue(newH);
+    setSat(newS);
+    setVal(newV);
+    const newRgb = hsvToRgb(newH, newS, newV);
+    const hex = rgbToHex(newRgb.r, newRgb.g, newRgb.b);
+    onChange(hex);
+  };
+
+  const handleSvMouseDown = (e: React.MouseEvent) => {
+    if (!svBoxRef.current) return;
+    const rect = svBoxRef.current.getBoundingClientRect();
+    const updateSv = (clientX: number, clientY: number) => {
+      const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+      const y = Math.max(0, Math.min(rect.height, clientY - rect.top));
+      const newSat = (x / rect.width) * 100;
+      const newVal = (1 - y / rect.height) * 100;
+      updateFromHsv(hue, newSat, newVal);
+    };
+
+    updateSv(e.clientX, e.clientY);
+
+    const onMouseMove = (moveEv: MouseEvent) => {
+      updateSv(moveEv.clientX, moveEv.clientY);
+    };
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  };
+
+  const handleEyeDropper = async () => {
+    if ('EyeDropper' in window) {
+      try {
+        const eyeDropper = new (window as any).EyeDropper();
+        const result = await eyeDropper.open();
+        if (result?.sRGBHex) {
+          onChange(result.sRGBHex);
+        }
+      } catch (err) {
+        // User cancelled or not supported
+      }
+    }
+  };
+
+  const quickSwatches = [
+    'transparent', '#ffffff', '#000000', '#00ff41', '#eb556b', 
+    '#7599a4', '#f5a6b5', '#00f0ff', '#ffe600', '#df9bf3', '#6ec7f8', '#d4af37'
+  ];
+
+  return createPortal(
+    <motion.div
+      ref={popoverRef}
+      initial={{ opacity: 0, scale: 0.95, y: -4 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      transition={{ duration: 0.15 }}
+      className="fixed z-[9999] bg-[#121215] border border-white/20 rounded-lg p-4 shadow-2xl w-80 text-white font-mono text-xs backdrop-blur-xl"
+      style={{
+        top: anchorRect ? Math.max(16, Math.min(window.innerHeight - 440, anchorRect.top - 380 > 20 ? anchorRect.top - 380 : anchorRect.bottom + 8)) : '50%',
+        left: anchorRect ? Math.max(16, Math.min(window.innerWidth - 336, anchorRect.left - 130)) : '50%',
+      }}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between pb-3 border-b border-white/10 mb-3">
+        <div className="flex items-center gap-2">
+          <div 
+            className="w-4 h-4 rounded-full border border-white/30 flex-shrink-0"
+            style={{ 
+              backgroundColor: isTransparent ? 'transparent' : color,
+              backgroundImage: isTransparent ? 'repeating-conic-gradient(#666 0% 25%, #222 0% 50%) 50% / 6px 6px' : undefined
+            }} 
+          />
+          <span className="font-bold tracking-wider text-[11px] uppercase truncate max-w-[200px]">{title}</span>
+        </div>
+        <button 
+          onClick={onClose} 
+          className="text-white/40 hover:text-white p-1 rounded hover:bg-white/10 transition-colors"
+        >
+          <X size={14} />
+        </button>
+      </div>
+
+      {/* Active Palette Quick Selection Swatches */}
+      {paletteColors && paletteColors.length > 0 && (
+        <div className="mb-3 p-2.5 bg-white/5 border border-white/10 rounded-lg space-y-2">
+          <div className="flex items-center justify-between text-[8px] uppercase tracking-wider text-white/50 font-mono">
+            <span>Current Palette ({paletteName || 'Active'})</span>
+            <span className="text-[7px] opacity-60">Click to assign</span>
+          </div>
+          <div className="grid grid-cols-4 sm:grid-cols-6 gap-1.5">
+            {paletteColors.map((palHex, pIdx) => {
+              const isSelected = !isTransparent && color.toLowerCase() === palHex.toLowerCase();
+              return (
+                <button
+                  key={pIdx}
+                  onClick={() => onChange(palHex)}
+                  className={`h-7 rounded border flex items-center justify-center transition-all group relative overflow-hidden ${
+                    isSelected 
+                      ? 'border-white ring-2 ring-white/60 scale-105 shadow-md' 
+                      : 'border-white/20 hover:border-white hover:scale-105'
+                  }`}
+                  style={{ backgroundColor: palHex }}
+                  title={`Apply palette color: ${palHex}`}
+                >
+                  {isSelected && (
+                    <Check size={13} className={isColorDark(palHex) ? 'text-white' : 'text-black'} />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Transparent Preset Action Button */}
+      <div className="mb-3">
+        <button
+          onClick={() => onChange('transparent')}
+          className={`w-full py-1.5 px-3 rounded flex items-center justify-center gap-2 border transition-all text-[11px] font-bold uppercase tracking-wider ${
+            isTransparent
+              ? 'bg-red-500/20 border-red-500 text-white shadow-[0_0_8px_rgba(239,68,68,0.4)]'
+              : 'bg-white/5 hover:bg-white/10 border-white/15 text-white/70 hover:text-white'
+          }`}
+          title="Set element to Transparent (allows underlying layers or empty background to show through)"
+        >
+          <div 
+            className="w-3.5 h-3.5 rounded border border-white/40 flex-shrink-0"
+            style={{ backgroundImage: 'repeating-conic-gradient(#888 0% 25%, #333 0% 50%) 50% / 5px 5px' }}
+          />
+          <span>{isTransparent ? '✓ Element Is Transparent' : 'Set As Transparent (Alpha 0)'}</span>
+        </button>
+      </div>
+
+      {/* 2D Saturation / Value Gradient Box */}
+      <div
+        ref={svBoxRef}
+        onMouseDown={handleSvMouseDown}
+        className="w-full h-28 rounded cursor-crosshair relative mb-3 overflow-hidden border border-white/15 select-none"
+        style={{
+          backgroundColor: `hsl(${hue}, 100%, 50%)`,
+          backgroundImage: 'linear-gradient(to right, #fff, transparent), linear-gradient(to top, #000, transparent)'
+        }}
+      >
+        <div
+          className="absolute w-3.5 h-3.5 rounded-full border-2 border-white shadow-[0_0_4px_rgba(0,0,0,0.8)] pointer-events-none transform -translate-x-1/2 -translate-y-1/2"
+          style={{
+            left: `${sat}%`,
+            top: `${100 - val}%`,
+            backgroundColor: isTransparent ? `hsl(${hue}, ${sat}%, ${val}%)` : color
+          }}
+        />
+      </div>
+
+      {/* Hue Slider Bar */}
+      <div className="space-y-1 mb-3">
+        <div className="flex justify-between text-[9px] text-white/40 uppercase">
+          <span>Hue</span>
+          <span>{Math.round(hue)}°</span>
+        </div>
+        <input
+          type="range"
+          min="0"
+          max="360"
+          value={hue}
+          onChange={(e) => updateFromHsv(Number(e.target.value), sat, val)}
+          className="w-full h-3 rounded-full appearance-none cursor-pointer border border-white/10"
+          style={{
+            background: 'linear-gradient(to right, #ff0000 0%, #ffff00 17%, #00ff00 33%, #00ffff 50%, #0000ff 67%, #ff00ff 83%, #ff0000 100%)'
+          }}
+        />
+      </div>
+
+      {/* HEX and RGB Inputs */}
+      <div className="grid grid-cols-4 gap-2 mb-3">
+        <div className="col-span-2 space-y-1">
+          <label className="text-[8px] uppercase tracking-wider text-white/40">HEX</label>
+          <div className="flex items-center bg-black/60 border border-white/15 rounded px-2 py-1 focus-within:border-red-500 transition-colors">
+            <input
+              type="text"
+              value={isTransparent ? 'TRANSPARENT' : color.toUpperCase()}
+              onChange={(e) => {
+                let val = e.target.value.trim().toLowerCase();
+                if (val === 'transparent' || val === 'none') {
+                  onChange('transparent');
+                  return;
+                }
+                if (!val.startsWith('#')) val = '#' + val;
+                if (/^#[0-9A-Fa-f]{0,6}$/.test(val)) {
+                  onChange(val);
+                }
+              }}
+              className="bg-transparent text-[11px] text-white outline-none w-full font-mono font-bold"
+            />
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(isTransparent ? 'transparent' : color.toUpperCase());
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1200);
+              }}
+              className="text-white/40 hover:text-white p-0.5 ml-1 transition-colors"
+              title="Copy Hex"
+            >
+              {copied ? <Check size={11} className="text-green-400" /> : <Copy size={11} />}
+            </button>
+          </div>
+        </div>
+
+        <div className="space-y-1">
+          <label className="text-[8px] uppercase tracking-wider text-white/40">R</label>
+          <input
+            type="number"
+            min="0"
+            max="255"
+            value={rgb.r}
+            onChange={(e) => {
+              const rVal = Math.max(0, Math.min(255, parseInt(e.target.value) || 0));
+              onChange(rgbToHex(rVal, rgb.g, rgb.b));
+            }}
+            className="w-full bg-black/60 border border-white/15 rounded px-1.5 py-1 text-[11px] text-center text-white outline-none focus:border-red-500 font-mono"
+          />
+        </div>
+
+        <div className="space-y-1">
+          <label className="text-[8px] uppercase tracking-wider text-white/40">G</label>
+          <input
+            type="number"
+            min="0"
+            max="255"
+            value={rgb.g}
+            onChange={(e) => {
+              const gVal = Math.max(0, Math.min(255, parseInt(e.target.value) || 0));
+              onChange(rgbToHex(rgb.r, gVal, rgb.b));
+            }}
+            className="w-full bg-black/60 border border-white/15 rounded px-1.5 py-1 text-[11px] text-center text-white outline-none focus:border-red-500 font-mono"
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/10">
+        {/* EyeDropper Tool */}
+        {'EyeDropper' in window && (
+          <button
+            onClick={handleEyeDropper}
+            className="flex items-center gap-1.5 px-2 py-1 bg-white/5 hover:bg-white/15 border border-white/15 rounded text-[10px] text-white/80 hover:text-white transition-all"
+            title="Pick color from screen"
+          >
+            <Pipette size={12} className="text-red-400" />
+            <span>Pick</span>
+          </button>
+        )}
+
+        {/* Quick Swatches */}
+        <div className="flex items-center gap-1 overflow-x-auto py-0.5 custom-scrollbar">
+          {quickSwatches.map(sw => {
+            const isSwTransparent = isTransparentColor(sw);
+            const isSelected = isSwTransparent ? isTransparent : color.toLowerCase() === sw.toLowerCase();
+            return (
+              <button
+                key={sw}
+                onClick={() => onChange(sw)}
+                className={`w-4 h-4 rounded-full border transition-transform hover:scale-125 flex-shrink-0 relative overflow-hidden ${isSelected ? 'border-white scale-110 shadow-sm' : 'border-white/20'}`}
+                style={{ 
+                  backgroundColor: isSwTransparent ? 'transparent' : sw,
+                  backgroundImage: isSwTransparent ? 'repeating-conic-gradient(#888 0% 25%, #333 0% 50%) 50% / 4px 4px' : undefined
+                }}
+                title={isSwTransparent ? 'Transparent' : sw}
+              >
+                {isSwTransparent && <div className="absolute inset-0 border-t border-red-500 transform rotate-45 scale-125" />}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </motion.div>,
+    document.body
+  );
+}
+
 // --- Components ---
 
 function Knob({ value, min, max, onChange, label, type = 'continuous', id, onContextMenuAction, ccLabel, isLearning }: {
@@ -512,12 +953,13 @@ function Knob({ value, min, max, onChange, label, type = 'continuous', id, onCon
     document.removeEventListener('touchend', handleTouchEnd);
   };
 
-  const percentage = ((value - min) / (max - min)) * 100;
+  const safeVal = typeof value === 'number' && !isNaN(value) ? value : (min || 0);
+  const percentage = ((safeVal - min) / (max - min || 1)) * 100;
   const rotation = (percentage / 100) * 270 - 135;
 
   // Format value for display
   const range = max - min;
-  const displayVal = range < 5 ? value.toFixed(2) : range < 20 ? value.toFixed(1) : Math.round(value).toString();
+  const displayVal = range < 5 ? safeVal.toFixed(2) : range < 20 ? safeVal.toFixed(1) : Math.round(safeVal).toString();
 
   return (
     <div className="flex flex-col items-center gap-2 group select-none">
@@ -616,7 +1058,7 @@ function RangeSlider({ min, max, start, end, onChange, label }: {
     <div className="space-y-2">
       <div className="flex justify-between items-center">
         <label className="text-[8px] uppercase tracking-widest opacity-40">{label}</label>
-        <span className="text-[9px] font-mono opacity-60">{start.toFixed(1)}s - {end.toFixed(1)}s</span>
+        <span className="text-[9px] font-mono opacity-60">{(start ?? 0).toFixed(1)}s - {(end ?? 10).toFixed(1)}s</span>
       </div>
       <div className="relative h-6 flex items-center">
         <div className="absolute w-full h-1 bg-white/10 rounded-full" />
@@ -649,19 +1091,30 @@ function AspectRatioControl({ value, onChange }: { value: number, onChange: (v: 
     ratio = 0.5625 + t * (1.0 - 0.5625);
   } else {
     const t = (value - 50) / 50;
-    ratio = 1.0 + t * (1.7777 - 1.0);
+    ratio = 1.0 + t * (1.7778 - 1.0);
   }
 
-  const label = ratio < 0.8 ? "Portrait" : ratio > 1.2 ? "Landscape" : "Square";
-  const ratioLabel = ratio < 1 ? `${(9 * ratio/0.5625).toFixed(0)} : 16` : `16 : ${(9 / (ratio/1.7777)).toFixed(0)}`;
-  // Simplified ratio label for display
-  const displayRatio = ratio < 0.9 ? "9 : 16" : ratio > 1.1 ? "16 : 9" : "1 : 1";
+  const getFormattedRatio = (r: number) => {
+    if (Math.abs(r - 0.5625) < 0.02) return '9 : 16';
+    if (Math.abs(r - 0.75) < 0.02) return '3 : 4';
+    if (Math.abs(r - 1.0) < 0.02) return '1 : 1';
+    if (Math.abs(r - 1.3333) < 0.02) return '4 : 3';
+    if (Math.abs(r - 1.7778) < 0.02) return '16 : 9';
+    if (r >= 1) {
+      return `${r.toFixed(2)} : 1`;
+    } else {
+      return `1 : ${(1 / r).toFixed(2)}`;
+    }
+  };
+
+  const formattedRatio = getFormattedRatio(ratio);
+  const decimalRatio = `${ratio.toFixed(2)}:1`;
 
   return (
     <div className="p-4 bg-black/40 border border-white/5 space-y-6">
       <div className="flex items-center justify-between">
         <label className="text-[10px] uppercase tracking-widest opacity-40">Aspect Ratio</label>
-        <span className="text-[10px] font-mono text-red-500">{displayRatio}</span>
+        <span className="text-[10px] font-mono text-red-500 font-bold">{formattedRatio} ({decimalRatio})</span>
       </div>
       
       <div className="flex items-center gap-8 py-4">
@@ -675,15 +1128,15 @@ function AspectRatioControl({ value, onChange }: { value: number, onChange: (v: 
             }}
             className="border-2 border-white rounded-sm flex items-center justify-center bg-white/5"
           >
-            <span className="text-[8px] font-bold opacity-30">{displayRatio}</span>
+            <span className="text-[8px] font-bold opacity-50">{formattedRatio}</span>
           </motion.div>
         </div>
 
         <div className="flex-1 space-y-4">
            <div className="flex justify-between text-[8px] uppercase tracking-widest opacity-40">
-              <button title="Click to set ratio" onClick={() => onChange(15)} className={value < 30 ? 'text-red-500 font-bold opacity-100 hover:text-white transition-colors' : 'hover:opacity-100 hover:text-white transition-colors'}>Portrait</button>
-              <button title="Click to set ratio" onClick={() => onChange(50)} className={value > 40 && value < 60 ? 'text-red-500 font-bold opacity-100 hover:text-white transition-colors' : 'hover:opacity-100 hover:text-white transition-colors'}>Square</button>
-              <button title="Click to set ratio" onClick={() => onChange(85)} className={value > 70 ? 'text-red-500 font-bold opacity-100 hover:text-white transition-colors' : 'hover:opacity-100 hover:text-white transition-colors'}>Landscape</button>
+              <button title="Set Portrait (9:16)" onClick={() => onChange(0)} className={value < 25 ? 'text-red-500 font-bold opacity-100 hover:text-white transition-colors' : 'hover:opacity-100 hover:text-white transition-colors'}>Portrait (9:16)</button>
+              <button title="Set Square (1:1)" onClick={() => onChange(50)} className={value >= 40 && value <= 60 ? 'text-red-500 font-bold opacity-100 hover:text-white transition-colors' : 'hover:opacity-100 hover:text-white transition-colors'}>Square (1:1)</button>
+              <button title="Set Landscape (16:9)" onClick={() => onChange(100)} className={value > 75 ? 'text-red-500 font-bold opacity-100 hover:text-white transition-colors' : 'hover:opacity-100 hover:text-white transition-colors'}>Landscape (16:9)</button>
            </div>
            <input 
              type="range" min="0" max="100" value={value}
@@ -787,13 +1240,20 @@ function NoteSettingsConfigUI({ ns, onUpdateNote }: { ns: NoteSettings, onUpdate
         </div>
 
         {/* ADSR Card */}
-        <div className="p-3 rounded-md border bg-white/5 border-white/10">
-          <div className="flex flex-col mb-3">
-            <span className="text-[10px] font-bold uppercase tracking-wider">Envelope (ADSR)</span>
-            <span className="text-[8px] opacity-40">Control attack, decay, sustain, release</span>
+        <div className={`p-3 rounded-md border transition-all ${ns.useFixedDuration ? 'opacity-40 bg-white/2 border-white/5' : 'bg-white/5 border-white/10'}`}>
+          <div className="flex justify-between items-start mb-3">
+            <div className="flex flex-col">
+              <span className="text-[10px] font-bold uppercase tracking-wider">Envelope (ADSR)</span>
+              <span className="text-[8px] opacity-40">Control attack, decay, sustain, release</span>
+            </div>
+            {ns.useFixedDuration && (
+              <span className="text-[7px] font-mono uppercase tracking-wider text-amber-400 bg-amber-400/10 px-1.5 py-0.5 rounded border border-amber-400/20">
+                Superseded by Fixed Duration
+              </span>
+            )}
           </div>
           
-          <div className="space-y-3">
+          <div className={`space-y-3 ${ns.useFixedDuration ? 'pointer-events-none' : ''}`}>
             <div className="flex items-center gap-2 group">
               <span className="text-[8px] w-12 opacity-50 uppercase font-bold group-hover:text-red-400 transition-colors">Attack</span>
               <input type="range" min="0" max="2000" value={ns.attack} onChange={(e) => onUpdateNote('attack', parseInt(e.target.value))} className="flex-1 accent-red-600" />
@@ -831,7 +1291,17 @@ function MidiConfigUI({ label, mapping, onUpdate, onUpdateNote, onToggleChannel,
   isLearnActive?: { field: 'noteStart' | 'noteEnd' } | false,
   onToggleLearn?: (field: 'noteStart' | 'noteEnd') => void,
 }) {
-  const ns = mapping.noteSettings;
+  const safeMapping = {
+    ...DEFAULT_TRIGGER_MAPPING,
+    ...(mapping || {}),
+    channels: mapping?.channels || Array.from({length: 16}, (_, i) => i),
+    noteSettings: mapping?.noteSettings || { ...DEFAULT_NOTE_SETTINGS },
+    noteStart: mapping?.noteStart !== undefined ? mapping.noteStart : 0,
+    noteEnd: mapping?.noteEnd !== undefined ? mapping.noteEnd : 127,
+    triggerBehavior: mapping?.triggerBehavior || 'momentary'
+  };
+  const ns = safeMapping.noteSettings;
+
   return (
     <div className="space-y-4 pt-6 border-t border-white/5">
       <div className="flex justify-between items-center">
@@ -839,13 +1309,13 @@ function MidiConfigUI({ label, mapping, onUpdate, onUpdateNote, onToggleChannel,
         <div className="flex bg-black/40 border border-white/10 rounded p-0.5">
            <button 
              onClick={() => onUpdate('triggerBehavior', 'momentary')}
-             className={`px-2 py-0.5 text-[8px] uppercase tracking-tighter rounded-sm transition-all ${mapping.triggerBehavior === 'momentary' ? 'bg-red-600 text-white' : 'opacity-40'}`}
+             className={`px-2 py-0.5 text-[8px] uppercase tracking-tighter rounded-sm transition-all ${safeMapping.triggerBehavior === 'momentary' ? 'bg-red-600 text-white' : 'opacity-40'}`}
            >
              Momentary
            </button>
            <button 
              onClick={() => onUpdate('triggerBehavior', 'toggle')}
-             className={`px-2 py-0.5 text-[8px] uppercase tracking-tighter rounded-sm transition-all ${mapping.triggerBehavior === 'toggle' ? 'bg-red-600 text-white' : 'opacity-40'}`}
+             className={`px-2 py-0.5 text-[8px] uppercase tracking-tighter rounded-sm transition-all ${safeMapping.triggerBehavior === 'toggle' ? 'bg-red-600 text-white' : 'opacity-40'}`}
            >
              Toggle
            </button>
@@ -862,7 +1332,7 @@ function MidiConfigUI({ label, mapping, onUpdate, onUpdateNote, onToggleChannel,
         </div>
         <div className="grid grid-cols-4 gap-1">
           {Array.from({length: 16}).map((_, i) => {
-            const isSelected = mapping.channels.includes(i);
+            const isSelected = safeMapping.channels.includes(i);
             return (
               <button key={i} onClick={() => onToggleChannel(i)} className={`h-8 rounded text-[10px] font-mono transition-all border ${isSelected ? 'bg-red-600 border-red-500 text-white shadow-[0_0_10px_rgba(239,68,68,0.3)]' : 'bg-black/40 border-white/5 text-white/40 hover:border-white/20'}`}>
                 {i + 1}
@@ -876,7 +1346,7 @@ function MidiConfigUI({ label, mapping, onUpdate, onUpdateNote, onToggleChannel,
         <label className="text-[8px] uppercase opacity-30">Note Range</label>
         <div className="flex items-center gap-1">
           <div className="relative w-full flex items-center group">
-            <input type="number" min="0" max="127" value={mapping.noteStart} onChange={(e) => onUpdate('noteStart', parseInt(e.target.value))} className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none pr-6" />
+            <input type="number" min="0" max="127" value={safeMapping.noteStart} onChange={(e) => onUpdate('noteStart', parseInt(e.target.value))} className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none pr-6" />
             {onToggleLearn && (
               <button 
                 onClick={() => onToggleLearn('noteStart')} 
@@ -889,7 +1359,7 @@ function MidiConfigUI({ label, mapping, onUpdate, onUpdateNote, onToggleChannel,
           </div>
           <span className="opacity-30">-</span>
           <div className="relative w-full flex items-center group">
-            <input type="number" min="0" max="127" value={mapping.noteEnd} onChange={(e) => onUpdate('noteEnd', parseInt(e.target.value))} className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none pr-6" />
+            <input type="number" min="0" max="127" value={safeMapping.noteEnd} onChange={(e) => onUpdate('noteEnd', parseInt(e.target.value))} className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none pr-6" />
             {onToggleLearn && (
               <button 
                 onClick={() => onToggleLearn('noteEnd')} 
@@ -903,7 +1373,7 @@ function MidiConfigUI({ label, mapping, onUpdate, onUpdateNote, onToggleChannel,
         </div>
       </div>
 
-      <NoteSettingsConfigUI ns={mapping.noteSettings} onUpdateNote={onUpdateNote} />
+      <NoteSettingsConfigUI ns={safeMapping.noteSettings} onUpdateNote={onUpdateNote} />
     </div>
   );
 }
@@ -974,6 +1444,25 @@ export default function App() {
   const [layers, setLayers] = useState<Layer[]>(() => {
     const params = new URLSearchParams(window.location.search);
     const forceGen = params.get('gen');
+    const allDefs = parseGeneratives();
+    const matchedDef = forceGen ? allDefs.find(p => p.uuid === forceGen) : null;
+    const initColors: Record<string, string> = {};
+    if (matchedDef?.elements) {
+      matchedDef.elements.forEach(el => {
+        initColors[el.id] = el.defaultColor;
+      });
+    } else {
+      initColors.background = '#050a05';
+      initColors.cubes_crimson = '#00ff41';
+      initColors.cubes_slate = '#008f11';
+      initColors.wireframes = '#50ff70';
+    }
+    const defaultPalId = matchedDef?.defaultPaletteId || (
+      (matchedDef?.elements && matchedDef.elements.length <= 2)
+        ? (matchedDef.color === 'white' ? 'monochrome_duo_white' : 'monochrome_duo')
+        : 'acid_matrix'
+    );
+
     return [
       {
         id: 'layer-1',
@@ -988,25 +1477,54 @@ export default function App() {
         isVisible: true,
         isActive: false,
         midiMode: false,
-        midiNote: null,
-        midiVelocityThreshold: 1,
-        activeDuration: 100,
-        fixedVelocity: 127,
-        adsr: { attack: 10, decay: 50, sustain: 1.0, release: 100 },
+        videoTriggerMode: 'continuous',
+        triggerMapping: { ...DEFAULT_TRIGGER_MAPPING, channels: Array.from({length: 16}, (_, i) => i), noteSettings: { ...DEFAULT_NOTE_SETTINGS } },
+        rhythmMapping: { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: Array(16).fill(false) },
         mappings: [],
         generativeSettings: {},
-        generativeMappings: [],
-        generativeTriggerActive: {},
-        generativeTriggerAmount: {}
+        generativeMappings: [
+          {
+            ...INITIAL_MAPPINGS[0],
+            id: 'palette_cycle',
+            name: 'Palette Cycle',
+            description: 'Cycles colors across unlocked elements on each trigger hit.',
+            active: true,
+            manualActive: false,
+            isMuted: false,
+            isSoloed: false,
+            channels: Array.from({length: 16}, (_, i) => i),
+            noteStart: 0,
+            noteEnd: 127,
+            triggerBehavior: 'momentary' as any,
+            noteSettings: { ...DEFAULT_NOTE_SETTINGS }
+          }
+        ],
+        generativeTriggerActive: {
+          palette_cycle: false
+        },
+        generativeTriggerAmount: {},
+        generativeColors: initColors,
+        generativeLockedColors: {},
+        generativeActivePaletteId: defaultPalId,
+        generativeColorCycleIndex: 0
       }
     ];
   });
-  const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
+  const [activeLayerId, setActiveLayerId] = useState<string | null>('layer-1');
+  const [isColorsMenuExpanded, setIsColorsMenuExpanded] = useState(true);
+  const [activeColorPickerTarget, setActiveColorPickerTarget] = useState<{
+    elementId: string;
+    elementName: string;
+    color: string;
+    anchorRect?: DOMRect | null;
+  } | null>(null);
   const [activeMaskMenuLayerId, setActiveMaskMenuLayerId] = useState<string | null>(null);
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [isPlaying, setIsPlaying] = useState(true);
   const [midiAccess, setMidiAccess] = useState<MIDIAccess | null>(null);
   const [midiDevices, setMidiDevices] = useState<MidiDevice[]>([]);
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedAudioDevice, setSelectedAudioDevice] = useState<string>('');
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
   const [midiLearnTarget, setMidiLearnTarget] = useState<{layerId: string, effectId?: string, field: 'noteStart' | 'noteEnd'} | null>(null);
   const [isMidiLearnMode, setIsMidiLearnMode] = useState(false);
@@ -1033,6 +1551,9 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState<'config' | 'triggers'>('config');
   const [isRecording, setIsRecording] = useState(false);
   const [isPanic, setIsPanic] = useState(false);
+  const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null);
+  const [isDraggingOverVisuals, setIsDraggingOverVisuals] = useState(false);
+  const [isDraggingOverCanvas, setIsDraggingOverCanvas] = useState(false);
 
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1082,10 +1603,8 @@ export default function App() {
     activeUntil: number | null;
     useFixedDuration: boolean;
   }>>({});
-  const layersRef = useRef<Layer[]>([]);
-  useEffect(() => {
-    layersRef.current = layers;
-  }, [layers]);
+  const layersRef = useRef<Layer[]>(layers);
+  layersRef.current = layers;
   const audioTrackersRef = useRef<Record<string, { state: 'idle' | 'attack' | 'release', value: number, lastUpdate: number, lastTriggerTime: number }>>({});
   const parameterEasingRef = useRef<Record<string, number>>({});
   const wavesCanvasRef = useRef<Record<string, HTMLCanvasElement>>({}); 
@@ -1094,16 +1613,22 @@ export default function App() {
   const topographyCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
   const sphereCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
   const sphereParticlesRef = useRef<Record<string, { count: number, particles: SphereParticle[] }>>({});
-  const stickinessCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
   const layerOutputCanvasesRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const actionTriggerStateRef = useRef<Record<string, { lastTriggered: number, count: number, prevActive: boolean }>>({});
+  const dancingCubesRotationRef = useRef<Record<string, { current: number, target: number }>>({});
   
   // Accumulation Mode Refs
   const accumulateCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
   const referenceFrameRef = useRef<Record<string, HTMLCanvasElement>>({});
-  const stutterStateRef = useRef<Record<string, { triggerStamp: boolean, clearBuffer: boolean }>>({});
+  const frameAccumulatorSnapshotsRef = useRef<Record<string, HTMLCanvasElement[]>>({});
+  const stutterStateRef = useRef<Record<string, { triggerStamp: boolean; clearBuffer: boolean; wasActive?: boolean; lastCaptureTime?: number }>>({});
   const stickinessCirclesRef = useRef<Record<string, { count: number, circles: any[] }>>({});
-  const videoRewindStateRef = useRef<Record<string, { rewinding: boolean; visible: boolean; lastSeekTime?: number }>>({});
+  const videoRewindStateRef = useRef<Record<string, { triggered?: boolean; rewinding: boolean; visible?: boolean; lastSeekTime?: number; virtualTime?: number; rewindStartTime?: number }>>({});
+  const rewindFramesBufferRef = useRef<Record<string, HTMLCanvasElement[]>>({});
+  const boomerangStartFrameRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const boomerangLastSnapRef = useRef<Record<string, HTMLCanvasElement>>({});
   const videoRestartTimeRef = useRef<Record<string, number>>({});
+  const videoInitialSeekDoneRef = useRef<Record<string, boolean>>({});
   const lastRenderTimeRef = useRef<number>(performance.now());
   const [audioStems, setAudioStems] = useState<{ id: string, name: string, fileUrl: string, isMuted: boolean, isSoloed: boolean }[]>([]);
   const [audioPlaying, setAudioPlaying] = useState(false);
@@ -1194,7 +1719,7 @@ export default function App() {
   
   const handleNewProject = () => {
     setLayers([
-      { id: 'layer-1', name: 'Background', type: 'image', src: null, opacity: 1, blendMode: 'source-over', filterId: null, filterSettings: {}, isVisible: true, midiMode: false, triggerMapping: DEFAULT_TRIGGER_MAPPING, mappings: [], isMuted: false, isSoloed: false }
+      { id: 'layer-1', name: 'Background', type: 'image', src: null, opacity: 1, blendMode: 'source-over', filterId: null, filterSettings: {}, isVisible: true, midiMode: false, videoTriggerMode: 'continuous', triggerMapping: DEFAULT_TRIGGER_MAPPING, mappings: [], isMuted: false, isSoloed: false }
     ]);
     setAudioStems([]);
     setScenes([]);
@@ -1434,9 +1959,23 @@ export default function App() {
     }
   }, []);
 
+  const requestAudioDevices = useCallback(async () => {
+    try {
+      if (!navigator.mediaDevices) return;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices.filter(d => d.kind === 'audioinput');
+      setAudioDevices(inputs);
+    } catch (err) {
+      console.error("Audio Devices Error:", err);
+    }
+  }, []);
+
   useEffect(() => {
     requestMidiAccess();
-  }, [requestMidiAccess]);
+    requestAudioDevices();
+    navigator.mediaDevices?.addEventListener('devicechange', requestAudioDevices);
+    return () => navigator.mediaDevices?.removeEventListener('devicechange', requestAudioDevices);
+  }, [requestMidiAccess, requestAudioDevices]);
 
   const handleMidiMessage = useCallback((event: any) => {
     // Keep tablet awake while receiving MIDI events
@@ -1457,9 +1996,38 @@ export default function App() {
         setLayers(prev => prev.map(l => {
           if (l.id !== midiLearnTarget.layerId) return l;
           if (midiLearnTarget.effectId) {
-             return { ...l, mappings: l.mappings.map(m => m.id === midiLearnTarget.effectId ? { ...m, [midiLearnTarget.field]: note } : m) };
+            const hasEffect = l.mappings?.some(m => m.id === midiLearnTarget.effectId);
+            if (hasEffect) {
+              return {
+                ...l,
+                mappings: l.mappings.map(m => m.id === midiLearnTarget.effectId ? {
+                  ...m,
+                  channels: m.channels || Array.from({length: 16}, (_, i) => i),
+                  noteSettings: m.noteSettings || { ...DEFAULT_NOTE_SETTINGS },
+                  [midiLearnTarget.field]: note
+                } : m)
+              };
+            }
+            return {
+              ...l,
+              generativeMappings: (l.generativeMappings || []).map(m => m.id === midiLearnTarget.effectId ? {
+                ...m,
+                channels: m.channels || Array.from({length: 16}, (_, i) => i),
+                noteSettings: m.noteSettings || { ...DEFAULT_NOTE_SETTINGS },
+                [midiLearnTarget.field]: note
+              } : m)
+            };
           }
-          return { ...l, triggerMapping: { ...l.triggerMapping, [midiLearnTarget.field]: note } };
+          const baseTrigger = l.triggerMapping || DEFAULT_TRIGGER_MAPPING;
+          return {
+            ...l,
+            triggerMapping: {
+              ...baseTrigger,
+              channels: baseTrigger.channels || Array.from({length: 16}, (_, i) => i),
+              noteSettings: baseTrigger.noteSettings || { ...DEFAULT_NOTE_SETTINGS },
+              [midiLearnTarget.field]: note
+            }
+          };
         }));
         setMidiLearnTarget(null);
         return;
@@ -1499,10 +2067,13 @@ export default function App() {
 
       // 2. Check Layer Triggers
       layersRef.current.forEach(layer => {
-        if (!layer.triggerMapping) return;
-        const tr = layer.triggerMapping;
-        if (tr.channels.includes(channel) && note >= tr.noteStart && note <= tr.noteEnd) {
-          const finalVelocity = tr.noteSettings.useFixedVelocity ? tr.noteSettings.fixedVelocity : velocity;
+        const tr = layer.triggerMapping || { ...DEFAULT_TRIGGER_MAPPING, channels: Array.from({length: 16}, (_, i) => i), noteSettings: { ...DEFAULT_NOTE_SETTINGS } };
+        const channels = tr.channels && tr.channels.length > 0 ? tr.channels : Array.from({length: 16}, (_, i) => i);
+        const noteStart = tr.noteStart !== undefined ? tr.noteStart : 0;
+        const noteEnd = tr.noteEnd !== undefined ? tr.noteEnd : 127;
+        const noteSettings = tr.noteSettings || DEFAULT_NOTE_SETTINGS;
+        if (channels.includes(channel) && note >= noteStart && note <= noteEnd) {
+          const finalVelocity = noteSettings.useFixedVelocity ? (noteSettings.fixedVelocity ?? 127) : velocity;
           const triggerKey = `layer-${layer.id}`;
           
           if (!triggerStatesRef.current[triggerKey]) {
@@ -1517,9 +2088,9 @@ export default function App() {
               const unit = layer.videoAdvanceUnit || 'frames';
               const amount = layer.videoAdvanceAmount || 1;
               const fps = layer.videoFrameRate || 30;
-              const delta = unit === 'frames' ? amount / fps : amount;
+              const delta = unit === 'frames' ? (amount / fps) : amount;
               const start = layer.videoStart || 0;
-              const end = layer.videoEnd || vid.duration || 0;
+              const end = (layer.videoEnd && layer.videoEnd > start) ? layer.videoEnd : (vid.duration || (start + 10));
               let newTime = vid.currentTime + delta;
               if (newTime >= end) newTime = start + (newTime - end);
               vid.currentTime = Math.max(start, Math.min(end, newTime));
@@ -1527,19 +2098,41 @@ export default function App() {
             }
           }
 
-          // --- Rewind on Release Mode ---
+          // --- Boomerang Mode ---
           if (layer.videoTriggerMode === 'rewind' && layer.type === 'video') {
             const vid = videoRefs.current[layer.id];
             if (isDown) {
-              videoRewindStateRef.current[layer.id] = { rewinding: false, visible: true };
-              if (vid) {
-                const end = layer.videoEnd || vid.duration || 0;
-                vid.currentTime = Math.min(vid.currentTime + 0.05, end);
-                vid.play().catch(() => {});
+              if (rewindFramesBufferRef.current[layer.id]) {
+                rewindFramesBufferRef.current[layer.id] = [];
               }
+              const start = layer.videoStart || 0;
+              if (vid) {
+                vid.currentTime = start;
+                if (vid.paused && isPlaying) vid.play().catch(() => {});
+              }
+              videoRewindStateRef.current[layer.id] = { 
+                triggered: true, 
+                rewinding: false, 
+                visible: true, 
+                lastSeekTime: performance.now()
+              };
             } else {
-              videoRewindStateRef.current[layer.id] = { rewinding: true, visible: true };
+              videoRewindStateRef.current[layer.id] = { 
+                triggered: false, 
+                rewinding: true, 
+                visible: true, 
+                lastSeekTime: performance.now()
+              };
               if (vid) vid.pause();
+            }
+          }
+
+          // --- Frame Accumulator Mode ---
+          if (layer.videoTriggerMode === 'frame-accumulator' && isDown) {
+            if (!stutterStateRef.current[layer.id]) {
+              stutterStateRef.current[layer.id] = { triggerStamp: true, clearBuffer: false, wasActive: false };
+            } else {
+              stutterStateRef.current[layer.id].triggerStamp = true;
             }
           }
           
@@ -1551,6 +2144,11 @@ export default function App() {
               state.phase = newState ? 'attack' : 'release';
               if (newState && layer.videoTriggerMode === 'restart' && layer.type === 'video') {
                 videoRestartTimeRef.current[layer.id] = performance.now();
+                const vid = videoRefs.current[layer.id];
+                if (vid) {
+                  vid.currentTime = layer.videoStart || 0;
+                  if (isPlaying && (layer.speed ?? 1.0) > 0) vid.play().catch(() => {});
+                }
               }
             }
           } else {
@@ -1560,25 +2158,35 @@ export default function App() {
               state.phase = 'attack';
               if (layer.videoTriggerMode === 'restart' && layer.type === 'video') {
                 videoRestartTimeRef.current[layer.id] = performance.now();
+                const vid = videoRefs.current[layer.id];
+                if (vid) {
+                  vid.currentTime = layer.videoStart || 0;
+                  if (isPlaying && (layer.speed ?? 1.0) > 0) vid.play().catch(() => {});
+                }
               }
             } else {
-              state.isDown = false;
-              state.phase = 'release';
+              if (!tr.noteSettings?.useFixedDuration) {
+                state.isDown = false;
+                state.phase = 'release';
+              }
             }
           }
 
-          if (tr.noteSettings.useFixedDuration && isDown) {
-            const beatDuration = 60000 / tr.noteSettings.bpm;
+          if (tr.noteSettings?.useFixedDuration && isDown) {
+            const bpm = tr.noteSettings.bpm || 120;
+            const beatDuration = 60000 / bpm;
             let duration = beatDuration;
             const sub = tr.noteSettings.subdivision;
-            if (sub === '1/2') duration = beatDuration * 2;
             if (sub === '1') duration = beatDuration * 4;
-            if (sub === '1/8') duration = beatDuration / 2;
-            if (sub === '1/16') duration = beatDuration / 4;
+            else if (sub === '1/2') duration = beatDuration * 2;
+            else if (sub === '1/4') duration = beatDuration;
+            else if (sub === '1/8') duration = beatDuration / 2;
+            else if (sub === '1/16') duration = beatDuration / 4;
             state.useFixedDuration = true;
             state.activeUntil = Date.now() + duration;
-          } else {
+          } else if (!tr.noteSettings?.useFixedDuration) {
             state.useFixedDuration = false;
+            state.activeUntil = null;
           }
         }
       });
@@ -1607,21 +2215,24 @@ export default function App() {
                 state.phase = 'attack';
               }
 
-              if (m.noteSettings.useFixedDuration) {
-                const beatDuration = 60000 / m.noteSettings.bpm;
+              if (m.noteSettings?.useFixedDuration) {
+                const bpm = m.noteSettings.bpm || 120;
+                const beatDuration = 60000 / bpm;
                 let duration = beatDuration;
                 const sub = m.noteSettings.subdivision;
-                if (sub === '1/2') duration = beatDuration * 2;
                 if (sub === '1') duration = beatDuration * 4;
-                if (sub === '1/8') duration = beatDuration / 2;
-                if (sub === '1/16') duration = beatDuration / 4;
+                else if (sub === '1/2') duration = beatDuration * 2;
+                else if (sub === '1/4') duration = beatDuration;
+                else if (sub === '1/8') duration = beatDuration / 2;
+                else if (sub === '1/16') duration = beatDuration / 4;
                 state.useFixedDuration = true;
                 state.activeUntil = Date.now() + duration;
               } else {
                 state.useFixedDuration = false;
+                state.activeUntil = null;
               }
             } else {
-              if (m.triggerBehavior !== 'toggle' && !m.noteSettings.useFixedDuration) {
+              if (m.triggerBehavior !== 'toggle' && !m.noteSettings?.useFixedDuration) {
                 state.isDown = false;
                 state.phase = 'release';
               }
@@ -1796,6 +2407,14 @@ export default function App() {
     setTimeout(() => setStatus('ENGINE READY'), 1000);
   };
 
+  useEffect(() => {
+    (window as any).sendMidiNote = (note = 60, velocity = 100, isDown = true) => {
+      handleMidiMessage({
+        data: [isDown ? 0x90 : 0x80, note, isDown ? velocity : 0]
+      });
+    };
+  }, [handleMidiMessage]);
+
   // --- Video Processing ---
 
   const processFrame = useCallback(() => {
@@ -1818,7 +2437,7 @@ export default function App() {
       ratio = 0.5625 + t * (1.0 - 0.5625);
     } else {
       const t = (aspectRatioValue - 50) / 50;
-      ratio = 1.0 + t * (1.7777 - 1.0);
+      ratio = 1.0 + t * (1.7778 - 1.0);
     }
 
     // Stabilize base dimensions (maintaining a 1080p-ish area)
@@ -1826,8 +2445,31 @@ export default function App() {
     let baseW = Math.sqrt(baseArea * ratio);
     let baseH = baseW / ratio;
 
-    const targetW = Math.floor(baseW * resolutionScale);
-    const targetH = Math.floor(baseH * resolutionScale);
+    // Check if any heavy pixel effect is currently active to dynamically drop resolution
+    let hasActiveEffect = false;
+    const heavyEffectsList = ['rgb-shift', 'edges', 'invert', 'pixelate', 'motion-detector', 'ascii', 'dithering', 'motion-symbols', 'glitch-box', 'glitch-slice', 'windows-98'];
+    for (const layer of layers) {
+      if (layer.isMuted) continue;
+      for (const m of layer.mappings) {
+        if (m.isMuted || !heavyEffectsList.includes(m.id)) continue;
+        if (m.manualActive) {
+          hasActiveEffect = true;
+          break;
+        }
+        const state = triggerStatesRef.current[`effect-${layer.id}-${m.id}`];
+        if (state && state.currentEnvValue > 0.001) {
+          hasActiveEffect = true;
+          break;
+        }
+      }
+      if (hasActiveEffect) break;
+    }
+
+    // Explicitly reduce the internal resolution dynamically when an effect is active to guarantee 60fps
+    const dynamicResScale = hasActiveEffect ? Math.min(resolutionScale, 0.45) : resolutionScale;
+
+    const targetW = Math.floor(baseW * dynamicResScale);
+    const targetH = Math.floor(baseH * dynamicResScale);
 
     if (mainCanvas.width !== targetW) {
       mainCanvas.width = targetW;
@@ -1837,7 +2479,7 @@ export default function App() {
     // Setup Offscreen Canvas for per-layer processing
     if (!(window as any).offscreenCanvas) {
       (window as any).offscreenCanvas = document.createElement('canvas');
-      (window as any).offscreenCtx = (window as any).offscreenCanvas.getContext('2d', { willReadFrequently: false });
+      (window as any).offscreenCtx = (window as any).offscreenCanvas.getContext('2d');
     }
     const canvas = (window as any).offscreenCanvas as HTMLCanvasElement;
     const ctx = (window as any).offscreenCtx as CanvasRenderingContext2D;
@@ -1849,7 +2491,7 @@ export default function App() {
 
     if (!(window as any).rawOffscreenCanvas) {
       (window as any).rawOffscreenCanvas = document.createElement('canvas');
-      (window as any).rawOffscreenCtx = (window as any).rawOffscreenCanvas.getContext('2d', { willReadFrequently: false });
+      (window as any).rawOffscreenCtx = (window as any).rawOffscreenCanvas.getContext('2d');
     }
     const rawCanvas = (window as any).rawOffscreenCanvas as HTMLCanvasElement;
     const rawCtx = (window as any).rawOffscreenCtx as CanvasRenderingContext2D;
@@ -1900,38 +2542,47 @@ export default function App() {
       const triggerKey = `layer-${layer.id}`;
       const state = triggerStatesRef.current[triggerKey];
       let midiIsActive = !!layer.isActive;
-      let midiVisualOpacity = layer.triggerMapping ? layer.triggerMapping.velocity / 127 : (layer.isActive ? 1.0 : 0.0);
-
-      if (state && layer.triggerMapping) {
-          const ns = layer.triggerMapping.noteSettings;
-          const dt = deltaTime / 1000.0; // delta in seconds
-          const sustain = ns.sustain !== undefined ? ns.sustain : 1.0;
+      const tr = layer.triggerMapping || { ...DEFAULT_TRIGGER_MAPPING, channels: Array.from({length: 16}, (_, i) => i), noteSettings: { ...DEFAULT_NOTE_SETTINGS } };
+      let midiVisualOpacity = tr ? tr.velocity / 127 : (layer.isActive ? 1.0 : 0.0);
+      if (state) {
+          const ns = tr.noteSettings || DEFAULT_NOTE_SETTINGS;
           
-          if (state.phase === 'attack') {
-             const a = (ns.attack || 0) / 1000.0;
-             if (a <= 0.001) state.currentEnvValue = 1;
-             else state.currentEnvValue += dt / a;
-             if (state.currentEnvValue >= 1) { state.currentEnvValue = 1; state.phase = 'decay'; }
-          } else if (state.phase === 'decay') {
-             const d = (ns.decay || 0) / 1000.0;
-             if (d <= 0.001) state.currentEnvValue = sustain;
-             else state.currentEnvValue -= dt * (1 - sustain) / d;
-             if (state.currentEnvValue <= sustain) { 
-                state.currentEnvValue = sustain; 
-                state.phase = 'sustain'; 
-             }
-          } else if (state.phase === 'sustain') {
-             state.currentEnvValue = sustain;
-          } else if (state.phase === 'release') {
-             const r = (ns.release || 0) / 1000.0;
-             if (r <= 0.001) state.currentEnvValue = 0;
-             else state.currentEnvValue -= dt / r;
-             if (state.currentEnvValue <= 0) { state.currentEnvValue = 0; state.phase = 'idle'; }
-          }
-          
-          if (state.useFixedDuration && state.activeUntil && Date.now() >= state.activeUntil && state.phase !== 'release' && state.phase !== 'idle') {
-             state.phase = 'release';
-             state.isDown = false;
+          if (ns.useFixedDuration || state.useFixedDuration) {
+              // Fixed Duration supersedes ADSR: stays fully on for exact duration, then turns off
+              if (state.activeUntil && Date.now() < state.activeUntil) {
+                  state.currentEnvValue = 1.0;
+                  state.phase = 'sustain';
+              } else {
+                  state.currentEnvValue = 0.0;
+                  state.phase = 'idle';
+                  state.isDown = false;
+                  state.activeUntil = null;
+              }
+          } else {
+              const dt = deltaTime / 1000.0; // delta in seconds
+              const sustain = ns.sustain !== undefined ? ns.sustain : 1.0;
+              
+              if (state.phase === 'attack') {
+                 const a = (ns.attack || 0) / 1000.0;
+                 if (a <= 0.001) state.currentEnvValue = 1;
+                 else state.currentEnvValue += dt / a;
+                 if (state.currentEnvValue >= 1) { state.currentEnvValue = 1; state.phase = 'decay'; }
+              } else if (state.phase === 'decay') {
+                 const d = (ns.decay || 0) / 1000.0;
+                 if (d <= 0.001) state.currentEnvValue = sustain;
+                 else state.currentEnvValue -= dt * (1 - sustain) / d;
+                 if (state.currentEnvValue <= sustain) { 
+                    state.currentEnvValue = sustain; 
+                    state.phase = 'sustain'; 
+                 }
+              } else if (state.phase === 'sustain') {
+                 state.currentEnvValue = sustain;
+              } else if (state.phase === 'release') {
+                 const r = (ns.release || 0) / 1000.0;
+                 if (r <= 0.001) state.currentEnvValue = 0;
+                 else state.currentEnvValue -= dt / r;
+                 if (state.currentEnvValue <= 0) { state.currentEnvValue = 0; state.phase = 'idle'; }
+              }
           }
           
           midiVisualOpacity = state.currentEnvValue * (state.velocity / 127);
@@ -1939,7 +2590,7 @@ export default function App() {
       }
 
       // --- HIGH SPEED AUDIO POLLING ---
-      if (layer.audioMapping?.enabled && layer.audioMapping.stemId) {
+      if (layer.audioMapping?.enabled) {
           if (!audioTrackersRef.current[layer.id]) {
             audioTrackersRef.current[layer.id] = { state: 'idle', value: 0, lastUpdate: now, lastTriggerTime: 0 };
           }
@@ -1948,7 +2599,7 @@ export default function App() {
           tracker.lastUpdate = now;
 
           const mode = layer.audioMapping.mode || 'smooth';
-          const { intensity, flux } = engine.getBandIntensity(layer.audioMapping.stemId, layer.audioMapping.freqRange || [20, 20000]);
+          const { intensity, flux } = engine.getBandIntensity(layer.audioMapping.stemId || '', layer.audioMapping.freqRange || [20, 20000]);
           
           if (mode === 'smooth') {
               const attackSecs = layer.audioMapping.attack ?? 0.05;
@@ -2153,7 +2804,7 @@ export default function App() {
                   const isTriggerActive = !!layer.generativeTriggerActive?.[p.name];
 
                   if (isTriggerActive) {
-                      if (pMap?.audioMapping?.enabled && pMap.audioMapping.stemId) {
+                      if (pMap?.audioMapping?.enabled) {
                           const trackerId = layer.id + '-' + pMap.id + '-audio';
                           if (!audioTrackersRef.current[trackerId]) {
                             audioTrackersRef.current[trackerId] = { state: 'idle', value: 0, lastUpdate: now, lastTriggerTime: 0 };
@@ -2163,7 +2814,7 @@ export default function App() {
                           tracker.lastUpdate = now;
 
                           const mode = pMap.audioMapping.mode || 'smooth';
-                          const { intensity } = engine.getBandIntensity(pMap.audioMapping.stemId, pMap.audioMapping.freqRange || [20, 20000]);
+                          const { intensity } = engine.getBandIntensity(pMap.audioMapping.stemId || '', pMap.audioMapping.freqRange || [20, 20000]);
                           
                           if (mode === 'smooth') {
                               const attackSecs = pMap.audioMapping.attack ?? 0.05;
@@ -2195,31 +2846,39 @@ export default function App() {
                           const state = triggerStatesRef.current[paramKey];
                           if (state) {
                              const ns = pMap?.noteSettings || DEFAULT_NOTE_SETTINGS;
-                             const dt = deltaTime / 1000.0;
-                             const sustain = ns.sustain !== undefined ? ns.sustain : 1.0;
                              
-                             if (state.phase === 'attack') {
-                                const a = (ns.attack || 0) / 1000.0;
-                                if (a <= 0.001) state.currentEnvValue = 1;
-                                else state.currentEnvValue += dt / a;
-                                if (state.currentEnvValue >= 1) { state.currentEnvValue = 1; state.phase = 'decay'; }
-                             } else if (state.phase === 'decay') {
-                                const d = (ns.decay || 0) / 1000.0;
-                                if (d <= 0.001) state.currentEnvValue = sustain;
-                                else state.currentEnvValue -= dt * (1 - sustain) / d;
-                                if (state.currentEnvValue <= sustain) { state.currentEnvValue = sustain; state.phase = 'sustain'; }
-                             } else if (state.phase === 'sustain') {
-                                state.currentEnvValue = sustain;
-                             } else if (state.phase === 'release') {
-                                const r = (ns.release || 0) / 1000.0;
-                                if (r <= 0.001) state.currentEnvValue = 0;
-                                else state.currentEnvValue -= dt / r;
-                                if (state.currentEnvValue <= 0) { state.currentEnvValue = 0; state.phase = 'idle'; }
-                             }
-
-                             if (state.useFixedDuration && state.activeUntil && Date.now() >= state.activeUntil && state.phase !== 'release' && state.phase !== 'idle') {
-                                state.phase = 'release';
-                                state.isDown = false;
+                             if (ns.useFixedDuration || state.useFixedDuration) {
+                                 if (state.activeUntil && Date.now() < state.activeUntil) {
+                                     state.currentEnvValue = 1.0;
+                                     state.phase = 'sustain';
+                                 } else {
+                                     state.currentEnvValue = 0.0;
+                                     state.phase = 'idle';
+                                     state.isDown = false;
+                                     state.activeUntil = null;
+                                 }
+                             } else {
+                                 const dt = deltaTime / 1000.0;
+                                 const sustain = ns.sustain !== undefined ? ns.sustain : 1.0;
+                                 
+                                 if (state.phase === 'attack') {
+                                    const a = (ns.attack || 0) / 1000.0;
+                                    if (a <= 0.001) state.currentEnvValue = 1;
+                                    else state.currentEnvValue += dt / a;
+                                    if (state.currentEnvValue >= 1) { state.currentEnvValue = 1; state.phase = 'decay'; }
+                                 } else if (state.phase === 'decay') {
+                                    const d = (ns.decay || 0) / 1000.0;
+                                    if (d <= 0.001) state.currentEnvValue = sustain;
+                                    else state.currentEnvValue -= dt * (1 - sustain) / d;
+                                    if (state.currentEnvValue <= sustain) { state.currentEnvValue = sustain; state.phase = 'sustain'; }
+                                 } else if (state.phase === 'sustain') {
+                                    state.currentEnvValue = sustain;
+                                 } else if (state.phase === 'release') {
+                                    const r = (ns.release || 0) / 1000.0;
+                                    if (r <= 0.001) state.currentEnvValue = 0;
+                                    else state.currentEnvValue -= dt / r;
+                                    if (state.currentEnvValue <= 0) { state.currentEnvValue = 0; state.phase = 'idle'; }
+                                 }
                              }
                              activeMagnitude = state.currentEnvValue * (state.velocity / 127);
                           } else {
@@ -2229,14 +2888,27 @@ export default function App() {
                   }
                   
                   let targetVal = baseVal;
-                  if (isTriggerActive) {
+                  if (isTriggerActive && p.type !== 'action') {
                       const amount = layer.generativeTriggerAmount?.[p.name] ?? 0;
-                      const range = p.max - p.min;
-                      targetVal = Math.max(p.min, Math.min(p.max, baseVal + amount * range * activeMagnitude));
+                      const range = (p.max ?? 1) - (p.min ?? 0);
+                      targetVal = Math.max(p.min ?? 0, Math.min(p.max ?? 1, baseVal + amount * range * activeMagnitude));
                   }
                   
                   let finalVal;
-                  if (p.type === 'string' || p.type === 'boolean') {
+                  if (p.type === 'action') {
+                      const actionKey = `action-${layer.id}-${p.name}`;
+                      if (!actionTriggerStateRef.current[actionKey]) {
+                          actionTriggerStateRef.current[actionKey] = { lastTriggered: 0, count: 0, prevActive: false };
+                      }
+                      const aState = actionTriggerStateRef.current[actionKey];
+                      const isFired = isTriggerActive && activeMagnitude > 0.15;
+                      if (isFired && !aState.prevActive) {
+                          aState.count += 1;
+                          aState.lastTriggered = performance.now();
+                      }
+                      aState.prevActive = isFired;
+                      finalVal = Number(baseVal || 0) + aState.count;
+                  } else if (p.type === 'string' || p.type === 'boolean') {
                       finalVal = baseVal;
                   } else {
                       const easeKey = layer.id + '-' + p.name;
@@ -2260,6 +2932,95 @@ export default function App() {
               }
           }
 
+          // --- Evaluate Palette Cycle Trigger & Resolve Active Layer Colors ---
+          const rawColors = layer.generativeColors || {};
+          const lockedMap = layer.generativeLockedColors || {};
+          const defaultPalId = (def.elements && def.elements.length <= 2)
+              ? (def.color === 'white' ? 'monochrome_duo_white' : 'monochrome_duo')
+              : (def.color === 'white' ? 'crimson_slate' : 'monochrome_duo');
+          const activePalId = layer.generativeActivePaletteId || defaultPalId;
+          const activePalette = BUILTIN_PALETTES.find(p => p.id === activePalId) || BUILTIN_PALETTES[0];
+          const isPalTriggerActive = !!layer.generativeTriggerActive?.['palette_cycle'];
+          const palKey = `pal-cycle-${layer.id}`;
+          if (!actionTriggerStateRef.current[palKey]) {
+              actionTriggerStateRef.current[palKey] = { lastTriggered: 0, count: 0, prevActive: false };
+          }
+          const palState = actionTriggerStateRef.current[palKey];
+
+          if (isPalTriggerActive) {
+              const palMapping = layer.generativeMappings?.find(m => m.id === 'palette_cycle');
+              let palMagnitude = 0;
+              
+              if (palMapping?.audioMapping?.enabled) {
+                  const trackerId = layer.id + '-palette_cycle-audio';
+                  if (!audioTrackersRef.current[trackerId]) {
+                    audioTrackersRef.current[trackerId] = { state: 'idle', value: 0, lastUpdate: now, lastTriggerTime: 0 };
+                  }
+                  const tracker = audioTrackersRef.current[trackerId];
+                  const dt = (now - tracker.lastUpdate) / 1000.0;
+                  tracker.lastUpdate = now;
+                  const { intensity } = engine.getBandIntensity(palMapping.audioMapping.stemId || '', palMapping.audioMapping.freqRange || [20, 20000]);
+                  if (intensity >= palMapping.audioMapping.threshold && (now - tracker.lastTriggerTime > 120)) {
+                      tracker.value = 1.0;
+                      tracker.lastTriggerTime = now;
+                  }
+                  tracker.value *= (palMapping.audioMapping.smoothing ?? 0.5);
+                  palMagnitude = tracker.value;
+              } else {
+                  const triggerKey = `gen-${layer.id}-palette_cycle`;
+                  const state = triggerStatesRef.current[triggerKey];
+                  if (state) {
+                      const ns = palMapping?.noteSettings || DEFAULT_NOTE_SETTINGS;
+                      if (ns.useFixedDuration || state.useFixedDuration) {
+                          if (state.activeUntil && Date.now() < state.activeUntil) {
+                              state.currentEnvValue = 1.0;
+                              state.phase = 'sustain';
+                          } else {
+                              state.currentEnvValue = 0.0;
+                              state.phase = 'idle';
+                              state.isDown = false;
+                          }
+                      } else {
+                          if (state.phase === 'attack') {
+                              state.currentEnvValue = 1.0;
+                              state.phase = 'decay';
+                          } else if (state.phase === 'release') {
+                              state.currentEnvValue = 0.0;
+                              state.phase = 'idle';
+                          }
+                      }
+                      palMagnitude = state.isDown || state.currentEnvValue > 0.1 ? 1.0 : 0.0;
+                  } else {
+                      palMagnitude = unifiedTriggerValue;
+                  }
+              }
+
+              const isFired = palMagnitude > 0.15;
+              if (isFired && !palState.prevActive) {
+                  palState.count += 1;
+                  palState.lastTriggered = performance.now();
+              }
+              palState.prevActive = isFired;
+          }
+
+          const elementsList: GenerativeElement[] = def.elements || [
+              { id: "background", name: "Background", defaultColor: def.color === 'white' ? "#ffffff" : "#000000" },
+              { id: "foreground", name: "Foreground", defaultColor: def.color === 'white' ? "#000000" : "#ffffff" }
+          ];
+
+          const totalCycle = ((layer.generativeColorCycleIndex ?? 0) + palState.count);
+          const resolvedGenerativeColors: Record<string, string> = { ...rawColors };
+
+          elementsList.forEach((el, idx) => {
+              if (lockedMap[el.id]) {
+                  resolvedGenerativeColors[el.id] = rawColors[el.id] || el.defaultColor;
+              } else if (palState.count > 0) {
+                  resolvedGenerativeColors[el.id] = activePalette.colors[(idx + totalCycle) % activePalette.colors.length];
+              } else {
+                  resolvedGenerativeColors[el.id] = rawColors[el.id] || (activePalette ? activePalette.colors[idx % activePalette.colors.length] : el.defaultColor);
+              }
+          });
+
           // Using targetW and targetH for exact resolution without stretching
           if (def.uuid === 'waves-canvas-gen-1') {
               if (!wavesNoiseRef.current) wavesNoiseRef.current = createNoise2D();
@@ -2272,9 +3033,12 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              ctx.fillStyle = '#000';
-              ctx.fillRect(0, 0, targetW, targetH);
-              ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+              const waveBg = resolvedGenerativeColors['background'] || '#000000';
+              if (!isTransparentColor(waveBg)) {
+                  ctx.fillStyle = waveBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
+              ctx.strokeStyle = resolvedGenerativeColors['waves'] || resolvedGenerativeColors['foreground'] || '#ffffff';
               
               const { speed, freq, amp, lines, thickness } = modifiedSettings;
               const lineThickness = thickness ?? 2.2;
@@ -2325,8 +3089,12 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              ctx.fillStyle = '#000';
-              ctx.fillRect(0, 0, targetW, targetH);
+              const topoBg = resolvedGenerativeColors['background'] || '#000000';
+              const topoFg = resolvedGenerativeColors['contours'] || resolvedGenerativeColors['foreground'] || '#ffffff';
+              if (!isTransparentColor(topoBg)) {
+                  ctx.fillStyle = topoBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               const { speed, freq, amp, lines, thickness } = modifiedSettings;
               const lineThickness = thickness ?? 2.2;
@@ -2369,13 +3137,15 @@ export default function App() {
                 for (let j = 1; j < pts.length; j++) ctx.lineTo(pts[j].x, ys[j]);
                 ctx.lineTo(W + 10, H + 10);
                 ctx.closePath();
-                ctx.fillStyle = '#000';
-                ctx.fill();
+                if (!isTransparentColor(topoBg)) {
+                    ctx.fillStyle = topoBg;
+                    ctx.fill();
+                }
                 
                 ctx.beginPath();
                 ctx.moveTo(pts[0].x, ys[0]);
                 for (let j = 1; j < pts.length; j++) ctx.lineTo(pts[j].x, ys[j]);
-                ctx.strokeStyle = 'rgba(255,255,255,0.88)';
+                ctx.strokeStyle = topoFg;
                 ctx.lineWidth = lineThickness;
                 ctx.stroke();
               }
@@ -2392,9 +3162,12 @@ export default function App() {
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
               
-              // 1. Draw black background
-              ctx.fillStyle = '#000';
-              ctx.fillRect(0, 0, targetW, targetH);
+              // 1. Draw background
+              const dragonBg = resolvedGenerativeColors['background'] || '#000000';
+              if (!isTransparentColor(dragonBg)) {
+                  ctx.fillStyle = dragonBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               const { speed, font_size, dragon_size, chaos, thickness, text_content } = modifiedSettings;
               const textStr = (typeof text_content === 'string' && text_content.trim() !== '') ? text_content : (def.parameters.find(p=>p.name==='text_content')?.default || 'Text') as string;
@@ -2402,8 +3175,8 @@ export default function App() {
               const chars = Array.from(textStr);
               if (chars.length === 0) chars.push(' ');
               
-              // 2. Draw white text
-              ctx.fillStyle = '#FFF';
+              // 2. Draw typography text
+              ctx.fillStyle = resolvedGenerativeColors['dragon'] || resolvedGenerativeColors['foreground'] || '#ffffff';
               ctx.font = `bold ${font_size}px sans-serif`;
               ctx.textBaseline = 'middle';
               
@@ -2529,11 +3302,16 @@ export default function App() {
               const canvas = sphereCanvasRef.current[layer.id];
               if (canvas.width !== targetW || canvas.height !== targetH) {
                   canvas.width = targetW; canvas.height = targetH;
-              }
-              const ctx = canvas.getContext('2d')!;
+              }              const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              ctx.fillStyle = '#f5f4f2';
-              ctx.fillRect(0, 0, targetW, targetH);
+              const terrainBg = resolvedGenerativeColors['background'] || '#050a05';
+              const terrainFg = resolvedGenerativeColors['terrain_lines'] || resolvedGenerativeColors['foreground'] || '#00ff41';
+              const bgRgb = hexToRgb(terrainBg);
+              const fgRgb = hexToRgb(terrainFg);
+              if (!isTransparentColor(terrainBg)) {
+                  ctx.fillStyle = terrainBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               if (!terrainNoiseRef.current) terrainNoiseRef.current = createNoise2D();
               const noise2D = terrainNoiseRef.current;
@@ -2600,14 +3378,9 @@ export default function App() {
                   const n4 = noise2D(fx * 9.8 + 211.9, fy * 9.8 + 307.3);
                   const r4 = 1.0 - Math.abs(n4);
                   
-                  // Combined ridged multi-peak structure
-                  const rawStructure = (r1 * 1.0 + r2 * 0.60 + r3 * 0.32 + r4 * 0.15) / 2.07;
-                  const sharpened = Math.pow(rawStructure, rugg);
-                  
-                  // Smooth base transition so flat ground stays flat
-                  const smoothEnv = Math.pow(env, 0.85);
-                  const h = smoothEnv * sharpened;
-                  return Math.max(0.0, Math.min(1.0, h * 1.4));
+                  const compositeNoise = (r1 * 0.48 + r2 * 0.28 + r3 * 0.16 + r4 * 0.08);
+                  const ridgedElevation = Math.pow(compositeNoise, rugg * 0.9);
+                  return env * ridgedElevation;
               };
               
               const iso = (x: number, y: number, z: number) => {
@@ -2620,13 +3393,11 @@ export default function App() {
                   };
               };
               
-              // Red on flat ground (h=0) to Deep Blue on highest peaks (h=1)
               const getColorForHeight = (hNorm: number) => {
-                  const tVal = Math.max(0.0, Math.min(1.0, hNorm));
-                  // Flat red: rgb(238, 48, 76), Peak blue: rgb(24, 68, 122)
-                  const r = Math.round(238 + (24 - 238) * tVal);
-                  const g = Math.round(48 + (68 - 48) * tVal);
-                  const b = Math.round(76 + (122 - 76) * tVal);
+                  const tVal = Math.max(0.15, Math.min(1.0, hNorm));
+                  const r = Math.round(bgRgb.r + (fgRgb.r - bgRgb.r) * tVal);
+                  const g = Math.round(bgRgb.g + (fgRgb.g - bgRgb.g) * tVal);
+                  const b = Math.round(bgRgb.b + (fgRgb.b - bgRgb.b) * tVal);
                   return `rgb(${r}, ${g}, ${b})`;
               };
               
@@ -2689,8 +3460,13 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              ctx.fillStyle = '#000000';
-              ctx.fillRect(0, 0, targetW, targetH);
+              const sqBg = resolvedGenerativeColors['background'] || '#000000';
+              const sqFg = resolvedGenerativeColors['squares'] || resolvedGenerativeColors['foreground'] || '#ffffff';
+              const sqFgRgb = hexToRgb(sqFg);
+              if (!isTransparentColor(sqBg)) {
+                  ctx.fillStyle = sqBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               const { speed, count, size, spacing, movement, rotation, delay } = modifiedSettings;
               const spd = speed ?? 1.0;
@@ -2791,29 +3567,29 @@ export default function App() {
                     });
                  }
                  
-                 // Generate stipples along edges for pointillist grainy texture
+                 // Depth sorting key
+                 const depth = axisX - axisY * 0.5 + axisZ;
+                 
+                 // Dynamic stippled edge points
                  const stipples: { x: number; y: number }[] = [];
-                 const dotsCount = Math.floor(15 + profile * 25);
-                 for (let d = 0; d < dotsCount; d++) {
+                 const numDots = Math.floor(18 + profile * 35);
+                 for (let d = 0; d < numDots; d++) {
                     const edgeIdx = d % 4;
-                    const nextEdge = (edgeIdx + 1) % 4;
-                    const alphaLerp = ((d * 7 + i * 13) % 100) / 100;
+                    const edgeNext = (edgeIdx + 1) % 4;
+                    const tEdge = ((d * 17) % 100) / 100;
                     const pA = ptsOuter[edgeIdx];
-                    const pB = ptsOuter[nextEdge];
-                    const jitter = (Math.sin(d * 17.3 + i * 31.7) * 2.5);
-                    stipples.push({
-                       x: pA.x + (pB.x - pA.x) * alphaLerp + jitter,
-                       y: pA.y + (pB.y - pA.y) * alphaLerp + jitter
-                    });
+                    const pB = ptsOuter[edgeNext];
+                    const dotX = pA.x + (pB.x - pA.x) * tEdge + Math.sin(d * 9.1 + t) * 1.5;
+                    const dotY = pA.y + (pB.y - pA.y) * tEdge + Math.cos(d * 7.3 + t) * 1.5;
+                    stipples.push({ x: dotX, y: dotY });
                  }
                  
-                 const depth = (axisX + axisY) * sinA - axisZ;
                  squares.push({
                     depth,
                     ptsOuter,
                     ptsInner,
                     hasInner,
-                    alpha: 0.5 + 0.5 * profile,
+                    alpha: 0.35 + 0.65 * profile,
                     stipples
                  });
               }
@@ -2823,7 +3599,7 @@ export default function App() {
               
               for (const sq of squares) {
                  // 1. Draw outer stippled frame (bold and visible)
-                 ctx.strokeStyle = `rgba(255, 255, 255, ${Math.min(1.0, sq.alpha * 1.15)})`;
+                 ctx.strokeStyle = `rgba(${sqFgRgb.r}, ${sqFgRgb.g}, ${sqFgRgb.b}, ${Math.min(1.0, sq.alpha * 1.15)})`;
                  ctx.lineWidth = 2.4;
                  ctx.setLineDash([4, 2]); // distinct tech dashed frame
                  
@@ -2835,7 +3611,7 @@ export default function App() {
                  
                  // 2. Draw inner nested frame if present
                  if (sq.hasInner && sq.ptsInner) {
-                    ctx.strokeStyle = `rgba(255, 255, 255, ${Math.min(1.0, sq.alpha * 0.9)})`;
+                    ctx.strokeStyle = `rgba(${sqFgRgb.r}, ${sqFgRgb.g}, ${sqFgRgb.b}, ${Math.min(1.0, sq.alpha * 0.9)})`;
                     ctx.lineWidth = 1.6;
                     ctx.setLineDash([2, 2]);
                     ctx.beginPath();
@@ -2846,13 +3622,13 @@ export default function App() {
                  }
                  
                  // 3. Draw edge stipple noise particles
-                 ctx.fillStyle = `rgba(255, 255, 255, ${Math.min(1.0, sq.alpha * 0.95)})`;
+                 ctx.fillStyle = `rgba(${sqFgRgb.r}, ${sqFgRgb.g}, ${sqFgRgb.b}, ${Math.min(1.0, sq.alpha * 0.95)})`;
                  for (const dot of sq.stipples) {
                     ctx.fillRect(dot.x - 1, dot.y - 1, 2, 2);
                  }
                  
                  // 4. Corner dot highlights
-                 ctx.fillStyle = `rgba(255, 255, 255, 1.0)`;
+                 ctx.fillStyle = `rgba(${sqFgRgb.r}, ${sqFgRgb.g}, ${sqFgRgb.b}, 1.0)`;
                  for (const pt of sq.ptsOuter) {
                     ctx.beginPath();
                     ctx.arc(pt.x, pt.y, 2.2, 0, Math.PI * 2);
@@ -2869,8 +3645,17 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              ctx.fillStyle = '#e6e5e2'; // Light warm paper background
-              ctx.fillRect(0, 0, targetW, targetH);
+              const numBg = resolvedGenerativeColors['background'] || '#ffffff';
+              const numColors = [
+                  resolvedGenerativeColors['color_1'] || resolvedGenerativeColors['numbers'] || '#eb556b',
+                  resolvedGenerativeColors['color_2'] || '#7599a4',
+                  resolvedGenerativeColors['color_3'] || '#f5a6b5',
+                  resolvedGenerativeColors['color_4'] || '#233136'
+              ];
+              if (!isTransparentColor(numBg)) {
+                  ctx.fillStyle = numBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               const { speed, nodes, grid_size, spread, movement, chaos } = modifiedSettings;
               const gs = grid_size ?? 45.0;
@@ -2882,14 +3667,12 @@ export default function App() {
               const t = nowSec * spd;
               
               // Draw subtle grid lines
-              ctx.strokeStyle = '#d2d0cb';
+              ctx.strokeStyle = isColorDark(numBg) ? 'rgba(255, 255, 255, 0.09)' : 'rgba(0, 0, 0, 0.09)';
               ctx.lineWidth = 1;
               const ox = (targetW / 2) % gs;
               const oy = (targetH / 2) % gs;
               for (let x = ox; x < targetW; x += gs) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, targetH); ctx.stroke(); }
               for (let y = oy; y < targetH; y += gs) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(targetW, y); ctx.stroke(); }
-              
-              const nodeColors = ['#ea5738', '#f3b2c1', '#72a3cf', '#fac528', '#202224', '#6da089'];
               
               interface PathNode {
                  gx: number;
@@ -2937,19 +3720,19 @@ export default function App() {
                     }
                  }
                  
+                 const nodeColor = numColors[i % numColors.length];
                  pts.push({
                     gx: gxGrid,
                     gy: gyGrid,
                     x: finalX,
                     y: finalY,
                     parent: pIdx,
-                    color: nodeColors[i % nodeColors.length],
+                    color: nodeColor,
                     num: i + 1
                  });
               }
               
               // Draw connecting lines
-              ctx.strokeStyle = '#181a1b';
               ctx.lineWidth = 2.0;
               ctx.lineCap = 'round';
               ctx.lineJoin = 'round';
@@ -2957,6 +3740,7 @@ export default function App() {
               for (let i = 1; i < pts.length; i++) {
                  const node = pts[i];
                  const parent = pts[node.parent];
+                 ctx.strokeStyle = node.color;
                  ctx.beginPath();
                  ctx.moveTo(parent.x, parent.y);
                  
@@ -2987,8 +3771,12 @@ export default function App() {
                  ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
                  ctx.fill();
                  
-                 ctx.fillStyle = '#222426';
-                 ctx.fillText(p.num.toString(), p.x + radius + 4, p.y + radius * 0.7);
+                 ctx.fillStyle = isColorDark(p.color) ? '#ffffff' : '#111111';
+                 ctx.textAlign = 'center';
+                 ctx.textBaseline = 'middle';
+                 ctx.fillText(p.num.toString(), p.x, p.y);
+                 ctx.textAlign = 'start';
+                 ctx.textBaseline = 'alphabetic';
               }
               
               element = canvas; } else if (def.uuid === 'isometric-buildings-canvas-1') {
@@ -2999,8 +3787,12 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              ctx.fillStyle = '#fc6c70'; // Rich coral pink background
-              ctx.fillRect(0, 0, targetW, targetH);
+              const bldgBg = resolvedGenerativeColors['background'] || '#ffffff';
+              const bldgFg = resolvedGenerativeColors['buildings'] || resolvedGenerativeColors['foreground'] || '#eb556b';
+              if (!isTransparentColor(bldgBg)) {
+                  ctx.fillStyle = bldgBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               const { speed, count, size, spacing, max_height, movement, chaos } = modifiedSettings;
               const spd = speed ?? 1.0;
@@ -3036,8 +3828,8 @@ export default function App() {
                  
                  // Draw left face
                  const gradLeft = ctx.createLinearGradient(pTop3.x, pTop3.y, pBot3.x, pBot3.y);
-                 gradLeft.addColorStop(0, '#506e88');
-                 gradLeft.addColorStop(1, '#fc6c70');
+                 gradLeft.addColorStop(0, adjustHexBrightness(bldgFg, -0.15));
+                 gradLeft.addColorStop(1, adjustHexBrightness(bldgFg, -0.55));
                  ctx.fillStyle = gradLeft;
                  ctx.beginPath();
                  ctx.moveTo(pTop0.x, pTop0.y); ctx.lineTo(pTop3.x, pTop3.y);
@@ -3047,8 +3839,8 @@ export default function App() {
                  
                  // Draw right face
                  const gradRight = ctx.createLinearGradient(pTop2.x, pTop2.y, pBot2.x, pBot2.y);
-                 gradRight.addColorStop(0, '#334e66');
-                 gradRight.addColorStop(1, '#fc6c70');
+                 gradRight.addColorStop(0, adjustHexBrightness(bldgFg, -0.35));
+                 gradRight.addColorStop(1, adjustHexBrightness(bldgFg, -0.75));
                  ctx.fillStyle = gradRight;
                  ctx.beginPath();
                  ctx.moveTo(pTop3.x, pTop3.y); ctx.lineTo(pTop2.x, pTop2.y);
@@ -3057,7 +3849,7 @@ export default function App() {
                  ctx.fill();
                  
                  // Draw top face
-                 ctx.fillStyle = '#ff8e91';
+                 ctx.fillStyle = bldgFg;
                  ctx.beginPath();
                  ctx.moveTo(pTop0.x, pTop0.y); ctx.lineTo(pTop1.x, pTop1.y);
                  ctx.lineTo(pTop2.x, pTop2.y); ctx.lineTo(pTop3.x, pTop3.y);
@@ -3065,7 +3857,7 @@ export default function App() {
                  ctx.fill();
                  
                  // Subtle top edge highlight
-                 ctx.strokeStyle = '#ffa8ab';
+                 ctx.strokeStyle = adjustHexBrightness(bldgFg, 0.2);
                  ctx.lineWidth = 1;
                  ctx.stroke();
               };
@@ -3110,69 +3902,354 @@ export default function App() {
                 const ctx = canvas.getContext('2d')!;
                 ctx.clearRect(0, 0, targetW, targetH);
                 
-                const { count, size, speed, duration, delay, transparency } = modifiedSettings;
-                const numCircles = Math.max(1, Math.min(200, Math.floor(count ?? 25.0)));
+                const { count, size, speed, duration, delay, drop } = modifiedSettings;
+                const numCircles = Math.max(0, Math.min(200, Math.floor(count ?? 25.0)));
                 const maxSize = Math.max(10.0, Math.min(2400.0, size ?? 280.0));
                 const spd = Math.max(0.05, speed ?? 1.0);
                 const lifeDuration = Math.max(0.5, Math.min(60.0, duration ?? 6.0));
-                const birthDelay = Math.max(0.0, Math.min(5.0, delay ?? 0.25));
-                const transp = Math.max(0.0, Math.min(1.0, transparency ?? 0.0));
                 
-                // Continuous background transparency: 0.0 = solid warm-white, 1.0 = transparent
-                if (transp < 0.999) {
-                    const bgAlpha = 1.0 - transp;
-                    ctx.fillStyle = `rgba(243, 242, 238, ${bgAlpha})`;
+                const gcBg = resolvedGenerativeColors['background'] || '#050a05';
+                const gcCircles = resolvedGenerativeColors['circles'] || resolvedGenerativeColors['primary'] || '#00ff41';
+                const gcRgb = hexToRgb(gcCircles);
+                
+                if (!isTransparentColor(gcBg)) {
+                    ctx.fillStyle = gcBg;
                     ctx.fillRect(0, 0, targetW, targetH);
                 }
                 
                 // Growth phase time: how long to grow from 0 to full size
                 const growthTime = 1.0 / spd;
-                // Total cycle length for each circle slot (holds full size during the remaining duration)
                 const totalLife = Math.max(growthTime + 0.1, lifeDuration);
                 
-                for (let i = 0; i < numCircles; i++) {
-                    // Staggered birth delay between consecutive circles
-                    const birthOffset = i * birthDelay;
-                    const shiftedTime = nowSec + 5000.0 - birthOffset;
-                    
-                    if (shiftedTime < 0) continue;
-                    
-                    const cycleIdx = Math.floor(shiftedTime / totalLife);
-                    const timeInCycle = shiftedTime % totalLife;
-                    
-                    // Deterministic pseudo-random position across entire canvas per (cycle, circle)
-                    const posSeed = Math.abs((i * 9301 + cycleIdx * 49297 + 1337) % 233280);
-                    const rand1 = ((posSeed * 9301 + 49297) % 233280) / 233280;
-                    const rand2 = ((posSeed * 1337 + 1013904223) % 233280) / 233280;
-                    
-                    const cx = rand1 * targetW;
-                    const cy = rand2 * targetH;
-                    
-                    // Current radius: grows smoothly from 0 to maxSize in growthTime, then stays at maxSize
-                    let currentRadius = 0.0;
-                    if (timeInCycle < growthTime) {
-                        const growthProgress = timeInCycle / growthTime;
-                        currentRadius = growthProgress * maxSize;
-                    } else {
-                        // Stays alive at full size, accumulating on screen!
-                        currentRadius = maxSize;
-                    }
-                    
-                    // Smooth 0.35s fade-out right before resetting to the next cycle
-                    let alpha = 1.0;
-                    const fadeWindow = 0.35;
-                    if (timeInCycle > (totalLife - fadeWindow)) {
-                        alpha = Math.max(0.0, (totalLife - timeInCycle) / fadeWindow);
-                    }
-                    
-                    if (currentRadius > 0.5 && alpha > 0.01) {
-                        ctx.fillStyle = `rgba(234, 56, 77, ${alpha})`;
-                        ctx.beginPath();
-                        ctx.arc(cx, cy, currentRadius, 0, Math.PI * 2);
-                        ctx.fill();
+                if (!(window as any).__dropsState) (window as any).__dropsState = {};
+                const dropsGlobal = (window as any).__dropsState;
+                if (!dropsGlobal[layer.id]) {
+                    dropsGlobal[layer.id] = { lastDropAction: 0, activeDrops: [], lastAutoSpawn: 0 };
+                }
+                const state = dropsGlobal[layer.id];
+                
+                // Clean up dead drops
+                state.activeDrops = state.activeDrops.filter((d: any) => (nowSec - d.birthTime) < totalLife);
+                
+                // Auto spawning
+                const autoDrops = state.activeDrops.filter((d: any) => d.isAuto);
+                if (autoDrops.length < numCircles) {
+                    const autoSpawnInterval = Math.max(0.01, delay ?? 0.25);
+                    if (nowSec - state.lastAutoSpawn >= autoSpawnInterval) {
+                        state.lastAutoSpawn = nowSec;
+                        const margin = 0.15;
+                        state.activeDrops.push({
+                            birthTime: nowSec,
+                            x: (margin + Math.random() * (1.0 - 2 * margin)) * targetW,
+                            y: (margin + Math.random() * (1.0 - 2 * margin)) * targetH,
+                            isAuto: true
+                        });
                     }
                 }
                 
+                // Manual spawning via trigger action
+                const dropAction = drop ?? 0;
+                if (dropAction > state.lastDropAction) {
+                    const diff = dropAction - state.lastDropAction;
+                    for (let i = 0; i < Math.min(diff, 10); i++) {
+                        const margin = 0.15; 
+                        state.activeDrops.push({
+                            birthTime: nowSec,
+                            x: (margin + Math.random() * (1.0 - 2 * margin)) * targetW,
+                            y: (margin + Math.random() * (1.0 - 2 * margin)) * targetH,
+                            isAuto: false
+                        });
+                    }
+                    state.lastDropAction = dropAction;
+                }
+                
+                // Draw all drops
+                for (const d of state.activeDrops) {
+                    const age = nowSec - d.birthTime;
+                    
+                    let currentRadius = 0.0;
+                    if (age < growthTime) {
+                        const growthProgress = age / growthTime;
+                        currentRadius = growthProgress * maxSize;
+                    } else {
+                        currentRadius = maxSize;
+                    }
+                    
+                    let alpha = 1.0;
+                    const fadeWindow = 0.35;
+                    if (age > (totalLife - fadeWindow)) {
+                        alpha = Math.max(0.0, (totalLife - age) / fadeWindow);
+                    }
+                    
+                    if (currentRadius > 0.5 && alpha > 0.01) {
+                        ctx.fillStyle = `rgba(${gcRgb.r}, ${gcRgb.g}, ${gcRgb.b}, ${alpha})`;
+                        ctx.beginPath();
+                        ctx.arc(d.x, d.y, currentRadius, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                }
+                element = canvas;
+            } else if (def.uuid === 'dancing-cubes-canvas-1') {
+                if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+                const canvas = sphereCanvasRef.current[layer.id];
+                if (canvas.width !== targetW || canvas.height !== targetH) {
+                    canvas.width = targetW; canvas.height = targetH;
+                }
+                const ctx = canvas.getContext('2d')!;
+                ctx.clearRect(0, 0, targetW, targetH);
+
+                const activeColors = resolvedGenerativeColors;
+                const bgHex = activeColors['background'] || '#050a05';
+                const primaryHex = activeColors['cubes_crimson'] || activeColors['primary'] || '#00ff41';
+                const secondaryHex = activeColors['cubes_slate'] || activeColors['secondary'] || '#008f11';
+                const wireframeHex = activeColors['wireframes'] || activeColors['highlight'] || '#50ff70';
+
+                // --- Background: from activeColors ---
+                if (!isTransparentColor(bgHex)) {
+                    ctx.fillStyle = bgHex;
+                    ctx.fillRect(0, 0, targetW, targetH);
+                }
+
+                const { grid_size, cube_size, x_movement, y_movement, z_movement, delay, wireframe_ratio, rotate_face } = modifiedSettings;
+                const gridSize = Math.max(2, Math.min(8, Math.round(grid_size ?? 5.0)));
+                const size = Math.max(25.0, Math.min(300.0, cube_size ?? 115.0));
+                const xMove = Math.max(0.0, x_movement ?? 30.0);
+                const yMove = Math.max(0.0, y_movement ?? 45.0);
+                const zMove = Math.max(0.0, z_movement ?? 30.0);
+                const phaseDelay = Math.max(0.0, delay ?? 0.35);
+                const wfRatio = Math.max(0.0, Math.min(1.0, wireframe_ratio ?? 0.5));
+                const actionTriggerCount = Number(rotate_face ?? 0);
+
+                // --- Rotation Easing Engine for "Rotate Face" Action (90 deg / π/2 per step) ---
+                if (!dancingCubesRotationRef.current[layer.id]) {
+                    dancingCubesRotationRef.current[layer.id] = { current: 0, target: 0 };
+                }
+                const rotState = dancingCubesRotationRef.current[layer.id];
+                rotState.target = actionTriggerCount * (Math.PI / 2);
+                rotState.current += (rotState.target - rotState.current) * 0.18;
+                const currentFaceAngle = rotState.current;
+
+                // Isometric math constants
+                const ISO_COS = 0.8660254; // cos(30 deg)
+                const ISO_SIN = 0.5;       // sin(30 deg)
+                const spacing = size * 1.55;
+                const centerX = targetW / 2;
+                const centerY = targetH / 2;
+
+                // 3D Cubes generation & Depth Sorting
+                interface DancingCubeItem {
+                    gx: number;
+                    gy: number;
+                    isWireframe: boolean;
+                    wireframeColor: string;
+                    paletteType: 'crimson' | 'slate';
+                    worldX: number;
+                    worldY: number;
+                    worldZ: number;
+                    sortKey: number;
+                }
+
+                const cubes: DancingCubeItem[] = [];
+
+                for (let gx = 0; gx < gridSize; gx++) {
+                    for (let gy = 0; gy < gridSize; gy++) {
+                        const cx = gx - (gridSize - 1) / 2;
+                        const cy = gy - (gridSize - 1) / 2;
+                        const dist = Math.sqrt(cx * cx + cy * cy);
+
+                        // Spatial wave phase with natural baseline speed and delay parameter
+                        const wavePhase = nowSec * 2.8 + dist * phaseDelay * 4.0;
+
+                        // Movement along X, Y, Z directions
+                        const offX = Math.sin(wavePhase) * (xMove / 100.0) * size * 0.65;
+                        const offY = Math.cos(wavePhase * 1.1 + 0.5) * (yMove / 100.0) * size * 0.65;
+                        const offZ = Math.sin(wavePhase * 0.85 + 1.2) * (zMove / 100.0) * size * 0.85;
+
+                        const worldX = cx * spacing + offX;
+                        const worldY = cy * spacing + offY;
+                        const worldZ = offZ;
+
+                        // Layout: alternating checkerboard between transparent frame and solid colored cube
+                        const isWireframe = ((gx + gy) % 2 === 1 && wfRatio > 0.15) || (wfRatio > 0.75);
+                        
+                        // Each cube strictly uses one color theme: Primary OR Secondary
+                        const isCrimson = ((gx * 3 + gy * 2) % 2 === 0);
+                        const paletteType: 'crimson' | 'slate' = isCrimson ? 'crimson' : 'slate';
+                        
+                        // Wireframe color strictly from that cube's single color palette
+                        const wireframeColor = isCrimson ? wireframeHex : adjustHexBrightness(secondaryHex, 0.35);
+
+                        // Sort key: Isometric back-to-front depth (gx + gy + depth displacement)
+                        const sortKey = (gx + gy) * 1000 + (offX + offY) - offZ;
+
+                        cubes.push({
+                            gx, gy, isWireframe, wireframeColor, paletteType,
+                            worldX, worldY, worldZ, sortKey
+                        });
+                    }
+                }
+
+                // Sort back to front
+                cubes.sort((a, b) => a.sortKey - b.sortKey);
+
+                // Vertex local offsets for cube
+                const h = size / 2;
+                const baseVertices = [
+                    { x: -h, y: -h, z: -h }, // 0
+                    { x:  h, y: -h, z: -h }, // 1
+                    { x:  h, y:  h, z: -h }, // 2
+                    { x: -h, y:  h, z: -h }, // 3
+                    { x: -h, y: -h, z:  h }, // 4
+                    { x:  h, y: -h, z:  h }, // 5
+                    { x:  h, y:  h, z:  h }, // 6
+                    { x: -h, y:  h, z:  h }, // 7
+                ];
+
+                // 6 Faces (quad indices)
+                const faces = [
+                    { name: 'top',    indices: [4, 5, 6, 7], normal: { x: 0, y: 0, z: 1 } },
+                    { name: 'bottom', indices: [0, 3, 2, 1], normal: { x: 0, y: 0, z: -1 } },
+                    { name: 'front1', indices: [0, 1, 5, 4], normal: { x: 0, y: -1, z: 0 } },
+                    { name: 'front2', indices: [1, 2, 6, 5], normal: { x: 1, y: 0, z: 0 } },
+                    { name: 'back1',  indices: [2, 3, 7, 6], normal: { x: 0, y: 1, z: 0 } },
+                    { name: 'back2',  indices: [3, 0, 4, 7], normal: { x: -1, y: 0, z: 0 } },
+                ];
+
+                // 12 Edges for wireframe
+                const edges = [
+                    [0, 1], [1, 2], [2, 3], [3, 0], // Bottom square
+                    [4, 5], [5, 6], [6, 7], [7, 4], // Top square
+                    [0, 4], [1, 5], [2, 6], [3, 7], // Vertical pillars
+                ];
+
+                const cosRot = Math.cos(currentFaceAngle);
+                const sinRot = Math.sin(currentFaceAngle);
+
+                // Palette definitions with dynamic monochromatic lighting:
+                // Left side in LIGHT (brightest), Top in SHADOW (medium-dark shadow), Right in SHADOW (deep dark shadow)
+                const palettes = {
+                    crimson: {
+                        left: adjustHexBrightness(primaryHex, 0.08),   // IN LIGHT (Brightest highlight)
+                        top: adjustHexBrightness(primaryHex, -0.40),    // IN SHADOW (Medium-dark shadow)
+                        right: adjustHexBrightness(primaryHex, -0.62),  // IN SHADOW (Deep dark shadow)
+                        border: adjustHexBrightness(primaryHex, 0.35)  // Crisp light pastel border
+                    },
+                    slate: {
+                        left: adjustHexBrightness(secondaryHex, 0.08),   // IN LIGHT (Brightest highlight)
+                        top: adjustHexBrightness(secondaryHex, -0.40),    // IN SHADOW (Medium-dark shadow)
+                        right: adjustHexBrightness(secondaryHex, -0.62),  // IN SHADOW (Deep dark shadow)
+                        border: adjustHexBrightness(secondaryHex, 0.35)  // Crisp light pastel border
+                    }
+                };
+
+                for (const cube of cubes) {
+                    // Rotate vertices locally around local Y axis for smooth face tumble
+                    const projVertices = baseVertices.map(v => {
+                        const rx = v.x * cosRot + v.z * sinRot;
+                        const ry = v.y;
+                        const rz = -v.x * sinRot + v.z * cosRot;
+
+                        // World 3D position
+                        const wx = cube.worldX + rx;
+                        const wy = cube.worldY + ry;
+                        const wz = cube.worldZ + rz;
+
+                        // Isometric projection to screen
+                        const sx = centerX + (wx - wy) * ISO_COS;
+                        const sy = centerY + (wx + wy) * ISO_SIN - wz;
+
+                        return { sx, sy, wx, wy, wz, rx, ry, rz };
+                    });
+
+                    // Cube screen center
+                    const cubeCenterX = projVertices.reduce((acc, p) => acc + p.sx, 0) / 8;
+                    const cubeCenterY = projVertices.reduce((acc, p) => acc + p.sy, 0) / 8;
+
+                    if (cube.isWireframe) {
+                        // --- Render Transparent Wireframe Frame ---
+                        ctx.save();
+                        ctx.strokeStyle = cube.wireframeColor;
+                        ctx.lineWidth = 2.0;
+                        ctx.lineJoin = 'round';
+                        ctx.lineCap = 'round';
+
+                        for (const [i1, i2] of edges) {
+                            const p1 = projVertices[i1];
+                            const p2 = projVertices[i2];
+                            ctx.beginPath();
+                            ctx.moveTo(p1.sx, p1.sy);
+                            ctx.lineTo(p2.sx, p2.sy);
+                            ctx.stroke();
+                        }
+                        ctx.restore();
+                    } else {
+                        // --- Render Solid Monochromatic Cube (100% Solid, No Transparency) ---
+                        const pal = palettes[cube.paletteType];
+
+                        // Sort faces by screen depth (average depth of vertices)
+                        const sortedFaces = faces.map(f => {
+                            const v0 = projVertices[f.indices[0]];
+                            const v1 = projVertices[f.indices[1]];
+                            const v2 = projVertices[f.indices[2]];
+                            const v3 = projVertices[f.indices[3]];
+
+                            // 2D Cross product for screen winding / visibility
+                            const cross = (v1.sx - v0.sx) * (v2.sy - v0.sy) - (v1.sy - v0.sy) * (v2.sx - v0.sx);
+                            const avgZ = (v0.wz + v1.wz + v2.wz + v3.wz) / 4;
+                            const avgIsoDepth = (v0.wx + v0.wy + v1.wx + v1.wy + v2.wx + v2.wy + v3.wx + v3.wy) / 8 - avgZ;
+
+                            // Face screen centroid
+                            const faceCenterX = (v0.sx + v1.sx + v2.sx + v3.sx) / 4;
+                            const faceCenterY = (v0.sy + v1.sy + v2.sy + v3.sy) / 4;
+
+                            return { face: f, v: [v0, v1, v2, v3], cross, avgIsoDepth, faceCenterX, faceCenterY };
+                        }).filter(item => item.cross < 0); // Back-face culling on screen
+
+                        sortedFaces.sort((a, b) => a.avgIsoDepth - b.avgIsoDepth);
+
+                        ctx.save();
+                        ctx.lineWidth = 1.8;
+                        ctx.lineJoin = 'round';
+                        ctx.lineCap = 'round';
+                        ctx.strokeStyle = pal.border;
+
+                        for (const item of sortedFaces) {
+                            const norm = item.face.normal;
+                            // Rotated normal
+                            const rnx = norm.x * cosRot + norm.z * sinRot;
+                            const rny = norm.y;
+                            const rnz = -norm.x * sinRot + norm.z * cosRot;
+
+                            // Relative horizontal offset from cube centroid on screen
+                            const relX = item.faceCenterX - cubeCenterX;
+
+                            // Lighting classification:
+                            // Upper face (rnz > 0.4) -> IN SHADOW (Medium-dark shadow)
+                            // Left face (relX < -0.5) -> IN LIGHT (Brightest highlight)
+                            // Right face (relX >= -0.5) -> IN SHADOW (Deep dark shadow)
+                            let faceColor = pal.top;
+                            if (rnz > 0.4) {
+                                faceColor = pal.top;
+                            } else if (relX < -0.5) {
+                                faceColor = pal.left;
+                            } else {
+                                faceColor = pal.right;
+                            }
+
+                            ctx.fillStyle = faceColor;
+                            ctx.beginPath();
+                            ctx.moveTo(item.v[0].sx, item.v[0].sy);
+                            for (let i = 1; i < item.v.length; i++) {
+                                ctx.lineTo(item.v[i].sx, item.v[i].sy);
+                            }
+                            ctx.closePath();
+                            ctx.fill();
+                            ctx.stroke();
+                        }
+                        ctx.restore();
+                    }
+                }
+
                 element = canvas;
             } else if (def.uuid === 'cubes-matrix-3d-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
@@ -3182,10 +4259,13 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              
-              // Clean white background matching user palette
-              ctx.fillStyle = '#ffffff';
-              ctx.fillRect(0, 0, targetW, targetH);
+              const cmBg = resolvedGenerativeColors['background'] || '#ffffff';
+              const cmFg = resolvedGenerativeColors['cubes'] || resolvedGenerativeColors['foreground'] || '#eb556b';
+              const cmRgb = hexToRgb(cmFg);
+              if (!isTransparentColor(cmBg)) {
+                  ctx.fillStyle = cmBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               const { speed, rotation, count, cube_size, spacing, size_randomization, dispersion, opacity } = modifiedSettings;
               const spd = speed ?? 1.0;
@@ -3247,8 +4327,7 @@ export default function App() {
               const allFaces: QuadFace[] = [];
               const half = (n - 1) / 2.0;
               
-              const redColor = { r: 250, g: 59, b: 92 };
-              const blueColor = { r: 38, g: 68, b: 78 };
+              const baseCol = cmRgb;
               
               const localVerts = [
                   { x: -1, y: -1, z: -1 },
@@ -3300,9 +4379,6 @@ export default function App() {
                           const curCy = by + dy;
                           const curCz = bz + dz;
                           
-                          const isRed = Math.sin(seed * 11.3) > 0;
-                          const baseCol = isRed ? redColor : blueColor;
-                          
                           const rotatedCubeVerts = localVerts.map(v => {
                               const wx = curCx + v.x * curRadius;
                               const wy = curCy + v.y * curRadius;
@@ -3334,7 +4410,7 @@ export default function App() {
                               const strokeAlpha = isFront ? Math.min(1.0, alpha * 1.1) : (alpha * 0.4);
                               
                               const fillColor = `rgba(${r}, ${g}, ${b}, ${faceAlpha})`;
-                              const strokeColor = isRed ? `rgba(210, 30, 60, ${strokeAlpha})` : `rgba(25, 45, 55, ${strokeAlpha})`;
+                              const strokeColor = `rgba(${cmRgb.r}, ${cmRgb.g}, ${cmRgb.b}, ${strokeAlpha})`;
                               
                               const centerZ = (p0.z + p1.z + p2.z + p3.z) / 4.0;
                               
@@ -3378,9 +4454,12 @@ export default function App() {
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
               
-              // 1. Clean warm-white background
-              ctx.fillStyle = '#f5f5f3';
-              ctx.fillRect(0, 0, targetW, targetH);
+              const veinBg = resolvedGenerativeColors['background'] || '#ffffff';
+              const veinFg = resolvedGenerativeColors['veins'] || resolvedGenerativeColors['foreground'] || '#000000';
+              if (!isTransparentColor(veinBg)) {
+                  ctx.fillStyle = veinBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               const { growth, branch_chance, split_mode, segment_size, grid_mesh } = modifiedSettings;
               const currentStep = Math.max(0.0, growth ?? 25.0);
@@ -3392,9 +4471,8 @@ export default function App() {
               const cx = targetW / 2;
               const cy = targetH / 2;
               
-              // 2. Draw subtle background triangulation guide mesh across canvas
               if (meshAlpha > 0.01) {
-                  ctx.strokeStyle = `rgba(0, 0, 0, ${0.065 * meshAlpha})`;
+                  ctx.strokeStyle = isColorDark(veinBg) ? `rgba(255, 255, 255, ${0.065 * meshAlpha})` : `rgba(0, 0, 0, ${0.08 * meshAlpha})`;
                   ctx.lineWidth = 0.75;
                   const gridStep = segSize * 2.2;
                   const cols = Math.ceil(targetW / gridStep) + 2;
@@ -3419,7 +4497,6 @@ export default function App() {
                   ctx.stroke();
               }
               
-              // 3. Deterministic Self-Avoiding Dendritic Maze with Synchronous Generation Steps
               interface MazeSegment {
                   x1: number;
                   y1: number;
@@ -3429,177 +4506,118 @@ export default function App() {
                   isFork: boolean;
               }
               
-              const cacheKey = `vein_sync_norad_${targetW}_${targetH}_${brChance.toFixed(2)}_${splitRatio.toFixed(2)}_${segSize.toFixed(1)}`;
-              const storage = (window as any)._veinCache = (window as any)._veinCache || {};
+              const segments: MazeSegment[] = [];
+              const occupiedNodes = new Set<string>();
+              const toNodeKey = (x: number, y: number) => `${Math.round(x * 10)},${Math.round(y * 10)}`;
               
-              let segments: MazeSegment[];
-              let totalGenerations: number;
+              occupiedNodes.add(toNodeKey(cx, cy));
               
-              if (storage.key === cacheKey && storage.segments) {
-                  segments = storage.segments;
-                  totalGenerations = storage.totalGenerations;
-              } else {
-                  segments = [];
-                  
-                  // Spatial Hash Grid for collision detection
-                  const cellSize = segSize * 0.72;
-                  const grid: Record<string, { x: number; y: number; id: number }[]> = {};
-                  
-                  const getCellKey = (x: number, y: number) => {
-                      const gx = Math.floor(x / cellSize);
-                      const gy = Math.floor(y / cellSize);
-                      return `${gx},${gy}`;
-                  };
-                  
-                  const insertPoint = (x: number, y: number, id: number) => {
-                      const key = getCellKey(x, y);
-                      if (!grid[key]) grid[key] = [];
-                      grid[key].push({ x, y, id });
-                  };
-                  
-                  let nodeIdCounter = 0;
-                  insertPoint(cx, cy, nodeIdCounter++);
-                  
-                  const isTooClose = (x: number, y: number, parentId: number, minDist: number) => {
-                      const gx = Math.floor(x / cellSize);
-                      const gy = Math.floor(y / cellSize);
-                      const minDistSq = minDist * minDist;
-                      
-                      for (let dx = -1; dx <= 1; dx++) {
-                          for (let dy = -1; dy <= 1; dy++) {
-                              const list = grid[`${gx + dx},${gy + dy}`];
-                              if (!list) continue;
-                              for (let i = 0; i < list.length; i++) {
-                                  const p = list[i];
-                                  if (p.id === parentId) continue;
-                                  const distSq = (x - p.x) * (x - p.x) + (y - p.y) * (y - p.y);
-                                  if (distSq < minDistSq) return true;
-                              }
-                          }
-                      }
-                      return false;
-                  };
-                  
-                  // Deterministic pseudo-random generator
-                  let rndSeed = 1337;
-                  const random = () => {
-                      rndSeed = (rndSeed * 16807) % 2147483647;
-                      return (rndSeed - 1) / 2147483646;
-                  };
-                  
-                  interface FrontierTip {
-                      x: number;
-                      y: number;
-                      angle: number;
-                      id: number;
-                  }
-                  
-                  let currentFrontier: FrontierTip[] = [];
-                  
-                  // Generation 0: 8 primary radial trunk branches from center seed
-                  const initialBranches = 8;
-                  for (let b = 0; b < initialBranches; b++) {
-                      const angle = (b / initialBranches) * Math.PI * 2 + (random() - 0.5) * 0.15;
-                      const nextX = cx + Math.cos(angle) * segSize;
-                      const nextY = cy + Math.sin(angle) * segSize;
-                      const nid = nodeIdCounter++;
-                      
-                      insertPoint(nextX, nextY, nid);
-                      
-                      segments.push({
-                          x1: cx, y1: cy,
-                          x2: nextX, y2: nextY,
-                          generation: 0,
-                          isFork: false
-                      });
-                      
-                      currentFrontier.push({
-                          x: nextX, y: nextY,
-                          angle: angle,
-                          id: nid
-                      });
-                  }
-                  
-                  // Advance synchronously generation by generation (step by step)
-                  const maxGenerations = 50;
-                  const boundMargin = 30;
-                  let gen = 1;
-                  
-                  for (; gen < maxGenerations; gen++) {
-                      const nextFrontier: FrontierTip[] = [];
-                      
-                      for (let i = 0; i < currentFrontier.length; i++) {
-                          const curr = currentFrontier[i];
-                          
-                          if (curr.x < -boundMargin || curr.x > targetW + boundMargin ||
-                              curr.y < -boundMargin || curr.y > targetH + boundMargin) {
-                              continue;
-                          }
-                          
-                          // Decide branching count: 1 (grow straight) vs 2 or 3 (fork)
-                          const doSplit = random() < brChance;
-                          let branchAngles: number[] = [];
-                          
-                          if (!doSplit) {
-                              // Continue straight with slight angular wandering
-                              const angleOffset = (random() - 0.5) * 0.45;
-                              branchAngles.push(curr.angle + angleOffset);
-                          } else {
-                              // Fork into 2 or 3 branches
-                              const split3Chance = (splitRatio - 2.0);
-                              const do3Split = random() < split3Chance;
-                              
-                              if (do3Split) {
-                                  const spread = 0.55 + random() * 0.25;
-                                  branchAngles.push(curr.angle - spread);
-                                  branchAngles.push(curr.angle);
-                                  branchAngles.push(curr.angle + spread);
-                              } else {
-                                  const spread = 0.50 + random() * 0.35;
-                                  branchAngles.push(curr.angle - spread);
-                                  branchAngles.push(curr.angle + spread);
-                              }
-                          }
-                          
-                          for (const branchAngle of branchAngles) {
-                              const nextX = curr.x + Math.cos(branchAngle) * segSize;
-                              const nextY = curr.y + Math.sin(branchAngle) * segSize;
-                              
-                              const minDist = segSize * 0.72;
-                              if (!isTooClose(nextX, nextY, curr.id, minDist)) {
-                                  const nid = nodeIdCounter++;
-                                  insertPoint(nextX, nextY, nid);
-                                  
-                                  segments.push({
-                                      x1: curr.x, y1: curr.y,
-                                      x2: nextX, y2: nextY,
-                                      generation: gen,
-                                      isFork: branchAngles.length > 1
-                                  });
-                                  
-                                  nextFrontier.push({
-                                      x: nextX, y: nextY,
-                                      angle: branchAngle,
-                                      id: nid
-                                  });
-                              }
-                          }
-                      }
-                      
-                      currentFrontier = nextFrontier;
-                      if (currentFrontier.length === 0) break;
-                  }
-                  
-                  totalGenerations = gen;
-                  storage.key = cacheKey;
-                  storage.segments = segments;
-                  storage.totalGenerations = totalGenerations;
+              interface FrontierTip {
+                  x: number;
+                  y: number;
+                  angle: number;
+                  generation: number;
+                  straightStreak: number;
               }
               
-              // 4. Synchronous Step-by-Step Tree Growth Development:
-              // currentStep = 0 is just the dark black center dot.
-              // currentStep = 1 is generation 0 completed.
-              // currentStep = 2 is generation 1 completed (showing initial bifurcations), etc.
+              let currentTips: FrontierTip[] = [];
+              
+              // Root node: 3 seed branches outward from center (120 degrees apart)
+              const rootDirections = [0, (Math.PI * 2) / 3, (Math.PI * 4) / 3];
+              for (const a of rootDirections) {
+                  const x2 = cx + Math.cos(a) * segSize;
+                  const y2 = cy + Math.sin(a) * segSize;
+                  segments.push({ x1: cx, y1: cy, x2, y2, generation: 0, isFork: false });
+                  occupiedNodes.add(toNodeKey(x2, y2));
+                  currentTips.push({ x: x2, y: y2, angle: a, generation: 1, straightStreak: 0 });
+              }
+              
+              // 4. Synchronous Generative Expansion Loop
+              const totalGenerations = 45;
+              // Candidate relative turns on hexagonal grid (favoring 60-deg and 120-deg turns)
+              const angleTurns = [-Math.PI / 3, Math.PI / 3, -(Math.PI * 2) / 3, (Math.PI * 2) / 3, 0];
+              
+              interface TurnOption {
+                  angle: number;
+                  relAngle: number;
+                  candX: number;
+                  candY: number;
+              }
+
+              for (let gen = 1; gen <= totalGenerations; gen++) {
+                  const nextTips: FrontierTip[] = [];
+                  
+                  for (let i = 0; i < currentTips.length; i++) {
+                      const tip = currentTips[i];
+                      
+                      // Deterministic hash based on tip coordinates and generation
+                      const hashSeed = Math.sin(tip.x * 12.9898 + tip.y * 78.233 + gen * 37.719) * 43758.5453;
+                      const randVal = hashSeed - Math.floor(hashSeed);
+                      
+                      // Check if this tip will fork into 2 branches
+                      const shouldFork = randVal < (brChance * (splitRatio / 2.0));
+                      
+                      const validTurns: TurnOption[] = [];
+                      for (const tAngle of angleTurns) {
+                          const candidateAngle = tip.angle + tAngle;
+                          const candX = tip.x + Math.cos(candidateAngle) * segSize;
+                          const candY = tip.y + Math.sin(candidateAngle) * segSize;
+                          
+                          // Canvas boundary check
+                          if (candX < 20 || candX > targetW - 20 || candY < 20 || candY > targetH - 20) continue;
+                          
+                          // Self-avoidance check
+                          if (!occupiedNodes.has(toNodeKey(candX, candY))) {
+                              validTurns.push({ angle: candidateAngle, relAngle: tAngle, candX, candY });
+                          }
+                      }
+                      
+                      if (validTurns.length === 0) continue; // Terminate growth at this tip
+                      
+                      if (shouldFork && validTurns.length >= 2) {
+                          // Branching: choose two distinct turns that branch outward
+                          const bending = validTurns.filter(t => Math.abs(t.relAngle) > 0.01);
+                          const chosenA = (bending.length >= 2) ? bending[0] : validTurns[0];
+                          const chosenB = (bending.length >= 2) ? bending[bending.length - 1] : validTurns[validTurns.length - 1];
+                          
+                          occupiedNodes.add(toNodeKey(chosenA.candX, chosenA.candY));
+                          occupiedNodes.add(toNodeKey(chosenB.candX, chosenB.candY));
+                          
+                          segments.push({ x1: tip.x, y1: tip.y, x2: chosenA.candX, y2: chosenA.candY, generation: gen, isFork: true });
+                          segments.push({ x1: tip.x, y1: tip.y, x2: chosenB.candX, y2: chosenB.candY, generation: gen, isFork: true });
+                          
+                          nextTips.push({ x: chosenA.candX, y: chosenA.candY, angle: chosenA.angle, generation: gen + 1, straightStreak: 0 });
+                          nextTips.push({ x: chosenB.candX, y: chosenB.candY, angle: chosenB.angle, generation: gen + 1, straightStreak: 0 });
+                      } else {
+                          // Single elongation: strongly favor bending turns to eliminate long straight lines
+                          const bending = validTurns.filter(t => Math.abs(t.relAngle) > 0.01);
+                          let chosen: TurnOption;
+                          if (bending.length > 0 && (tip.straightStreak >= 1 || randVal > 0.10)) {
+                              const pickIdx = Math.floor(randVal * bending.length) % bending.length;
+                              chosen = bending[pickIdx];
+                          } else {
+                              const pickIdx = Math.floor(randVal * validTurns.length) % validTurns.length;
+                              chosen = validTurns[pickIdx];
+                          }
+                          
+                          occupiedNodes.add(toNodeKey(chosen.candX, chosen.candY));
+                          segments.push({ x1: tip.x, y1: tip.y, x2: chosen.candX, y2: chosen.candY, generation: gen, isFork: false });
+                          
+                          const isStraight = Math.abs(chosen.relAngle) < 0.01;
+                          nextTips.push({
+                              x: chosen.candX,
+                              y: chosen.candY,
+                              angle: chosen.angle,
+                              generation: gen + 1,
+                              straightStreak: isStraight ? (tip.straightStreak + 1) : 0
+                          });
+                      }
+                  }
+                  
+                  currentTips = nextTips;
+                  if (currentTips.length === 0) break;
+              }
+              
               const completedGens = Math.floor(currentStep);
               const stepFraction = currentStep - completedGens;
               
@@ -3610,11 +4628,10 @@ export default function App() {
                   const seg = segments[i];
                   
                   if (seg.generation < completedGens) {
-                      // Fully grown segment
                       const normGen = seg.generation / (totalGenerations || 1);
                       const w = 3.6 * (1.0 - normGen * 0.62);
                       
-                      ctx.strokeStyle = '#181a1b';
+                      ctx.strokeStyle = veinFg;
                       ctx.lineWidth = Math.max(1.1, w);
                       
                       ctx.beginPath();
@@ -3622,14 +4639,13 @@ export default function App() {
                       ctx.lineTo(seg.x2, seg.y2);
                       ctx.stroke();
                   } else if (seg.generation === completedGens && stepFraction > 0.001) {
-                      // Developing frontier step: extending length in unison
                       const drawX2 = seg.x1 + (seg.x2 - seg.x1) * stepFraction;
                       const drawY2 = seg.y1 + (seg.y2 - seg.y1) * stepFraction;
                       
                       const normGen = seg.generation / (totalGenerations || 1);
                       const w = 3.6 * (1.0 - normGen * 0.62);
                       
-                      ctx.strokeStyle = '#181a1b';
+                      ctx.strokeStyle = veinFg;
                       ctx.lineWidth = Math.max(1.1, w);
                       
                       ctx.beginPath();
@@ -3639,8 +4655,8 @@ export default function App() {
                   }
               }
               
-              // 5. Dark Black Starting Seed Point in the Center
-              ctx.fillStyle = '#181a1b';
+              // 5. Center Starting Seed Point
+              ctx.fillStyle = veinFg;
               ctx.beginPath();
               ctx.arc(cx, cy, 3.8, 0, Math.PI * 2);
               ctx.fill();
@@ -3655,9 +4671,17 @@ export default function App() {
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
               
-              // Clean white / off-white background matching the user palette
-              ctx.fillStyle = '#ffffff';
-              ctx.fillRect(0, 0, targetW, targetH);
+              const polyBg = resolvedGenerativeColors['background'] || '#ffffff';
+              const polyWire = resolvedGenerativeColors['wireframe'] || '#eb556b';
+              const polyFaces = resolvedGenerativeColors['faces'] || '#7599a4';
+              const polyGlow = resolvedGenerativeColors['glow'] || '#f5a6b5';
+              const facesRgb = hexToRgb(polyFaces);
+              const wireRgb = hexToRgb(polyWire);
+              
+              if (!isTransparentColor(polyBg)) {
+                  ctx.fillStyle = polyBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               const { speed, shadows, sides, symmetry, size } = modifiedSettings;
               const spd = speed ?? 1.0;
@@ -3729,16 +4753,10 @@ export default function App() {
               
               // Light direction vector (from upper right front)
               const lx = 0.55, ly = -0.7, lz = 0.45;
-              const lLen = Math.hypot(lx, ly, lz);
+              const lLen = Math.hypot(lx, ly, lz) || 1;
               const lightNorm = { x: lx / lLen, y: ly / lLen, z: lz / lLen };
               
-              // Palette:
-              // Highlight (brighter color): Vibrant Red [250, 59, 92]
-              // Shadow (darker color): Deep Dark Blue / Slate Teal [38, 68, 78]
-              const redColor = { r: 250, g: 59, b: 92 };
-              const blueColor = { r: 38, g: 68, b: 78 };
-              
-              interface FaceData {
+              interface FaceInfo {
                  indices: [number, number, number];
                  p0: { x: number; y: number; z: number };
                  p1: { x: number; y: number; z: number };
@@ -3748,18 +4766,16 @@ export default function App() {
                  centerZ: number;
               }
               
-              const faceList: FaceData[] = [];
+              const faceList: FaceInfo[] = [];
               
               for (const face of faces) {
                  const p0 = projPts[face[0]];
                  const p1 = projPts[face[1]];
                  const p2 = projPts[face[2]];
                  
-                 // Screen normal Z for winding
-                 const normScreenZ = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
-                 const isFront = normScreenZ >= 0;
+                 const cross2D = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
+                 const isFront = cross2D >= 0;
                  
-                 // 3D normal vector
                  const v0 = rotatedPts[face[0]];
                  const v1 = rotatedPts[face[1]];
                  const v2 = rotatedPts[face[2]];
@@ -3773,25 +4789,17 @@ export default function App() {
                  const nLen = Math.hypot(nx, ny, nz) || 1;
                  
                  const norm3D = { x: nx / nLen, y: ny / nLen, z: nz / nLen };
-                 
-                 // Dot light
                  const dot = norm3D.x * lightNorm.x + norm3D.y * lightNorm.y + norm3D.z * lightNorm.z;
                  
-                 // Shading calculation based on `shadows` parameter:
-                 // When shd is low (0.0): one single uniform color with no highlights or shadows
-                 // When shd > 0: highlights are brighter red, shadows are darker blue!
                  let fillColor: string;
                  if (shd <= 0.02) {
-                    fillColor = isFront ? 'rgba(250, 59, 92, 0.35)' : 'rgba(250, 59, 92, 0.18)';
+                    fillColor = isFront ? `rgba(${facesRgb.r}, ${facesRgb.g}, ${facesRgb.b}, 0.35)` : `rgba(${facesRgb.r}, ${facesRgb.g}, ${facesRgb.b}, 0.18)`;
                  } else {
-                    // Normalize dot from [-1, 1] to [0, 1] where 1 is facing light (Red Highlight), 0 is in shadow (Blue Shadow)
                     const lightFactor = Math.max(0, Math.min(1, 0.5 + dot * 0.5 * Math.min(2.0, shd)));
-                    
-                    const r = Math.round(blueColor.r + (redColor.r - blueColor.r) * lightFactor);
-                    const g = Math.round(blueColor.g + (redColor.g - blueColor.g) * lightFactor);
-                    const b = Math.round(blueColor.b + (redColor.b - blueColor.b) * lightFactor);
+                    const r = Math.round(facesRgb.r * (0.4 + 0.6 * lightFactor));
+                    const g = Math.round(facesRgb.g * (0.4 + 0.6 * lightFactor));
+                    const b = Math.round(facesRgb.b * (0.4 + 0.6 * lightFactor));
                     const a = isFront ? (0.35 + 0.35 * lightFactor) : (0.15 + 0.2 * lightFactor);
-                    
                     fillColor = `rgba(${r}, ${g}, ${b}, ${a})`;
                  }
                  
@@ -3813,7 +4821,7 @@ export default function App() {
               }
               
               // Draw back wireframe edges
-              ctx.strokeStyle = 'rgba(38, 68, 78, 0.3)';
+              ctx.strokeStyle = `rgba(${wireRgb.r}, ${wireRgb.g}, ${wireRgb.b}, 0.3)`;
               ctx.lineWidth = 1.2;
               for (const edge of edges) {
                  ctx.beginPath();
@@ -3836,10 +4844,10 @@ export default function App() {
               }
               
               // Draw front wireframe edges
-              ctx.strokeStyle = '#26444e';
+              ctx.strokeStyle = polyWire;
               ctx.lineWidth = 2.4;
               if (shd > 0.02) {
-                 ctx.shadowColor = 'rgba(250, 59, 92, 0.5)';
+                 ctx.shadowColor = polyGlow;
                  ctx.shadowBlur = shd * 10;
               } else {
                  ctx.shadowBlur = 0;
@@ -3862,8 +4870,13 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              ctx.fillStyle = '#ffffff';
-              ctx.fillRect(0, 0, targetW, targetH);
+              const sbBg = resolvedGenerativeColors['background'] || '#ffffff';
+              const sbShade = resolvedGenerativeColors['spheres_shade'] || '#eb556b';
+              const sbSparkle = resolvedGenerativeColors['contour'] || resolvedGenerativeColors['spheres_light'] || '#7599a4';
+              if (!isTransparentColor(sbBg)) {
+                  ctx.fillStyle = sbBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               const { count, max_size, speed, movement, chaos } = modifiedSettings;
               const num = Math.floor(count ?? 40);
@@ -3891,13 +4904,13 @@ export default function App() {
               balls.sort((a,b) => a.z - b.z);
               
               for(const b of balls) {
-                 ctx.fillStyle = '#0a0a0a';
+                 ctx.fillStyle = sbShade;
                  ctx.beginPath();
                  ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
                  ctx.fill();
                  
-                 // tiny white sparkle cross
-                 ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+                 // sparkle cross
+                 ctx.strokeStyle = sbSparkle;
                  ctx.lineWidth = 1.5;
                  const sx = b.x + b.r * 0.3;
                  const sy = b.y - b.r * 0.4;
@@ -3915,8 +4928,13 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              ctx.fillStyle = '#ffffff';
-              ctx.fillRect(0, 0, targetW, targetH);
+              const debBg = resolvedGenerativeColors['background'] || '#000000';
+              const debFg = resolvedGenerativeColors['debris'] || resolvedGenerativeColors['foreground'] || '#ffffff';
+              const debFgRgb = hexToRgb(debFg);
+              if (!isTransparentColor(debBg)) {
+                  ctx.fillStyle = debBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               const { count, scatter, speed, size } = modifiedSettings;
               const num = Math.floor(count ?? 80);
@@ -3986,7 +5004,6 @@ export default function App() {
                     const p0 = projPts[face[0]]; const p1 = projPts[face[1]]; const p2 = projPts[face[2]];
                     const normZ = (p1.x - p0.x)*(p2.y - p0.y) - (p1.y - p0.y)*(p2.x - p0.x);
                     if (normZ >= 0) {
-                        // calculate simple lighting based on normal in 3d space (approx)
                         const tp0 = transformedPts[face[0]]; const tp1 = transformedPts[face[1]]; const tp2 = transformedPts[face[2]];
                         const nx = (tp1.y - tp0.y)*(tp2.z - tp0.z) - (tp1.z - tp0.z)*(tp2.y - tp0.y);
                         const ny = (tp1.z - tp0.z)*(tp2.x - tp0.x) - (tp1.x - tp0.x)*(tp2.z - tp0.z);
@@ -3994,14 +5011,17 @@ export default function App() {
                         const len = Math.hypot(nx, ny, nz) || 1;
                         const lightDot = Math.max(0, (nx/len)*0.5 + (ny/len)*0.8 + (nz/len)*0.3);
                         
-                        const shade = Math.floor(lightDot * 100 + s.baseColor * 50);
-                        ctx.fillStyle = `rgb(${shade},${shade},${shade})`;
+                        const factor = 0.35 + lightDot * 0.65;
+                        const r = Math.round(debFgRgb.r * factor);
+                        const g = Math.round(debFgRgb.g * factor);
+                        const b = Math.round(debFgRgb.b * factor);
+                        ctx.fillStyle = `rgb(${r},${g},${b})`;
                         ctx.beginPath();
                         ctx.moveTo(p0.x, p0.y);
                         for(let i=1; i<face.length; i++) ctx.lineTo(projPts[face[i]].x, projPts[face[i]].y);
                         ctx.closePath();
                         ctx.fill();
-                        ctx.strokeStyle = '#000';
+                        ctx.strokeStyle = debBg;
                         ctx.lineWidth = 0.5;
                         ctx.stroke();
                     }
@@ -4016,8 +5036,14 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              ctx.fillStyle = '#e8e8e6';
-              ctx.fillRect(0, 0, targetW, targetH);
+              const symBg = resolvedGenerativeColors['background'] || '#ffffff';
+              const circleCol = resolvedGenerativeColors['circles'] || resolvedGenerativeColors['symbols'] || resolvedGenerativeColors['foreground'] || '#eb556b';
+              const triCol = resolvedGenerativeColors['triangles'] || resolvedGenerativeColors['symbols'] || resolvedGenerativeColors['foreground'] || '#7599a4';
+              const sqCol = resolvedGenerativeColors['squares'] || resolvedGenerativeColors['bars'] || resolvedGenerativeColors['symbols'] || resolvedGenerativeColors['foreground'] || '#233136';
+              if (!isTransparentColor(symBg)) {
+                  ctx.fillStyle = symBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               const { speed, density, scale: sclValue, movement, chaos } = modifiedSettings;
               const spd = speed ?? 1.0;
@@ -4027,39 +5053,28 @@ export default function App() {
               const cha = chaos ?? 1.0;
               const t = nowSec * spd;
               
-              ctx.globalCompositeOperation = 'multiply';
-              
-              // Quasi-random R2 low-discrepancy sequence:
-              // Guarantees completely even, homogeneous coverage across the entire canvas
-              // with zero empty holes in the middle or anywhere!
               const a1 = 0.7548776662466927;
               const a2 = 0.5698402909980532;
               
               for (let i = 0; i < dens; i++) {
-                 // Low-discrepancy 2D coordinates
                  const u = (0.5 + i * a1) % 1.0;
                  const v = (0.5 + i * a2) % 1.0;
                  
                  const baseX = u * targetW;
                  const baseY = v * targetH;
                  
-                 // Dynamic organic floating drift
                  const driftX = Math.sin(t * 0.8 * cha + i * 2.13) * mov;
                  const driftY = Math.cos(t * 0.6 * cha + i * 3.17) * mov;
                  
                  const x = (baseX + driftX + targetW) % targetW;
                  const y = (baseY + driftY + targetH) % targetH;
                  
-                 // Shape distribution
-                 const typeHash = (i * 7 + 3) % 10;
-                 let type = 0; // 0=circle, 1=triangle, 2=rect bar, 3=small dot, 4=sharp triangle
-                 if (typeHash < 3) type = 1;
-                 else if (typeHash < 6) type = 0;
-                 else if (typeHash < 8) type = 2;
-                 else if (typeHash < 9) type = 4;
-                 else type = 3;
+                 const symbolType = i % 3; // 0 = Circle, 1 = Triangle, 2 = Square/Rect
+                 let color = circleCol;
+                 if (symbolType === 1) color = triCol;
+                 else if (symbolType === 2) color = sqCol;
                  
-                 const color = (i % 2 === 0 || (i % 5 === 0)) ? '#fa3b5c' : '#26444e';
+                 if (isTransparentColor(color)) continue;
                  
                  const sizeRand = ((i * 13 + 7) % 100) / 100;
                  const size = (12 + sizeRand * 55) * scl;
@@ -4071,22 +5086,24 @@ export default function App() {
                  ctx.fillStyle = color;
                  ctx.strokeStyle = color;
                  
-                 if (type === 0) {
-                     ctx.beginPath(); ctx.arc(0, 0, size * 0.48, 0, Math.PI * 2); ctx.fill();
-                 } else if (type === 1) {
-                     ctx.beginPath(); ctx.moveTo(0, -size * 0.55); ctx.lineTo(size * 0.5, size * 0.45); ctx.lineTo(-size * 0.5, size * 0.45); ctx.closePath(); ctx.fill();
-                 } else if (type === 2) {
-                     const barW = size * 1.3;
-                     const barH = size * 0.26;
-                     ctx.fillRect(-barW / 2, -barH / 2, barW, barH);
-                 } else if (type === 3) {
-                     ctx.beginPath(); ctx.arc(0, 0, Math.max(2, size * 0.18), 0, Math.PI * 2); ctx.fill();
+                 if (symbolType === 0) {
+                     ctx.beginPath();
+                     ctx.arc(0, 0, size * 0.45, 0, Math.PI * 2);
+                     ctx.fill();
+                 } else if (symbolType === 1) {
+                     ctx.beginPath();
+                     ctx.moveTo(0, -size * 0.55);
+                     ctx.lineTo(size * 0.5, size * 0.45);
+                     ctx.lineTo(-size * 0.5, size * 0.45);
+                     ctx.closePath();
+                     ctx.fill();
                  } else {
-                     ctx.beginPath(); ctx.moveTo(0, -size * 0.7); ctx.lineTo(size * 0.35, size * 0.35); ctx.lineTo(-size * 0.35, size * 0.35); ctx.closePath(); ctx.fill();
+                     const barW = size * 0.9;
+                     const barH = size * 0.9;
+                     ctx.fillRect(-barW / 2, -barH / 2, barW, barH);
                  }
                  ctx.restore();
               }
-              ctx.globalCompositeOperation = 'source-over';
               element = canvas;
           } else if (def.uuid === 'text-umbrella-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
@@ -4097,9 +5114,12 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              
-              ctx.fillStyle = '#000';
-              ctx.fillRect(0, 0, targetW, targetH);
+              const umbBg = resolvedGenerativeColors['background'] || '#000000';
+              const umbFg = resolvedGenerativeColors['umbrella'] || resolvedGenerativeColors['foreground'] || '#ffffff';
+              if (!isTransparentColor(umbBg)) {
+                  ctx.fillStyle = umbBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               const { speed, font_size, rain_density, text_content, umbrella_size, umbrella_x, umbrella_y } = modifiedSettings;
               const fSize = font_size || 16.0;
@@ -4117,7 +5137,7 @@ export default function App() {
               const cy = (targetH / 2) + (uY / 100.0) * (targetH / 2);
               const r = Math.min(targetW, targetH) * 0.2 * uSize; // umbrella radius
               
-              ctx.fillStyle = '#FFF';
+              ctx.fillStyle = umbFg;
               ctx.font = `bold ${fSize}px monospace`;
               ctx.textBaseline = 'middle';
               
@@ -4154,12 +5174,12 @@ export default function App() {
                       
                       // Canopy collision (top half bouncing)
                       if (dy < 0 && dist < r + fSize) {
-                          const pushStrength = (r + fSize) - dist;
-                          // push outward along normal
-                          const nx = dx / dist;
-                          const ny = dy / dist;
-                          drawX = px + nx * pushStrength;
-                          drawY = py + ny * pushStrength;
+                           const pushStrength = (r + fSize) - dist;
+                           // push outward along normal
+                           const nx = dx / dist;
+                           const ny = dy / dist;
+                           drawX = px + nx * pushStrength;
+                           drawY = py + ny * pushStrength;
                       }
                       
                       // Dry zone shadow (under umbrella)
@@ -4185,7 +5205,7 @@ export default function App() {
               }
               
               // Draw Umbrella
-              ctx.strokeStyle = '#FFF';
+              ctx.strokeStyle = umbFg;
               ctx.lineWidth = 4 * uSize;
               ctx.beginPath();
               ctx.arc(cx, cy, r, Math.PI, 0); // canopy
@@ -4206,9 +5226,12 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              
-              ctx.fillStyle = '#000';
-              ctx.fillRect(0, 0, targetW, targetH);
+              const wdBg = resolvedGenerativeColors['background'] || '#000000';
+              const wdFg = resolvedGenerativeColors['ripples'] || resolvedGenerativeColors['foreground'] || '#ffffff';
+              if (!isTransparentColor(wdBg)) {
+                  ctx.fillStyle = wdBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               const { speed, font_size, frequency, amplitude, text_content } = modifiedSettings;
               const fSize = font_size || 20.0;
@@ -4223,7 +5246,7 @@ export default function App() {
               const cy = targetH / 2;
               const t = nowSec * spd * 10.0;
               
-              ctx.fillStyle = '#FFF';
+              ctx.fillStyle = wdFg;
               ctx.font = `bold ${fSize}px sans-serif`;
               ctx.textBaseline = 'middle';
               
@@ -4262,9 +5285,12 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              
-              ctx.fillStyle = '#000';
-              ctx.fillRect(0, 0, targetW, targetH);
+              const boatBg = resolvedGenerativeColors['background'] || '#000000';
+              const boatFg = resolvedGenerativeColors['boat_sea'] || resolvedGenerativeColors['foreground'] || '#ffffff';
+              if (!isTransparentColor(boatBg)) {
+                  ctx.fillStyle = boatBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              }
               
               const { speed, font_size, wave_height, text_content, boat_size, boat_speed, chaos } = modifiedSettings;
               const fSize = font_size || 18.0;
@@ -4280,7 +5306,7 @@ export default function App() {
               
               const t = nowSec * spd * 2.0;
               
-              ctx.fillStyle = '#FFF';
+              ctx.fillStyle = boatFg;
               ctx.font = `bold ${fSize}px sans-serif`;
               ctx.textBaseline = 'middle';
               
@@ -4323,8 +5349,8 @@ export default function App() {
               ctx.rotate(pitch);
               ctx.scale(bSize, bSize);
               
-              ctx.fillStyle = '#FFF';
-              ctx.strokeStyle = '#000';
+              ctx.fillStyle = boatFg;
+              ctx.strokeStyle = boatBg;
               ctx.lineWidth = 2;
               
               // Hull
@@ -4337,7 +5363,7 @@ export default function App() {
               ctx.fill();
               
               // Mast
-              ctx.fillStyle = '#FFF';
+              ctx.fillStyle = boatFg;
               ctx.fillRect(-2, -60, 4, 60);
               
               // Mainsail (right)
@@ -4371,7 +5397,7 @@ export default function App() {
               if (webglRendererRef.current.canvas.width !== targetW || webglRendererRef.current.canvas.height !== targetH) {
                   webglRendererRef.current.resize(targetW, targetH);
               }
-              webglRendererRef.current.render(def, nowSec, modifiedSettings);
+              webglRendererRef.current.render(def, nowSec, modifiedSettings, resolvedGenerativeColors);
               element = webglRendererRef.current.canvas;
           }
         }
@@ -4388,57 +5414,127 @@ export default function App() {
            const baseTime = layer.videoTriggerMode === 'restart' ? (videoRestartTimeRef.current[layer.id] || masterPlaybackStartTimeRef.current) : masterPlaybackStartTimeRef.current;
            const masterTimeSec = (performance.now() - baseTime) / 1000.0;
 
-           // Frame Advance: keep video paused, don't auto-loop
+           // Frame Advance: keep video paused, start with still frame at videoStart
            if (layer.videoTriggerMode === 'advance') {
              vid.pause();
-           }
-           // Rewind on Release: handle per-frame rewind animation
-           else if (layer.videoTriggerMode === 'rewind') {
-             const rState = videoRewindStateRef.current[layer.id];
-             if (rState?.rewinding) {
-               const nowTime = performance.now();
-               if (!rState.lastSeekTime) rState.lastSeekTime = nowTime;
-               const timeSinceLastSeek = nowTime - rState.lastSeekTime;
-               
-               // Throttle backward seeks to roughly 30fps (33ms) to allow the browser decoder to keep up
-               if (timeSinceLastSeek >= 33) {
-                 const rewindSpeed = layer.videoRewindSpeed || 1.0;
-                 const dt = timeSinceLastSeek / 1000;
-                 const rewindDelta = rewindSpeed * dt;
-                 let newTime = vid.currentTime - rewindDelta;
-                 
-                 if (newTime <= start) {
-                   newTime = start;
-                   vid.currentTime = newTime;
-                   // Fully rewound — stay visible and wait at start
-                   videoRewindStateRef.current[layer.id] = { rewinding: false, visible: true, lastSeekTime: nowTime };
-                 } else {
-                   vid.currentTime = newTime;
-                   rState.lastSeekTime = nowTime;
-                 }
-               }
-             } else {
-               // Normal forward play - Lock to master clock
-               const targetTime = start + (masterTimeSec % segDur);
-               if (Math.abs(vid.currentTime - targetTime) > 0.12 && !vid.seeking) {
-                 if ((vid as any).fastSeek) {
-                   try { (vid as any).fastSeek(targetTime); } catch(e) { vid.currentTime = targetTime; }
-                 } else vid.currentTime = targetTime;
-               }
+             if (!videoInitialSeekDoneRef.current[layer.id]) {
+               vid.currentTime = start;
+               videoInitialSeekDoneRef.current[layer.id] = true;
              }
            }
-           // Standard modes - Lock to master clock!
+           // Rewind on Release: handle still frame, forward playback while triggered, and smooth rewind on release
+           else if (layer.videoTriggerMode === 'rewind') {
+              if (!videoRewindStateRef.current[layer.id]) {
+                videoRewindStateRef.current[layer.id] = { triggered: false, rewinding: false, lastSeekTime: 0 };
+              }
+              const rState = videoRewindStateRef.current[layer.id];
+              if (!videoInitialSeekDoneRef.current[layer.id]) {
+                vid.pause();
+                vid.currentTime = start;
+                videoInitialSeekDoneRef.current[layer.id] = true;
+              }
+              if (!rewindFramesBufferRef.current[layer.id]) {
+                rewindFramesBufferRef.current[layer.id] = [];
+              }
+              const rewindBuf = rewindFramesBufferRef.current[layer.id];
+              
+              // Check active trigger state across MIDI, Audio, and Rhythm
+              let isTriggerActive = !!rState.triggered;
+              if (layer.audioMapping?.enabled) {
+                isTriggerActive = audioIsActive;
+              } else if (layer.rhythmMapping?.enabled) {
+                isTriggerActive = rhythmIsActive;
+              } else if (layer.midiMode) {
+                const triggerKey = `layer-${layer.id}`;
+                const trigState = triggerStatesRef.current[triggerKey];
+                isTriggerActive = !!trigState?.isDown || (trigState?.phase === 'attack' || trigState?.phase === 'sustain');
+              }
+
+              if (isTriggerActive) {
+                // While trigger is held: play forward smoothly and record frames for reverse playback
+                rState.rewinding = false;
+                if (vid.paused && isPlaying) {
+                  vid.play().catch(() => {});
+                }
+                vid.playbackRate = Math.max(0.1, layer.speed ?? 1.0);
+                if (vid.currentTime < start) vid.currentTime = start;
+                if (end > start && vid.currentTime >= end) vid.currentTime = start;
+
+                // Capture current frame at native video resolution for 100% exact aspect ratio & 60fps boomerang playback
+                if (vid.readyState >= 2 && vid.videoWidth > 0 && vid.videoHeight > 0) {
+                  const snap = document.createElement('canvas');
+                  snap.width = vid.videoWidth;
+                  snap.height = vid.videoHeight;
+                  const sCtx = snap.getContext('2d');
+                  if (sCtx) {
+                    sCtx.drawImage(vid, 0, 0);
+                    rewindBuf.push(snap);
+                    if (rewindBuf.length === 1 || !boomerangStartFrameRef.current[layer.id]) {
+                      boomerangStartFrameRef.current[layer.id] = snap;
+                    }
+                    // Retain up to 360 frames (6 full seconds of forward play at 60fps)
+                    if (rewindBuf.length > 360) {
+                      rewindBuf.shift();
+                    }
+                  }
+                }
+              } else {
+                // Note released: smoothly play recorded frames backward (true social media boomerang effect)
+                vid.pause();
+                if (rewindBuf.length > 0) {
+                  rState.rewinding = true;
+                  const rewindSpeed = Math.max(0.5, layer.videoRewindSpeed || 1.0);
+                  const popCount = Math.max(1, Math.round(rewindSpeed));
+                  let currentSnap: HTMLCanvasElement | null = null;
+                  for (let i = 0; i < popCount; i++) {
+                    if (rewindBuf.length > 0) {
+                      currentSnap = rewindBuf.pop()!;
+                    }
+                  }
+                  if (currentSnap) {
+                    element = currentSnap;
+                    boomerangLastSnapRef.current[layer.id] = currentSnap;
+                  }
+                  if (rewindBuf.length === 0) {
+                    vid.currentTime = start;
+                    rState.rewinding = false;
+                  }
+                } else {
+                  // Buffer finished or idle at rest: hold initial still frame at videoStart
+                  vid.pause();
+                  if (Math.abs(vid.currentTime - start) > 0.05 && !vid.seeking) {
+                    vid.currentTime = start;
+                  }
+                  rState.rewinding = false;
+                  // Use saved start frame or last popped snapshot so vid decoder latency never flashes unwanted end frames
+                  if (boomerangStartFrameRef.current[layer.id]) {
+                    element = boomerangStartFrameRef.current[layer.id];
+                  } else if (boomerangLastSnapRef.current[layer.id]) {
+                    element = boomerangLastSnapRef.current[layer.id];
+                  }
+                }
+              }
+           }
+           // Standard modes (continuous, restart, frame-accumulator) - let HTML5 video play smoothly and loop within [start, end]
            else {
-             const targetTime = start + (masterTimeSec % segDur);
-             if (Math.abs(vid.currentTime - targetTime) > 0.12 && !vid.seeking) {
-               if ((vid as any).fastSeek) {
-                 try { (vid as any).fastSeek(targetTime); } catch(e) { vid.currentTime = targetTime; }
-               } else vid.currentTime = targetTime;
+             if (vid.paused && isPlaying) {
+               vid.play().catch(() => {});
+             }
+             if (vid.currentTime < start || (end > start && vid.currentTime > end)) {
+               vid.currentTime = start;
              }
            }
          }
       } else {
-         element = imageRefs.current[layer.id];
+          let img = imageRefs.current[layer.id];
+          if (!img && layer.src) {
+            img = new Image();
+            img.src = layer.src;
+            imageRefs.current[layer.id] = img;
+          }
+          if (img && (img.complete || img.naturalWidth > 0 || img.width > 0)) {
+            element = img;
+          }
       }
 
       if (element) {
@@ -4519,6 +5615,21 @@ export default function App() {
         const tRot = getTransformVal('rotation', 0);
         const tPosX = getTransformVal('posX', 0);
         const tPosY = getTransformVal('posY', 0);
+        
+        if (layer.type === 'video') {
+          const el = element as HTMLVideoElement;
+          const finalSpeed = Math.max(0, getTransformVal('speed', 1));
+          if (Math.abs(el.playbackRate - finalSpeed) > 0.05) {
+             el.playbackRate = finalSpeed === 0 ? 1 : finalSpeed; // Avoid DOM exceptions on 0 playbackRate if unsupported
+          }
+          if (layer.videoTriggerMode !== 'advance' && layer.videoTriggerMode !== 'rewind') {
+            if (el.paused && isPlaying && finalSpeed > 0) {
+               el.play().catch(() => {});
+            } else if (!el.paused && finalSpeed === 0) {
+               el.pause();
+            }
+          }
+        }
 
         const centerX = x + destW / 2 + (tPosX / 100) * targetW;
         const centerY = y + destH / 2 + (tPosY / 100) * targetH;
@@ -4534,110 +5645,6 @@ export default function App() {
 
         if (isGrid || layer.type === 'generative') ctx.restore();
 
-        rawCtx.clearRect(0, 0, targetW, targetH);
-        if (isGrid) {
-          rawCtx.save();
-          rawCtx.beginPath();
-          rawCtx.rect(slotX, slotY, slotW, slotH);
-          rawCtx.clip();
-        }
-        rawCtx.drawImage(element, x, y, destW, destH);
-        if (isGrid) rawCtx.restore();
-
-        // --- Frame Accumulator Mode ---
-        if (layer.videoTriggerMode === 'frame-accumulator') {
-          // Capture reference frame (first frame of the video) on first encounter
-          if (!referenceFrameRef.current[layer.id]) {
-            const refCanvas = document.createElement('canvas');
-            refCanvas.width = targetW;
-            refCanvas.height = targetH;
-            referenceFrameRef.current[layer.id] = refCanvas;
-            const refCtx = refCanvas.getContext('2d', { willReadFrequently: true })!;
-            refCtx.drawImage((window as any).rawOffscreenCanvas, 0, 0);
-          }
-          
-          if (!accumulateCanvasRef.current[layer.id]) {
-            const accCanvas = document.createElement('canvas');
-            accCanvas.width = targetW;
-            accCanvas.height = targetH;
-            accumulateCanvasRef.current[layer.id] = accCanvas;
-          }
-          
-          const refCanvas = referenceFrameRef.current[layer.id];
-          const accCanvas = accumulateCanvasRef.current[layer.id];
-          const accCtx = accCanvas.getContext('2d', { willReadFrequently: true })!;
-          const stState = stutterStateRef.current[layer.id] || { triggerStamp: false, clearBuffer: false, wasActive: false };
-          stutterStateRef.current[layer.id] = stState;
-          
-          // Edge detection for the stamp trigger — fires on the rising edge of the layer's trigger
-          let isCurrentlyActive = false;
-          if (layer.audioMapping?.enabled) {
-              isCurrentlyActive = audioIsActive;
-          } else if (layer.rhythmMapping?.enabled) {
-              isCurrentlyActive = rhythmIsActive;
-          } else if (layer.midiMode) {
-              isCurrentlyActive = midiIsActive;
-          }
-          
-          if (isCurrentlyActive && !stState.wasActive) {
-              stState.triggerStamp = true;
-          }
-          stState.wasActive = isCurrentlyActive;
-          
-          // Handle clear
-          if (stState.clearBuffer) {
-            accCtx.clearRect(0, 0, targetW, targetH);
-            stState.clearBuffer = false;
-          }
-
-          // When triggered, stamp the moving pixels onto the accumulation buffer
-          if (stState.triggerStamp) {
-            const currentData = rawCtx.getImageData(0, 0, targetW, targetH).data;
-            const refCtx2 = refCanvas.getContext('2d', { willReadFrequently: true })!;
-            const refData = refCtx2.getImageData(0, 0, targetW, targetH).data;
-            
-            if (!(window as any).diffCanvas) {
-               (window as any).diffCanvas = document.createElement('canvas');
-               (window as any).diffCtx = (window as any).diffCanvas.getContext('2d', { willReadFrequently: true });
-            }
-            const diffCanvas = (window as any).diffCanvas as HTMLCanvasElement;
-            const diffCtx = (window as any).diffCtx as CanvasRenderingContext2D;
-            if (diffCanvas.width !== targetW) { diffCanvas.width = targetW; diffCanvas.height = targetH; }
-            
-            const diffImgData = diffCtx.createImageData(targetW, targetH);
-            const diffData = diffImgData.data;
-            const thresh = layer.accumulateThreshold ?? 30;
-            
-            for (let i = 0; i < currentData.length; i += 4) {
-               const rDiff = Math.abs(currentData[i] - refData[i]);
-               const gDiff = Math.abs(currentData[i+1] - refData[i+1]);
-               const bDiff = Math.abs(currentData[i+2] - refData[i+2]);
-               
-               const avgDiff = (rDiff + gDiff + bDiff) / 3;
-               if (avgDiff > thresh) {
-                 diffData[i] = currentData[i];
-                 diffData[i+1] = currentData[i+1];
-                 diffData[i+2] = currentData[i+2];
-                 diffData[i+3] = 255;
-               } else {
-                 diffData[i+3] = 0;
-               }
-            }
-            diffCtx.putImageData(diffImgData, 0, 0);
-            accCtx.drawImage(diffCanvas, 0, 0);
-            stState.triggerStamp = false;
-          }
-
-          // Output: Always show Background Reference Frame + Accumulated Stamps on top
-          ctx.clearRect(0, 0, targetW, targetH);
-          ctx.drawImage(refCanvas, 0, 0);
-          ctx.drawImage(accCanvas, 0, 0);
-          
-          rawCtx.clearRect(0, 0, targetW, targetH);
-          rawCtx.drawImage(refCanvas, 0, 0);
-          rawCtx.drawImage(accCanvas, 0, 0);
-        }
-
         // Process effects for this layer
         const activeMappings = layer.mappings.filter(m => {
            if (m.isMuted) return false;
@@ -4645,32 +5652,40 @@ export default function App() {
            const state = triggerStatesRef.current[`effect-${layer.id}-${m.id}`];
            if (state) {
                // Update ADSR state for effect trigger
-               const ns = m.noteSettings;
-               const dt = deltaTime / 1000.0;
-               const sustain = ns.sustain !== undefined ? ns.sustain : 1.0;
-               
-               if (state.phase === 'attack') {
-                  const a = (ns.attack || 0) / 1000.0;
-                  if (a <= 0.001) state.currentEnvValue = 1;
-                  else state.currentEnvValue += dt / a;
-                  if (state.currentEnvValue >= 1) { state.currentEnvValue = 1; state.phase = 'decay'; }
-               } else if (state.phase === 'decay') {
-                  const d = (ns.decay || 0) / 1000.0;
-                  if (d <= 0.001) state.currentEnvValue = sustain;
-                  else state.currentEnvValue -= dt * (1 - sustain) / d;
-                  if (state.currentEnvValue <= sustain) { state.currentEnvValue = sustain; state.phase = 'sustain'; }
-               } else if (state.phase === 'sustain') {
-                  state.currentEnvValue = sustain;
-               } else if (state.phase === 'release') {
-                  const r = (ns.release || 0) / 1000.0;
-                  if (r <= 0.001) state.currentEnvValue = 0;
-                  else state.currentEnvValue -= dt / r;
-                  if (state.currentEnvValue <= 0) { state.currentEnvValue = 0; state.phase = 'idle'; }
-               }
+               const ns = m.noteSettings || DEFAULT_NOTE_SETTINGS;
 
-               if (state.useFixedDuration && state.activeUntil && Date.now() >= state.activeUntil && state.phase !== 'release' && state.phase !== 'idle') {
-                  state.phase = 'release';
-                  state.isDown = false;
+               if (ns.useFixedDuration || state.useFixedDuration) {
+                   if (state.activeUntil && Date.now() < state.activeUntil) {
+                       state.currentEnvValue = 1.0;
+                       state.phase = 'sustain';
+                   } else {
+                       state.currentEnvValue = 0.0;
+                       state.phase = 'idle';
+                       state.isDown = false;
+                       state.activeUntil = null;
+                   }
+               } else {
+                   const dt = deltaTime / 1000.0;
+                   const sustain = ns.sustain !== undefined ? ns.sustain : 1.0;
+                   
+                   if (state.phase === 'attack') {
+                      const a = (ns.attack || 0) / 1000.0;
+                      if (a <= 0.001) state.currentEnvValue = 1;
+                      else state.currentEnvValue += dt / a;
+                      if (state.currentEnvValue >= 1) { state.currentEnvValue = 1; state.phase = 'decay'; }
+                   } else if (state.phase === 'decay') {
+                      const d = (ns.decay || 0) / 1000.0;
+                      if (d <= 0.001) state.currentEnvValue = sustain;
+                      else state.currentEnvValue -= dt * (1 - sustain) / d;
+                      if (state.currentEnvValue <= sustain) { state.currentEnvValue = sustain; state.phase = 'sustain'; }
+                   } else if (state.phase === 'sustain') {
+                      state.currentEnvValue = sustain;
+                   } else if (state.phase === 'release') {
+                      const r = (ns.release || 0) / 1000.0;
+                      if (r <= 0.001) state.currentEnvValue = 0;
+                      else state.currentEnvValue -= dt / r;
+                      if (state.currentEnvValue <= 0) { state.currentEnvValue = 0; state.phase = 'idle'; }
+                   }
                }
 
                return state.currentEnvValue > 0.001;
@@ -4680,21 +5695,136 @@ export default function App() {
         const soloedMappings = activeMappings.filter(m => m.isSoloed);
         const mappingsToProcess = soloedMappings.length > 0 ? soloedMappings : activeMappings;
 
+        const rawEffects = ['hue-rotate', 'vhs', 'motion-detector', 'windows-98', 'long-exposure'];
+        const needsRawCanvas = layer.videoTriggerMode === 'frame-accumulator' || mappingsToProcess.some(m => rawEffects.includes(m.id));
+
+        if (needsRawCanvas) {
+          rawCtx.clearRect(0, 0, targetW, targetH);
+          if (isGrid) {
+            rawCtx.save();
+            rawCtx.beginPath();
+            rawCtx.rect(slotX, slotY, slotW, slotH);
+            rawCtx.clip();
+          }
+          rawCtx.drawImage(element, x, y, destW, destH);
+          if (isGrid) rawCtx.restore();
+        }
+
+        // --- Frame Accumulator Mode ---
+        if (layer.videoTriggerMode === 'frame-accumulator') {
+          if (!frameAccumulatorSnapshotsRef.current[layer.id]) {
+            frameAccumulatorSnapshotsRef.current[layer.id] = [];
+          }
+          const snapshots = frameAccumulatorSnapshotsRef.current[layer.id];
+          const stState = stutterStateRef.current[layer.id] || { triggerStamp: false, clearBuffer: false, wasActive: false, lastCaptureTime: 0 };
+          stutterStateRef.current[layer.id] = stState;
+
+          // Clear Canvas if requested
+          if (stState.clearBuffer) {
+            snapshots.length = 0;
+            stState.clearBuffer = false;
+          }
+
+          // 1. Detect rising edge of trigger for Audio / Rhythm / MIDI
+          let isTriggerDown = false;
+          if (layer.audioMapping?.enabled) {
+            isTriggerDown = audioIsActive;
+          } else if (layer.rhythmMapping?.enabled) {
+            isTriggerDown = rhythmIsActive;
+          } else if (layer.midiMode) {
+            const triggerKey = `layer-${layer.id}`;
+            const trigState = triggerStatesRef.current[triggerKey];
+            isTriggerDown = !!trigState?.isDown || (trigState?.phase === 'attack');
+          }
+
+          if (isTriggerDown && !stState.wasActive) {
+            stState.triggerStamp = true;
+          }
+          stState.wasActive = isTriggerDown;
+
+          // 2. On trigger stamp (rising edge of hit):
+          if (stState.triggerStamp) {
+            stState.triggerStamp = false;
+
+            const snapCanvas = document.createElement('canvas');
+            snapCanvas.width = targetW;
+            snapCanvas.height = targetH;
+            const snapCtx = snapCanvas.getContext('2d')!;
+            snapCtx.drawImage(element, x, y, destW, destH);
+
+            snapshots.push(snapCanvas);
+            const maxSnapshots = Math.max(2, Math.min(32, layer.accumulateMaxFrames || 16));
+            while (snapshots.length > maxSnapshots) {
+              snapshots.shift();
+            }
+          }
+
+          // 3. Render:
+          ctx.clearRect(0, 0, targetW, targetH);
+
+          // Draw the current live video frame as base
+          ctx.drawImage(element, x, y, destW, destH);
+
+          // Overlay accumulated past frames on top with transparency & blend mode
+          if (snapshots.length > 0) {
+            const snapOpacity = layer.accumulateOpacity ?? 0.6;
+            const blendMode = layer.accumulateBlendMode || 'source-over';
+
+            for (let k = 0; k < snapshots.length; k++) {
+              ctx.save();
+              ctx.globalAlpha = snapOpacity;
+              ctx.globalCompositeOperation = blendMode;
+              ctx.drawImage(snapshots[k], 0, 0);
+              ctx.restore();
+            }
+          }
+
+          // Sync rawCtx
+          rawCtx.clearRect(0, 0, targetW, targetH);
+          rawCtx.drawImage(canvas, 0, 0);
+        }
+
         // Extract prevFrame matching this layer using current struct
         const _prevFrame = prevFrameRef.current[layer.id] || null;
-        
-        // Temporarily assign it to a local var that the original effects code expects
         const localPrevFrameRef = { current: _prevFrame };
 
         // Only perform GPU pixel readback if an active effect requires pixel array inspection
-        const needsPixelData = mappingsToProcess.some(m => ['motion-symbols', 'invert', 'pixelate', 'glitch-slice'].includes(m.id));
+        const pixelDataEffects = [
+           'motion-symbols', 'invert', 'edges', 'pixelate', 'rgb-shift',
+           'dithering', 'ascii', 'motion-detector', 'matrix', 'windows-98', 'glitch-box', 'glitch-slice'
+        ];
+        const needsPixelData = mappingsToProcess.some(m => pixelDataEffects.includes(m.id));
+        const motionSensitiveEffects = ['motion-symbols', 'motion-detector', 'windows-98', 'glitch-box', 'glitch-slice'];
+        const needsPrevFrame = mappingsToProcess.some(m => motionSensitiveEffects.includes(m.id) || (m.id === 'pixelate' && (m.settings?.movement ?? 0) > 0));
+
         let imageData: ImageData | null = null;
         let data: Uint8ClampedArray | null = null;
+        const resScaleFactor = targetW / 1920;
+
+        const getEffectBuffer = (len: number, w: number, h: number) => {
+          let b = (window as any).__sharedEffectBuffer;
+          if (!b || b.data.length !== len || b.imgData.width !== w || b.imgData.height !== h) {
+            const bufData = new Uint8ClampedArray(len);
+            const imgData = new ImageData(bufData, w, h);
+            b = (window as any).__sharedEffectBuffer = { data: bufData, imgData, u32: new Uint32Array(bufData.buffer) };
+          }
+          return b;
+        };
+
+        const getLumaBuffer = (numPixels: number) => {
+          let b = (window as any).__lumaBuffer;
+          if (!b || b.length !== numPixels) {
+            b = (window as any).__lumaBuffer = new Uint8Array(numPixels);
+          }
+          return b;
+        };
         
         if (needsPixelData) {
            imageData = ctx.getImageData(0, 0, targetW, targetH);
            data = imageData.data;
-           prevFrameRef.current[layer.id] = new Uint8ClampedArray(data);
+           if (needsPrevFrame) {
+              localPrevFrameRef.current = prevFrameRef.current[layer.id] || null;
+           }
         }
 
         if (mappingsToProcess.length > 0) {
@@ -4709,9 +5839,9 @@ export default function App() {
 
           if (effectDef?.parameters) {
              for (const p of effectDef.parameters) {
-                const baseVal = modSettings[p.name] !== undefined ? modSettings[p.name] : p.default;
-                if (effect.triggerActive?.[p.name]) {
-                   const triggerAmt = effect.triggerAmount?.[p.name] ?? 0;
+                const baseVal = modSettings[p.name] !== undefined ? modSettings[p.name] : (modSettings[p.id] !== undefined ? modSettings[p.id] : p.default);
+                if (effect.triggerActive?.[p.name] || effect.triggerActive?.[p.id]) {
+                   const triggerAmt = effect.triggerAmount?.[p.name] ?? effect.triggerAmount?.[p.id] ?? 0;
                    const range = (p.max - p.min);
                    let paramEnv = unifiedEnv;
                    
@@ -4744,7 +5874,9 @@ export default function App() {
                    }
                    
                    let calculatedVal = baseVal + triggerAmt * range * paramEnv;
-                   modSettings[p.name] = Math.max(p.min, Math.min(p.max, calculatedVal));
+                   const clamped = Math.max(p.min, Math.min(p.max, calculatedVal));
+                   modSettings[p.name] = clamped;
+                   modSettings[p.id] = clamped;
                 }
              }
           }
@@ -4752,32 +5884,44 @@ export default function App() {
 
       // --- 1. Symbols ---
       if (effect.id === 'motion-symbols') {
-        const size = Math.floor(settings.size || 16);
-        const spacing = Math.floor(settings.spacing || 4);
-        const threshold = settings.sensitivity || 30;
+        const rawSize = settings.size !== undefined ? settings.size : (settings.Size ?? 16);
+        const rawSpacing = settings.spacing !== undefined ? settings.spacing : (settings.Spacing ?? 4);
+        const size = Math.max(8, Math.round(rawSize * resScaleFactor));
+        const spacing = Math.max(2, Math.round(rawSpacing * resScaleFactor));
+        const threshold = settings.sensitivity !== undefined ? settings.sensitivity : (settings.Sensitivity ?? 30);
         const step = size + spacing;
         
         ctx.save();
-        // Solid white canvas
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, targetW, targetH);
         
-        if (localPrevFrameRef.current) {
+        const stateMap = ((window as any).__symbolStates = (window as any).__symbolStates || {});
+        if (!stateMap[layer.id]) stateMap[layer.id] = {};
+        const cells = stateMap[layer.id];
+
+        if (localPrevFrameRef.current && data) {
           const prevData = localPrevFrameRef.current;
           ctx.font = `bold ${size}px monospace`;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillStyle = '#000000'; // Solid black symbols
+          ctx.fillStyle = '#000000';
           
           for (let y = 0; y < targetH; y += step) {
+            const rowOffset = y * targetW;
             for (let x = 0; x < targetW; x += step) {
-              const i = (y * targetW + x) * 4;
-              const b1 = (data[i] + data[i+1] + data[i+2]) / 3;
-              const b2 = (prevData[i] + prevData[i+1] + prevData[i+2]) / 3;
+              const i = (rowOffset + x) << 2;
+              const b1 = (data[i] * 77 + data[i+1] * 150 + data[i+2] * 29) >> 8;
+              const b2 = (prevData[i] * 77 + prevData[i+1] * 150 + prevData[i+2] * 29) >> 8;
               
+              const key = `${Math.floor(x/step)},${Math.floor(y/step)}`;
               if (Math.abs(b1 - b2) > threshold) {
-                const symbol = SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
-                ctx.fillText(symbol, x, y);
+                cells[key] = { char: SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)], time: 30 };
+              }
+              
+              if (cells[key]) {
+                ctx.fillText(cells[key].char, x, y);
+                cells[key].time--;
+                if (cells[key].time <= 0) delete cells[key];
               }
             }
           }
@@ -4786,153 +5930,216 @@ export default function App() {
       }
 
       // --- 2. Invert Colors ---
-      if (effect.id === 'invert') {
-        const threshold = settings.threshold || 0;
-        const channel = Math.floor(settings.colors || 0); // 0: All, 1: R, 2: G, 3: B
-        const saturation = (settings.saturation || 100) / 100;
+      if (effect.id === 'invert' && imageData && data) {
+        const threshold = settings.threshold !== undefined ? settings.threshold : (settings.Threshold ?? 0);
+        const channel = Math.floor(settings.colors !== undefined ? settings.colors : (settings.Channel ?? 0));
+        const saturation = (settings.saturation !== undefined ? settings.saturation : (settings.Saturation ?? 100)) / 100;
 
-        for (let i = 0; i < data.length; i += 4) {
-          const r = data[i], g = data[i+1], b = data[i+2];
-          const brightness = (r + g + b) / 3;
-          
-          if (brightness >= threshold) {
-            let ir = 255 - r, ig = 255 - g, ib = 255 - b;
+        if (threshold === 0 && channel === 0 && saturation === 1) {
+          // Ultra-fast 32-bit bitwise inversion (<0.5ms on 1080p)
+          const u32 = new Uint32Array(imageData.data.buffer);
+          const len = u32.length;
+          for (let i = 0; i < len; i++) {
+            u32[i] ^= 0x00FFFFFF;
+          }
+          ctx.putImageData(imageData, 0, 0);
+        } else {
+          for (let i = 0; i < data.length; i += 4) {
+            const r = data[i], g = data[i+1], b = data[i+2];
+            const brightness = (r * 77 + g * 150 + b * 29) >> 8;
             
-            // Saturation adjustment for inverted part
-            if (saturation < 1) {
-              const invGray = (ir + ig + ib) / 3;
-              ir = invGray + (ir - invGray) * saturation;
-              ig = invGray + (ig - invGray) * saturation;
-              ib = invGray + (ib - invGray) * saturation;
-            }
+            if (brightness >= threshold) {
+              let ir = 255 - r, ig = 255 - g, ib = 255 - b;
+              
+              if (saturation < 1) {
+                const invGray = (ir * 77 + ig * 150 + ib * 29) >> 8;
+                ir = invGray + (ir - invGray) * saturation;
+                ig = invGray + (ig - invGray) * saturation;
+                ib = invGray + (ib - invGray) * saturation;
+              }
 
-            if (channel === 0) {
-              data[i] = ir;
-              data[i+1] = ig;
-              data[i+2] = ib;
-            } else if (channel === 1) {
-              data[i] = ir;
-            } else if (channel === 2) {
-              data[i+1] = ig;
-            } else if (channel === 3) {
-              data[i+2] = ib;
+              if (channel === 0) {
+                data[i] = ir;
+                data[i+1] = ig;
+                data[i+2] = ib;
+              } else if (channel === 1) {
+                data[i] = ir;
+              } else if (channel === 2) {
+                data[i+1] = ig;
+              } else if (channel === 3) {
+                data[i+2] = ib;
+              }
             }
           }
+          ctx.putImageData(imageData, 0, 0);
         }
-        ctx.putImageData(imageData, 0, 0);
       }
 
       // --- 3. Edge Detection ---
-      if (effect.id === 'edges') {
-        const thickness = Math.floor(settings.thickness || 1);
-        const glow = (settings.glow || 0) / 100;
-        const sensitivity = settings.sensitivity || 20;
+      if (effect.id === 'edges' && data) {
+        const rawThickness = settings.thickness !== undefined ? settings.thickness : (settings.Thickness ?? 1);
+        const thickness = Math.max(1, Math.round(rawThickness * resScaleFactor));
+        const sensitivity = settings.sensitivity !== undefined ? settings.sensitivity : (settings.Sensitivity ?? 20);
         
-        const edgeData = new Uint8ClampedArray(data.length);
+        const buf = getEffectBuffer(data.length, targetW, targetH);
+        const edgeU32 = buf.u32;
+        const numPixels = targetW * targetH;
+        const luma = getLumaBuffer(numPixels);
+        
+        // Pass 1: Pre-calculate 1-byte luminance
+        for (let i = 0, p = 0; p < numPixels; i += 4, p++) {
+          luma[p] = (data[i] * 77 + data[i+1] * 150 + data[i+2] * 29) >> 8;
+        }
+        
+        // Pass 2: Fast gradient difference using 1-byte array lookups (<2.5ms)
         for (let y = 0; y < targetH; y++) {
-          for (let x = 0; x < targetW; x++) {
-            const i = (y * targetW + x) * 4;
-            const val = (data[i] + data[i+1] + data[i+2]) / 3;
-            const right = (data[i + thickness * 4] + data[i + thickness * 4 + 1] + data[i + thickness * 4 + 2]) / 3 || val;
-            const down = (data[i + targetW * 4 * thickness] + data[i + targetW * 4 * thickness + 1] + data[i + targetW * 4 * thickness + 2]) / 3 || val;
-            const diff = Math.abs(val - right) + Math.abs(val - down);
-            
-            if (diff > sensitivity) {
-              edgeData[i] = edgeData[i+1] = edgeData[i+2] = 255;
-              if (glow > 0) {
-                // Simple glow simulation
-                edgeData[i+3] = 255;
-              } else {
-                edgeData[i+3] = 255;
-              }
-            } else {
-              edgeData[i+3] = 0;
-            }
+          const rowStart = y * targetW;
+          const downRowStart = Math.min(targetH - 1, y + thickness) * targetW;
+          const maxXMid = targetW - thickness;
+          
+          for (let x = 0; x < maxXMid; x++) {
+            const p = rowStart + x;
+            const diff = Math.abs(luma[p] - luma[p + thickness]) + Math.abs(luma[p] - luma[downRowStart + x]);
+            edgeU32[p] = diff > sensitivity ? 0xFFFFFFFF : 0xFF000000;
+          }
+          for (let x = Math.max(0, maxXMid); x < targetW; x++) {
+            const p = rowStart + x;
+            const diff = Math.abs(luma[p] - luma[rowStart + targetW - 1]) + Math.abs(luma[p] - luma[downRowStart + x]);
+            edgeU32[p] = diff > sensitivity ? 0xFFFFFFFF : 0xFF000000;
           }
         }
-        ctx.putImageData(new ImageData(edgeData, targetW, targetH), 0, 0);
+        ctx.putImageData(buf.imgData, 0, 0);
       }
 
       // --- 4. Pixelate ---
-      if (effect.id === 'pixelate') {
-        const cellSize = Math.floor(settings.cellSize || 20);
-        const movement = (settings.movement || 0) / 100;
-        const sensitivity = settings.sensitivity || 30;
+      if (effect.id === 'pixelate' && data) {
+        const rawCellSize = settings.cellSize !== undefined ? settings.cellSize : (settings.CellSize ?? 20);
+        const cellSize = Math.max(2, Math.round(rawCellSize * resScaleFactor));
+        const movement = (settings.movement !== undefined ? settings.movement : (settings.Movement ?? 0)) / 100;
+        const sensitivity = settings.sensitivity !== undefined ? settings.sensitivity : (settings.Sensitivity ?? 30);
         
+        const stateMap = ((window as any).__pixelateStates = (window as any).__pixelateStates || {});
+        if (!stateMap[layer.id]) stateMap[layer.id] = {};
+        const cells = stateMap[layer.id];
+
         if (localPrevFrameRef.current && movement > 0) {
           const prevData = localPrevFrameRef.current;
           for (let y = 0; y < targetH; y += cellSize) {
+            const h = Math.min(cellSize, targetH - y);
             for (let x = 0; x < targetW; x += cellSize) {
-              const i = (Math.floor(y) * targetW + Math.floor(x)) * 4;
-              const b1 = (data[i] + data[i+1] + data[i+2]) / 3;
-              const b2 = (prevData[i] + prevData[i+1] + prevData[i+2]) / 3;
+              const w = Math.min(cellSize, targetW - x);
+              const i = (y * targetW + x) << 2;
+              const b1 = (data[i] * 77 + data[i+1] * 150 + data[i+2] * 29) >> 8;
+              const b2 = (prevData[i] * 77 + prevData[i+1] * 150 + prevData[i+2] * 29) >> 8;
               
-              // If movement is high, only pixelate if change > sensitivity
-              // If movement is low, pixelate more
-              const motionDiff = Math.abs(b1 - b2);
-              const shouldPixelate = motionDiff > (sensitivity * movement);
+              const key = `${Math.floor(x/cellSize)},${Math.floor(y/cellSize)}`;
+              if (Math.abs(b1 - b2) > (sensitivity * movement)) {
+                cells[key] = { r: data[i], g: data[i+1], b: data[i+2], time: 20 };
+              }
               
-              if (shouldPixelate) {
-                const r = data[i], g = data[i+1], b = data[i+2];
-                ctx.fillStyle = `rgb(${r},${g},${b})`;
-                ctx.fillRect(x, y, cellSize, cellSize);
+              if (cells[key]) {
+                const c = cells[key];
+                ctx.fillStyle = `rgb(${c.r},${c.g},${c.b})`;
+                ctx.fillRect(x, y, w, h);
+                c.time--;
+                if (c.time <= 0) delete cells[key];
               }
             }
           }
         } else {
-          // Standard pixelate (affects all)
           for (let y = 0; y < targetH; y += cellSize) {
+            const h = Math.min(cellSize, targetH - y);
             for (let x = 0; x < targetW; x += cellSize) {
-              const i = (Math.floor(y) * targetW + Math.floor(x)) * 4;
-              if (i >= data.length) continue;
-              const r = data[i], g = data[i+1], b = data[i+2];
-              ctx.fillStyle = `rgb(${r},${g},${b})`;
-              ctx.fillRect(x, y, cellSize, cellSize);
+              const w = Math.min(cellSize, targetW - x);
+              const i = (y * targetW + x) << 2;
+              ctx.fillStyle = `rgb(${data[i]},${data[i+1]},${data[i+2]})`;
+              ctx.fillRect(x, y, w, h);
             }
           }
         }
       }
 
       // --- 5. RGB Shift (Glitch) ---
-      if (effect.id === 'rgb-shift') {
-        const distance = settings.distance || 10;
-        const saturation = (settings.saturation || 100) / 100;
-        const jitter = settings.jitter || 0;
+      if (effect.id === 'rgb-shift' && data) {
+        const distance = settings.distance !== undefined ? settings.distance : (settings.Distance ?? 10);
+        const saturation = (settings.saturation !== undefined ? settings.saturation : (settings.Saturation ?? 100)) / 100;
+        const jitter = settings.jitter !== undefined ? settings.jitter : (settings.Jitter ?? 0);
         
-        const shift = distance + (Math.random() - 0.5) * jitter;
-        const offData = new Uint8ClampedArray(data.length);
+        const scaledDistance = distance * resScaleFactor;
+        const scaledJitter = jitter * resScaleFactor;
+        const shift = scaledDistance + (Math.random() - 0.5) * scaledJitter;
+        const shiftX = Math.round(shift);
         
-        for (let i = 0; i < data.length; i += 4) {
-          const x = (i / 4) % targetW;
-          const y = Math.floor((i / 4) / targetW);
+        const buf = getEffectBuffer(data.length, targetW, targetH);
+        const outU32 = buf.u32;
+        
+        if (shiftX === 0 && saturation === 1) {
+          // No shift needed
+        } else if (saturation === 1) {
+          // Ultra-fast 32-bit direct word writes with zero bounds checking in the main loop
+          const sX = shiftX;
+          const absX = Math.abs(sX);
+          const leftEnd = Math.min(targetW, absX);
+          const rightStart = Math.max(leftEnd, targetW - absX);
           
-          // Red channel
-          const rx = Math.min(targetW - 1, Math.max(0, x + shift));
-          const ri = (y * targetW + Math.floor(rx)) * 4;
-          let r = data[ri];
-          
-          // Green channel
-          let g = data[i+1];
-          
-          // Blue channel
-          const bx = Math.min(targetW - 1, Math.max(0, x - shift));
-          const bi = (y * targetW + Math.floor(bx)) * 4;
-          let b = data[bi];
-
-          // Apply saturation to shifted colors
-          if (saturation !== 1) {
-            const gray = (r + g + b) / 3;
-            r = gray + (r - gray) * saturation;
-            g = gray + (g - gray) * saturation;
-            b = gray + (b - gray) * saturation;
+          for (let y = 0; y < targetH; y++) {
+            const rowOffset = (y * targetW) << 2;
+            const rowStart = y * targetW;
+            
+            // Left edge
+            for (let x = 0; x < leftEnd; x++) {
+              const rx = Math.min(targetW - 1, Math.max(0, x + sX)) << 2;
+              const bx = Math.min(targetW - 1, Math.max(0, x - sX)) << 2;
+              const gx = x << 2;
+              outU32[rowStart + x] = 0xFF000000 | (data[rowOffset + bx + 2] << 16) | (data[rowOffset + gx + 1] << 8) | data[rowOffset + rx];
+            }
+            // Center (bulk of the row, safely away from edges)
+            for (let x = leftEnd; x < rightStart; x++) {
+              const rx = (x + sX) << 2;
+              const bx = (x - sX) << 2;
+              const gx = x << 2;
+              outU32[rowStart + x] = 0xFF000000 | (data[rowOffset + bx + 2] << 16) | (data[rowOffset + gx + 1] << 8) | data[rowOffset + rx];
+            }
+            // Right edge
+            for (let x = rightStart; x < targetW; x++) {
+              const rx = Math.min(targetW - 1, Math.max(0, x + sX)) << 2;
+              const bx = Math.min(targetW - 1, Math.max(0, x - sX)) << 2;
+              const gx = x << 2;
+              outU32[rowStart + x] = 0xFF000000 | (data[rowOffset + bx + 2] << 16) | (data[rowOffset + gx + 1] << 8) | data[rowOffset + rx];
+            }
           }
+          ctx.putImageData(buf.imgData, 0, 0);
+        } else {
+          // Customized saturation path
+          const sX = shiftX;
+          const leftEnd = Math.min(targetW, Math.max(0, sX));
+          const rightStart = Math.max(leftEnd, targetW - sX);
           
-          offData[i] = r;
-          offData[i+1] = g;
-          offData[i+2] = b;
-          offData[i+3] = 255;
+          for (let y = 0; y < targetH; y++) {
+            const rowOffset = (y * targetW) << 2;
+            const rowStart = y * targetW;
+            
+            for (let x = 0; x < targetW; x++) {
+              // We'll keep the Math.min for the saturation path because it's less commonly used 
+              // and the saturation math is the main bottleneck there anyway.
+              const rx = Math.min(targetW - 1, Math.max(0, x + sX)) << 2;
+              const bx = Math.min(targetW - 1, Math.max(0, x - sX)) << 2;
+              const gx = x << 2;
+              
+              let r = data[rowOffset + rx];
+              let g = data[rowOffset + gx + 1];
+              let b = data[rowOffset + bx + 2];
+              
+              const gray = (r + g + b) * 0.333333;
+              r = (gray + (r - gray) * saturation) | 0;
+              g = (gray + (g - gray) * saturation) | 0;
+              b = (gray + (b - gray) * saturation) | 0;
+              
+              outU32[rowStart + x] = 0xFF000000 | (b << 16) | (g << 8) | r;
+            }
+          }
+          ctx.putImageData(buf.imgData, 0, 0);
         }
-        ctx.putImageData(new ImageData(offData, targetW, targetH), 0, 0);
       }
 
       // --- 7. Hue Rotate ---
@@ -4944,7 +6151,7 @@ export default function App() {
         const hue = (now * speed / 100) % range;
         ctx.save();
         ctx.filter = `hue-rotate(${hue}deg) saturate(${saturation}%)`;
-        ctx.drawImage(canvas, 0, 0);
+        ctx.drawImage(rawCanvas, 0, 0);
         ctx.restore();
       }
 
@@ -4957,10 +6164,10 @@ export default function App() {
         ctx.save();
         
         // 1. Color Bleed (Red Shift)
-        if (bleed > 0 && bufferCanvasRef.current) {
+        if (bleed > 0) {
           ctx.globalCompositeOperation = 'screen';
           ctx.globalAlpha = bleed / 200;
-          ctx.drawImage(bufferCanvasRef.current, bleed / 5, 0);
+          ctx.drawImage(rawCanvas, bleed / 5, 0);
           ctx.globalCompositeOperation = 'source-over';
           ctx.globalAlpha = 1.0;
         }
@@ -4969,7 +6176,7 @@ export default function App() {
         if (tracking > 0) {
           const jump = (Math.sin(now / 500) * tracking);
           if (Math.random() < 0.05) {
-            ctx.drawImage(canvas, 0, jump, targetW, targetH, 0, 0, targetW, targetH);
+            ctx.drawImage(rawCanvas, 0, jump, targetW, targetH, 0, 0, targetW, targetH);
           }
           
           // Horizontal wavy distortion
@@ -4977,7 +6184,7 @@ export default function App() {
             const sy = Math.random() * targetH;
             const sh = 2 + Math.random() * 5;
             const sx = (Math.sin(now / 100 + sy) * tracking / 2);
-            ctx.drawImage(canvas, 0, sy, targetW, sh, sx, sy, targetW, sh);
+            ctx.drawImage(rawCanvas, 0, sy, targetW, sh, sx, sy, targetW, sh);
           }
         }
 
@@ -5004,10 +6211,11 @@ export default function App() {
       }
 
       // --- 8a. Dithering ---
-      if (effect.id === 'dithering') {
-        const scale = Math.floor(settings.scale || 2);
-        const contrast = (settings.contrast || 100) / 100;
-        const hueShift = settings.hue || 0;
+      if (effect.id === 'dithering' && data) {
+        const rawScale = settings.scale !== undefined ? settings.scale : (settings.Scale ?? 2);
+        const scale = Math.max(1, Math.round(rawScale * scaleFactor));
+        const contrast = (settings.contrast !== undefined ? settings.contrast : (settings.Contrast ?? 100)) / 100;
+        const hueShift = settings.hue !== undefined ? settings.hue : (settings.Hue ?? 0);
         
         const bayer = [
           [0, 8, 2, 10],
@@ -5016,27 +6224,27 @@ export default function App() {
           [15, 7, 13, 5]
         ];
 
-        const ditherData = ctx.createImageData(targetW, targetH);
-        const dData = ditherData.data;
+        const buf = getEffectBuffer(data.length, targetW, targetH);
+        const dData = buf.data;
 
         for (let y = 0; y < targetH; y += scale) {
-          const rowOffset = y * targetW;
-          const bayerRow = bayer[(y / scale) % 4];
+          const bayerRow = bayer[Math.floor(y / scale) & 3];
+          const maxDy = Math.min(scale, targetH - y);
           for (let x = 0; x < targetW; x += scale) {
-            const i = (rowOffset + x) * 4;
-            const r = data[i];
-            const g = data[i+1];
-            const b = data[i+2];
-            
-            const brightness = (r * 0.299 + g * 0.587 + b * 0.114) * contrast;
-            const threshold = (bayerRow[(x / scale) % 4] / 16) * 255;
+            const i = (y * targetW + x) << 2;
+            const r = data[i], g = data[i+1], b = data[i+2];
+            const brightness = ((r * 77 + g * 150 + b * 29) >> 8) * contrast;
+            const threshold = (bayerRow[Math.floor(x / scale) & 3] << 4);
             const val = brightness > threshold ? 255 : 0;
             
-            // Fill the block in the image data
-            for (let dy = 0; dy < scale && y + dy < targetH; dy++) {
-              for (let dx = 0; dx < scale && x + dx < targetW; dx++) {
-                const di = ((y + dy) * targetW + (x + dx)) * 4;
-                dData[di] = dData[di+1] = dData[di+2] = val;
+            const maxDx = Math.min(scale, targetW - x);
+            for (let dy = 0; dy < maxDy; dy++) {
+              const rowOffset = ((y + dy) * targetW + x) << 2;
+              for (let dx = 0; dx < maxDx; dx++) {
+                const di = rowOffset + (dx << 2);
+                dData[di] = val;
+                dData[di+1] = val;
+                dData[di+2] = val;
                 dData[di+3] = 255;
               }
             }
@@ -5045,7 +6253,7 @@ export default function App() {
         
         ctx.save();
         if (hueShift !== 0) ctx.filter = `hue-rotate(${hueShift}deg)`;
-        ctx.putImageData(ditherData, 0, 0);
+        ctx.putImageData(buf.imgData, 0, 0);
         ctx.restore();
       }
 
@@ -5082,24 +6290,26 @@ export default function App() {
         // 3. Draw characters from atlas
         if (hueShift !== 0) ctx.filter = `hue-rotate(${hueShift}deg)`;
         
-        for (let y = 0; y < targetH; y += fontSize) {
-          for (let x = 0; x < targetW; x += fontSize) {
-            const i = (Math.floor(y) * targetW + Math.floor(x)) * 4;
-            if (i >= data.length) continue;
-            
-            const r = data[i], g = data[i+1], b = data[i+2];
-            const brightness = (r + g + b) / 3;
-            
-            // Skip drawing for very dark pixels to save performance
-            if (brightness < 10) continue;
-            
-            const charIdx = Math.floor((brightness / 255) * (chars.length - 1));
-            
-            ctx.drawImage(
-              asciiAtlasRef.current!,
-              charIdx * fontSize, 0, fontSize, fontSize,
-              x, y, fontSize, fontSize
-            );
+        if (data) {
+          for (let y = 0; y < targetH; y += fontSize) {
+            for (let x = 0; x < targetW; x += fontSize) {
+              const i = (Math.floor(y) * targetW + Math.floor(x)) * 4;
+              if (i >= data.length) continue;
+              
+              const r = data[i], g = data[i+1], b = data[i+2];
+              const brightness = (r + g + b) / 3;
+              
+              // Skip drawing for very dark pixels to save performance
+              if (brightness < 10) continue;
+              
+              const charIdx = Math.floor((brightness / 255) * (chars.length - 1));
+              
+              ctx.drawImage(
+                asciiAtlasRef.current!,
+                charIdx * fontSize, 0, fontSize, fontSize,
+                x, y, fontSize, fontSize
+              );
+            }
           }
         }
         
@@ -5107,7 +6317,7 @@ export default function App() {
       }
 
       // --- 9. Motion Detector ---
-      if (effect.id === 'motion-detector' && localPrevFrameRef.current) {
+      if (effect.id === 'motion-detector' && localPrevFrameRef.current && data) {
         const sensitivity = settings.sensitivity || 30;
         const maxObjects = settings.maxObjects || 10;
         const thickness = settings.thickness || 2;
@@ -5183,8 +6393,8 @@ export default function App() {
           const rw = (obj.x2 - obj.x1 + 1) * gridSize;
           const rh = (obj.y2 - obj.y1 + 1) * gridSize;
           
-          // Draw the object content from the original video
-          ctx.drawImage(videoRef.current!, rx, ry, rw, rh, rx, ry, rw, rh);
+          // Draw the object content from the original video / rawCanvas
+          ctx.drawImage(rawCanvas, rx, ry, rw, rh, rx, ry, rw, rh);
           
           // Draw box with white outline for visibility on black
           ctx.strokeStyle = '#ffffff';
@@ -5250,7 +6460,7 @@ export default function App() {
       }
 
       // --- 11. Windows 98 ---
-      if (effect.id === 'windows-98' && localPrevFrameRef.current) {
+      if (effect.id === 'windows-98' && localPrevFrameRef.current && data) {
         const sensitivity = settings.sensitivity || 30;
         const maxObjects = settings.maxObjects || 10;
         const thickness = settings.thickness || 2;
@@ -5373,7 +6583,7 @@ export default function App() {
       }
 
       // --- 12. Glitch ---
-      if (effect.id === 'glitch-box' && localPrevFrameRef.current) {
+      if (effect.id === 'glitch-box' && localPrevFrameRef.current && data) {
         const sensitivity = settings.sensitivity || 30;
         const maxObjects = settings.maxObjects || 10;
         const strength = 0.7; // Fixed high intensity
@@ -5646,6 +6856,13 @@ export default function App() {
 
     } // <-- Added closing bracket for if (mappingsToProcess.length > 0)
 
+      if (needsPrevFrame && data) {
+        if (!prevFrameRef.current[layer.id] || prevFrameRef.current[layer.id].length !== data.length) {
+          prevFrameRef.current[layer.id] = new Uint8ClampedArray(data.length);
+        }
+        prevFrameRef.current[layer.id].set(data);
+      }
+
       let opacityMult = 1.0;
       if (layer.midiMode) {
           // Advance mode: always visible
@@ -5808,31 +7025,174 @@ export default function App() {
     return () => cancelAnimationFrame(requestRef.current);
   }, [isPlaying, processFrame]);
 
-  // --- Handlers ---
+  // --- Asset Import & Layer Assignment Engine ---
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, layerId: string) => {
-    const file = e.target.files?.[0];
-    if (file && layerId) {
+  const importAssetFiles = (files: File[], targetLayerId?: string) => {
+    if (!files || files.length === 0) return;
+
+    const validFiles = files.filter(f => f.type.startsWith('video/') || f.type.startsWith('image/'));
+    if (validFiles.length === 0) return;
+
+    const preloadImg = (id: string, src: string) => {
+      try {
+        const img = new Image();
+        img.src = src;
+        imageRefs.current[id] = img;
+      } catch(e) {}
+    };
+
+    const createdLayers: Layer[] = [];
+
+    validFiles.forEach((file, idx) => {
       const url = URL.createObjectURL(file);
       const isVideo = file.type.startsWith('video/');
-      const assetPath = (file as any).path;
-      
-      setLayers(prev => prev.map(l => l.id === layerId ? {
-        ...l,
-        assetPath,
-        missingAsset: false,
-        src: url,
-        type: isVideo ? 'video' : 'image',
-        name: file.name,
-        mappings: [],
-        generativeSettings: {},
-        generativeMappings: [],
-        generativeTriggerActive: {},
-        generativeTriggerAmount: {}
-      } : l));
-      
-      setIsPlaying(false);
-      setStatus('READY');
+      const newId = `layer-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`;
+
+      if (!isVideo) {
+        preloadImg(targetLayerId && idx === 0 ? targetLayerId : newId, url);
+      }
+
+      if (idx === 0 && targetLayerId) {
+        // Target layer will be updated directly
+      } else {
+        createdLayers.push({
+          id: newId,
+          name: file.name,
+          type: isVideo ? 'video' : 'image',
+          src: url,
+          opacity: 1,
+          blendMode: 'source-over',
+          filterId: null,
+          filterSettings: {},
+          isVisible: true,
+          isActive: false,
+          midiMode: false,
+          videoTriggerMode: 'continuous',
+          triggerMapping: { ...DEFAULT_TRIGGER_MAPPING, channels: Array.from({length: 16}, (_, i) => i), noteSettings: { ...DEFAULT_NOTE_SETTINGS } },
+          mappings: [],
+          rhythmMapping: { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: Array(16).fill(false) },
+          isMuted: false,
+          isSoloed: false
+        });
+      }
+    });
+
+    setLayers(prev => {
+      let nextLayers: Layer[];
+      if (targetLayerId) {
+        const firstFile = validFiles[0];
+        const firstIsVideo = firstFile.type.startsWith('video/');
+        const firstUrl = URL.createObjectURL(firstFile);
+        if (!firstIsVideo) preloadImg(targetLayerId, firstUrl);
+
+        const updated = prev.map(l => l.id === targetLayerId ? {
+          ...l,
+          missingMedia: false,
+          src: firstUrl,
+          type: firstIsVideo ? 'video' : 'image',
+          name: firstFile.name,
+          videoTriggerMode: 'continuous' as const,
+          triggerMapping: l.triggerMapping || { ...DEFAULT_TRIGGER_MAPPING, channels: Array.from({length: 16}, (_, i) => i), noteSettings: { ...DEFAULT_NOTE_SETTINGS } },
+          rhythmMapping: l.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor' as const, bpm: 120, customPattern: Array(16).fill(false) },
+          mappings: [],
+          generativeSettings: {},
+          generativeMappings: [],
+          generativeTriggerActive: {},
+          generativeTriggerAmount: {}
+        } : l);
+
+        nextLayers = [...updated, ...createdLayers];
+      } else {
+        // If there's only 1 default empty layer, populate it with first file and append the rest
+        if (prev.length === 1 && !prev[0].src && prev[0].type !== 'generative') {
+          const firstFile = validFiles[0];
+          const firstIsVideo = firstFile.type.startsWith('video/');
+          const firstUrl = URL.createObjectURL(firstFile);
+          if (!firstIsVideo) preloadImg(prev[0].id, firstUrl);
+
+          const firstUpdated: Layer = {
+            ...prev[0],
+            name: firstFile.name,
+            type: firstIsVideo ? 'video' : 'image',
+            src: firstUrl,
+            missingMedia: false,
+            triggerMapping: prev[0].triggerMapping || { ...DEFAULT_TRIGGER_MAPPING, channels: Array.from({length: 16}, (_, i) => i), noteSettings: { ...DEFAULT_NOTE_SETTINGS } },
+            rhythmMapping: prev[0].rhythmMapping || { enabled: false, pattern: '4-on-the-Floor' as const, bpm: 120, customPattern: Array(16).fill(false) }
+          };
+          const additional = validFiles.slice(1).map((file, idx) => {
+            const isVid = file.type.startsWith('video/');
+            const newId = `layer-${Date.now()}-${idx+1}-${Math.random().toString(36).substring(2, 6)}`;
+            const url = URL.createObjectURL(file);
+            if (!isVid) preloadImg(newId, url);
+            return {
+              id: newId,
+              name: file.name,
+              type: (isVid ? 'video' : 'image') as 'video' | 'image',
+              src: url,
+              opacity: 1,
+              blendMode: 'source-over' as GlobalCompositeOperation,
+              filterId: null,
+              filterSettings: {},
+              isVisible: true,
+              isActive: false,
+              midiMode: false,
+              videoTriggerMode: 'continuous' as const,
+              triggerMapping: { ...DEFAULT_TRIGGER_MAPPING, channels: Array.from({length: 16}, (_, i) => i), noteSettings: { ...DEFAULT_NOTE_SETTINGS } },
+              mappings: [],
+              rhythmMapping: { enabled: false, pattern: '4-on-the-Floor' as const, bpm: 120, customPattern: Array(16).fill(false) },
+              isMuted: false,
+              isSoloed: false
+            };
+          });
+          nextLayers = [firstUpdated, ...additional];
+        } else {
+          const allNew: Layer[] = validFiles.map((file, idx) => {
+            const isVideo = file.type.startsWith('video/');
+            const newId = `layer-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`;
+            const url = URL.createObjectURL(file);
+            if (!isVideo) preloadImg(newId, url);
+            return {
+              id: newId,
+              name: file.name,
+              type: isVideo ? 'video' : 'image',
+              src: url,
+              opacity: 1,
+              blendMode: 'source-over',
+              filterId: null,
+              filterSettings: {},
+              isVisible: true,
+              isActive: false,
+              midiMode: false,
+              videoTriggerMode: 'continuous',
+              triggerMapping: { ...DEFAULT_TRIGGER_MAPPING, channels: Array.from({length: 16}, (_, i) => i), noteSettings: { ...DEFAULT_NOTE_SETTINGS } },
+              mappings: [],
+              rhythmMapping: { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: Array(16).fill(false) },
+              isMuted: false,
+              isSoloed: false
+            };
+          });
+          nextLayers = [...prev, ...allNew];
+        }
+      }
+      layersRef.current = nextLayers;
+      return nextLayers;
+    });
+
+    if (targetLayerId) {
+      setActiveLayerId(targetLayerId);
+    } else if (createdLayers.length > 0) {
+      setActiveLayerId(createdLayers[0].id);
+    } else {
+      setActiveLayerId('layer-1');
+    }
+
+    setShowAssetBrowser(false);
+    setStatus('READY');
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, layerId: string) => {
+    if (e.target.files && e.target.files.length > 0) {
+      importAssetFiles(Array.from(e.target.files), layerId);
     }
   };
 
@@ -5847,6 +7207,15 @@ export default function App() {
   const togglePlay = () => {
     setIsPlaying(!isPlaying);
     setStatus(!isPlaying ? 'ENGINE ACTIVE' : 'PAUSED');
+    
+    // Sync Audio Engine with Global Play State
+    if (!isPlaying) {
+      engine.playAll();
+      setAudioPlaying(true);
+    } else {
+      engine.stopAll();
+      setAudioPlaying(false);
+    }
     
     // Toggle all video layers
     layers.forEach(layer => {
@@ -5913,13 +7282,8 @@ export default function App() {
       
       const initialSettings: Record<string, any> = {};
       def.parameters.forEach(p => {
-        initialSettings[p.id] = p.min + (p.max - p.min) / 2;
-        if (def.id === 'invert') {
-          if (p.id === 'colors') initialSettings[p.id] = 0;
-          if (p.id === 'saturation') initialSettings[p.id] = 100;
-          if (p.id === 'threshold') initialSettings[p.id] = 0;
-        }
-        if (p.type === 'binary') initialSettings[p.id] = p.min;
+        initialSettings[p.id] = p.default !== undefined ? p.default : (p.min + (p.max - p.min) / 2);
+        if (p.type === 'binary') initialSettings[p.id] = p.default !== undefined ? p.default : p.min;
       });
 
       const newMapping: EffectMapping = {
@@ -5929,8 +7293,8 @@ export default function App() {
         channels: Array.from({length: 16}, (_, i) => i),
         noteStart: 0,
         noteEnd: 127,
-        active: false,
-        manualActive: false,
+        active: true,
+        manualActive: true,
         isMuted: false,
         isSoloed: false,
         settings: initialSettings,
@@ -5943,10 +7307,10 @@ export default function App() {
       return { ...l, mappings: [...l.mappings, newMapping] };
     }));
     
-    // setSelectedEffectId(def.id);
-    // setSelectedLayerForEffect(layerId);
-    setExpandedSection(`effects-${layerId}`);
-    // No longer closing the browser so multiple effects can be added
+    setSelectedEffectId(def.id);
+    setSelectedLayerForEffect(layerId);
+    setActiveLayerId(layerId);
+    setExpandedSection('layers');
   };
 
   const removeAllEffects = (layerId: string) => {
@@ -5958,7 +7322,18 @@ export default function App() {
   };
 
   const removeEffect = (layerId: string, effectId: string) => {
-    setLayers(prev => prev.map(l => l.id === layerId ? { ...l, mappings: l.mappings.filter(m => m.id !== effectId) } : l));
+    setLayers(prev => prev.map(l => {
+      if (l.id !== layerId) return l;
+      const newBindings = l.ccBindings ? { ...l.ccBindings } : undefined;
+      if (newBindings) {
+        for (const key of Object.keys(newBindings)) {
+          if (key.startsWith(`effect-${effectId}-`)) {
+            delete newBindings[key];
+          }
+        }
+      }
+      return { ...l, mappings: l.mappings.filter(m => m.id !== effectId), ccBindings: newBindings };
+    }));
     if (selectedLayerForEffect === layerId && selectedEffectId === effectId) {
       setSelectedEffectId(null);
       setSelectedLayerForEffect(null);
@@ -6048,17 +7423,6 @@ export default function App() {
             <Radio size={11} className={isMidiLearnMode ? 'animate-spin' : ''} />
             MIDI Learn {isMidiLearnMode ? 'ACTIVE' : ''}
           </button>
-
-          <button 
-            onClick={requestWakeLock}
-            className={`flex items-center gap-1.5 pl-3 border-l border-white/10 transition-colors ${isWakeLockActive ? 'text-amber-400 opacity-90' : 'text-white/30 hover:text-white/60'}`}
-            title={isWakeLockActive ? 'Tablet Screen Keep-Awake Active (Screen will not sleep during MIDI activity)' : 'Click to enable Screen Keep-Awake'}
-          >
-            <Sun size={11} className={isWakeLockActive ? 'animate-pulse' : ''} />
-            <span className="text-[8px] font-mono tracking-widest uppercase">
-              {isWakeLockActive ? 'AWAKE' : 'KEEP AWAKE'}
-            </span>
-          </button>
         </div>
         
         <h1 className="text-xs font-light tracking-[0.5em] uppercase opacity-80 hidden xl:block absolute left-1/2 -translate-x-1/2 pointer-events-none">Glitch Pulse</h1>
@@ -6145,37 +7509,84 @@ export default function App() {
             isExpanded={expandedSection === 'layers'} 
             onToggle={() => setExpandedSection(expandedSection === 'layers' ? null : 'layers')}
           >
-            <div className="p-2 space-y-2">
-              <button 
-                onClick={() => {
-                  const newId = `layer-${Date.now()}`;
-                  setLayers(prev => [...prev, {
-                    id: newId,
-                    name: `Layer ${prev.length + 1}`,
-                    type: 'video',
-                    src: null,
-                    opacity: 1,
-                    blendMode: 'source-over',
-                    filterId: null,
-                    filterSettings: {},
-                    isVisible: true,
-                    isActive: false,
-                    midiMode: false,
-                    triggerMapping: { ...DEFAULT_TRIGGER_MAPPING },
-                    mappings: [],
-                    rhythmMapping: { enabled: false, pattern: '4-on-the-Floor', target: 'opacity', bpm: 120 },
-                    isMuted: false,
-                    isSoloed: false
-                  }]);
-                  setActiveLayerId(newId);
-                  setSelectedEffectId(null);
-                  setSelectedLayerForEffect(null);
-                }}
-                className="w-full p-2 rounded border border-dashed border-white/10 hover:border-white/30 hover:bg-transparent transition-all text-[10px] uppercase tracking-widest opacity-40 hover:opacity-100 flex items-center justify-center gap-2"
-              >
-                <Plus size={12} />
-                Add Layer
-              </button>
+            <div 
+              className={`p-2 space-y-2 relative transition-all rounded ${isDraggingOverVisuals ? 'bg-red-950/20 ring-1 ring-red-500/50' : ''}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!isDraggingOverVisuals) setIsDraggingOverVisuals(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  setIsDraggingOverVisuals(false);
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDraggingOverVisuals(false);
+                setDragOverLayerId(null);
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  importAssetFiles(Array.from(e.dataTransfer.files));
+                }
+              }}
+            >
+              <div className="flex gap-1.5">
+                <button 
+                  onClick={() => {
+                    const newId = `layer-${Date.now()}`;
+                    setLayers(prev => [...prev, {
+                      id: newId,
+                      name: `Layer ${prev.length + 1}`,
+                      type: 'video',
+                      src: null,
+                      opacity: 1,
+                      blendMode: 'source-over',
+                      filterId: null,
+                      filterSettings: {},
+                      isVisible: true,
+                      isActive: false,
+                      midiMode: false,
+                      triggerMapping: { ...DEFAULT_TRIGGER_MAPPING },
+                      mappings: [],
+                      rhythmMapping: { enabled: false, pattern: '4-on-the-Floor', target: 'opacity', bpm: 120 },
+                      isMuted: false,
+                      isSoloed: false
+                    }]);
+                    setActiveLayerId(newId);
+                    setSelectedEffectId(null);
+                    setSelectedLayerForEffect(null);
+                  }}
+                  className="flex-1 p-2 rounded border border-dashed border-white/10 hover:border-white/30 hover:bg-transparent transition-all text-[10px] uppercase tracking-widest opacity-40 hover:opacity-100 flex items-center justify-center gap-2"
+                >
+                  <Plus size={12} />
+                  Add Layer
+                </button>
+                <label className="p-2 px-3 rounded border border-dashed border-white/10 hover:border-white/30 hover:bg-transparent transition-all text-[10px] uppercase tracking-widest opacity-40 hover:opacity-100 flex items-center justify-center gap-1.5 cursor-pointer" title="Import multiple media files as layers">
+                  <Upload size={12} />
+                  <input 
+                    type="file" 
+                    multiple 
+                    accept="video/*,image/*" 
+                    className="hidden" 
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files.length > 0) {
+                        importAssetFiles(Array.from(e.target.files));
+                      }
+                      e.target.value = '';
+                    }} 
+                  />
+                </label>
+              </div>
+
+              {isDraggingOverVisuals && (
+                <div className="p-2.5 border border-dashed border-red-500/60 bg-red-600/10 rounded flex items-center justify-center gap-2 text-red-400 animate-pulse">
+                  <Upload size={14} />
+                  <span className="text-[8px] font-mono uppercase tracking-widest font-bold">Drop files here to create layers</span>
+                </div>
+              )}
 
               <Reorder.Group axis="y" values={layers} onReorder={setLayers} className="space-y-1">
                 {layers.map(layer => (
@@ -6183,8 +7594,42 @@ export default function App() {
                     key={layer.id}
                     value={layer}
                     onDragStart={() => { setActiveLayerId(layer.id); setSelectedEffectId(null); setSelectedLayerForEffect(null); }}
-                    className={`p-2 rounded-none border transition-all cursor-pointer group ${activeLayerId === layer.id ? 'border-white bg-[#111]' : 'bg-transparent border-transparent hover:border-white/20'}`}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (dragOverLayerId !== layer.id) setDragOverLayerId(layer.id);
+                    }}
+                    onDragLeave={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (dragOverLayerId === layer.id) setDragOverLayerId(null);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setDragOverLayerId(null);
+                      setIsDraggingOverVisuals(false);
+                      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                        importAssetFiles(Array.from(e.dataTransfer.files), layer.id);
+                      }
+                    }}
+                    onClick={() => { setActiveLayerId(layer.id); setSelectedEffectId(null); setSelectedLayerForEffect(null); }}
+                    className={`p-2 rounded-none border transition-all cursor-pointer group relative ${
+                      dragOverLayerId === layer.id 
+                        ? 'border-red-500 bg-red-600/20 shadow-[0_0_15px_rgba(239,68,68,0.3)]' 
+                        : activeLayerId === layer.id 
+                          ? 'border-white bg-[#111]' 
+                          : 'bg-transparent border-transparent hover:border-white/20'
+                    }`}
                   >
+                    {dragOverLayerId === layer.id && (
+                      <div className="absolute inset-0 bg-red-950/85 backdrop-blur-xs border border-red-500 flex items-center justify-center gap-1.5 z-20 pointer-events-none">
+                        <Upload size={12} className="text-red-400 animate-bounce" />
+                        <span className="text-[8px] font-mono font-bold uppercase tracking-wider text-red-300">
+                          Drop to assign asset
+                        </span>
+                      </div>
+                    )}
                     <div className="flex items-center justify-between" onClick={() => { setActiveLayerId(layer.id); setSelectedEffectId(null); setSelectedLayerForEffect(null); }}>
                       <div className="flex items-center gap-2 min-w-0">
                         <GripVertical size={14} className="opacity-20 cursor-grab active:cursor-grabbing hover:opacity-100 transition-opacity" />
@@ -6222,24 +7667,61 @@ export default function App() {
                             e.stopPropagation();
                             setActiveLayerId(layer.id);
                             setSelectedEffectId(null);
-                            setSidebarTab('triggers');
+                            setSelectedLayerForEffect(null);
+                            if (layer.midiMode) {
+                              // Toggle OFF
+                              setLayers(prev => prev.map(l => l.id === layer.id ? {
+                                ...l,
+                                midiMode: false,
+                                audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false },
+                                rhythmMapping: { ...(l.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false }
+                              } : l));
+                            } else {
+                              // Toggle ON (default to MIDI!)
+                              setLayers(prev => prev.map(l => l.id === layer.id ? {
+                                ...l,
+                                midiMode: true,
+                                audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false },
+                                rhythmMapping: { ...(l.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false }
+                              } : l));
+                              setSidebarTab('triggers');
+                            }
                           }}
-                          className={`p-1 rounded hover:text-white transition-colors ${layer.midiMode ? 'text-red-500' : 'text-white/20'}`}
-                          title="Trigger settings"
+                          className={`p-1 rounded hover:text-white transition-colors ${layer.midiMode ? 'text-red-500 bg-red-500/10' : 'text-white/20'}`}
+                          title={layer.midiMode ? "Trigger Active (Click to turn off)" : "Click to activate MIDI Trigger"}
                         >
                           <Zap size={12} />
                         </button>
                         <button 
                           onClick={(e) => {
                             e.stopPropagation();
-                            setActiveMaskMenuLayerId(prev => prev === layer.id ? null : layer.id);
+                            if (layer.maskTargetId) {
+                              // Deactivate Mask
+                              setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, maskTargetId: null } : l));
+                              setActiveMaskMenuLayerId(null);
+                            } else {
+                              // Activate Mask: pick the other layer as default target
+                              const otherLayer = layers.find(l => l.id !== layer.id);
+                              const defaultTarget = otherLayer ? otherLayer.id : null;
+                              setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, maskTargetId: defaultTarget } : l));
+                              setActiveMaskMenuLayerId(layer.id);
+                            }
                           }}
                           className={`p-1 rounded transition-colors ${layer.maskTargetId ? 'text-purple-400 bg-purple-500/20' : 'text-white/30 hover:text-white hover:bg-white/5'}`}
-                          title={layer.maskTargetId ? `Masking Layer (Click to configure)` : `Track Matte / Mask settings`}
+                          title={layer.maskTargetId ? "Mask Active (Click to deactivate mask)" : "Click to activate Mask / Track Matte"}
                         >
                           <Blend size={12} />
                         </button>
-                        <span className="text-[11px] font-medium truncate opacity-80 ml-1" title={layer.name}>Layer {layers.findIndex(l => l.id === layer.id) + 1}: {layer.name.length > 20 ? layer.name.slice(0, 20) + '...' : layer.name}</span>
+                        {(() => {
+                          const displayName = layer.type === 'generative' 
+                            ? (generativesRef.current.find(g => g.uuid === layer.generativeId)?.description || layer.name || 'Generative Script') 
+                            : layer.name;
+                          return (
+                            <span className="text-[11px] font-medium truncate opacity-80 ml-1" title={displayName}>
+                              Layer {layers.findIndex(l => l.id === layer.id) + 1}: {displayName.length > 20 ? displayName.slice(0, 20) + '...' : displayName}
+                            </span>
+                          );
+                        })()}
                         {layer.maskTargetId && (
                           <span className="px-1.5 py-0.5 rounded text-[8px] font-mono font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex-shrink-0" title={`Masking Layer`}>
                             MASK ➔ L{layers.findIndex(l => l.id === layer.maskTargetId) + 1}{layer.maskInverted ? ' [INV]' : ''}
@@ -6283,6 +7765,17 @@ export default function App() {
                             if (layers.length > 1) {
                               setLayers(prev => prev.filter(l => l.id !== layer.id));
                               if (activeLayerId === layer.id) setActiveLayerId(layers[0].id);
+                            } else {
+                              setLayers(prev => prev.map(l => l.id === layer.id ? { 
+                                ...l, 
+                                name: 'Empty Layer',
+                                src: null, 
+                                type: 'video', 
+                                videoTriggerMode: 'continuous',
+                                mappings: [], 
+                                filterId: null 
+                              } : l));
+                              if (videoRefs.current[layer.id]) videoRefs.current[layer.id].src = '';
                             }
                           }}
                           className="p-1 hover:bg-red-500/20 rounded text-red-500/50 hover:text-red-500 transition-colors"
@@ -6379,9 +7872,7 @@ export default function App() {
                       </div>
                     )}
                     {activeLayerId === layer.id && (
-                      <motion.div 
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
+                      <div 
                         className="mt-2 pt-2 border-t border-white/5 space-y-4"
                         onClick={e => e.stopPropagation()}
                       >
@@ -6392,7 +7883,11 @@ export default function App() {
                                className="flex items-center justify-center gap-2 p-2 rounded-none border border-white/10 hover:border-white hover:bg-white hover:text-black transition-colors w-full bg-black/40"
                              >
                                 <Upload size={14} />
-                                <span className="text-[10px] uppercase tracking-widest font-bold truncate max-w-[180px]">{layer.src ? (layer.name.length > 20 ? layer.name.slice(0, 20) + '...' : layer.name) : (layer.type === 'generative' ? 'Change Script' : 'Load Asset')}</span>
+                                <span className="text-[10px] uppercase tracking-widest font-bold truncate max-w-[180px]">
+                                  {layer.type === 'generative'
+                                    ? (generativesRef.current.find(g => g.uuid === layer.generativeId)?.description || layer.name || 'Change Script')
+                                    : (layer.src ? (layer.name.length > 20 ? layer.name.slice(0, 20) + '...' : layer.name) : 'Load Asset')}
+                                </span>
                              </button>
                          </div>
 
@@ -6416,7 +7911,7 @@ export default function App() {
                            </select>
                          </div>
 
-                        {/* Effects List */}
+                         {/* Effects List */}
                         <div className="space-y-2 pt-2">
                           <div className="flex items-center justify-between">
                             <label className="text-[10px] uppercase tracking-widest opacity-40">Layer Effects</label>
@@ -6494,7 +7989,7 @@ export default function App() {
                           </div>
                         </div>
 
-                      </motion.div>
+                      </div>
                     )}
                   </Reorder.Item>
                 ))}
@@ -6582,49 +8077,35 @@ export default function App() {
           onDragOver={(e) => {
             e.preventDefault();
             e.stopPropagation();
+            if (!isDraggingOverCanvas) setIsDraggingOverCanvas(true);
+          }}
+          onDragLeave={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+              setIsDraggingOverCanvas(false);
+            }
           }}
           onDrop={(e) => {
             e.preventDefault();
             e.stopPropagation();
+            setIsDraggingOverCanvas(false);
             if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-              const files = Array.from(e.dataTransfer.files) as File[];
-              
-              const newLayers = files.map((file, idx) => {
-                const isVideo = file.type.startsWith('video/');
-                return {
-                  id: `layer-${Date.now()}-${idx}`,
-                  name: file.name,
-                  type: isVideo ? 'video' : 'image',
-                  src: URL.createObjectURL(file),
-                  assetPath: (file as any).path,
-                  missingAsset: false,
-                  opacity: 1,
-                  blendMode: 'source-over',
-                  filterId: null,
-                  filterSettings: {},
-                  isVisible: true,
-                  isActive: false,
-                  midiMode: false,
-                  videoTriggerMode: 'continuous',
-                  triggerMapping: { ...DEFAULT_TRIGGER_MAPPING, channels: Array.from({length: 16}, (_, i) => i), noteSettings: { ...DEFAULT_NOTE_SETTINGS } },
-                  mappings: [],
-                  isMuted: false,
-                  isSoloed: false
-                };
-              });
-
-              setLayers(prev => {
-                // If there is only one empty layer, replace it with the new ones.
-                if (prev.length === 1 && !prev[0].src) return newLayers as any;
-                return [...prev, ...newLayers as any];
-              });
-              
-              setStatus('READY');
+              importAssetFiles(Array.from(e.dataTransfer.files));
             }
           }}
         >
           <div className="relative w-full max-w-5xl aspect-video group">
-            <div className="absolute inset-0 border border-white/10 rounded-2xl overflow-hidden shadow-2xl bg-black/40">
+            <div className={`absolute inset-0 border rounded-2xl overflow-hidden shadow-2xl bg-black/40 transition-all ${
+              isDraggingOverCanvas ? 'border-red-500 ring-2 ring-red-500/50 scale-[0.99]' : 'border-white/10'
+            }`}>
+              {isDraggingOverCanvas && (
+                <div className="absolute inset-0 z-50 bg-black/85 backdrop-blur-xs flex flex-col items-center justify-center gap-3 border-2 border-dashed border-red-500 text-white animate-pulse">
+                  <Upload size={36} className="text-red-500 animate-bounce" />
+                  <span className="text-sm font-light tracking-[0.3em] uppercase">Drop assets to create layers</span>
+                  <span className="text-[10px] font-mono text-white/50">Multiple files will automatically create separate layers</span>
+                </div>
+              )}
               {/* Hidden Layer Elements */}
               <div className="hidden">
                 {layers.map(layer => (
@@ -6633,31 +8114,38 @@ export default function App() {
                       key={layer.id}
                       ref={el => {
                         videoRefs.current[layer.id] = el;
-                        if (el && el.paused && isPlaying) {
-                          el.play().catch(() => {});
-                        }
                       }}
                       src={layer.src || undefined}
                       loop
                       muted
                       playsInline
-                      autoPlay
                       preload="auto"
                       onLoadedMetadata={() => setStatus('READY')}
                     />
                   ) : (
                     <img
                       key={layer.id}
-                      ref={el => imageRefs.current[layer.id] = el}
+                      ref={el => {
+                        if (el) {
+                          if (!imageRefs.current[layer.id] || (el.complete && el.naturalWidth > 0)) {
+                            imageRefs.current[layer.id] = el;
+                          }
+                        }
+                      }}
                       src={layer.src || undefined}
                       alt={layer.name}
+                      loading="eager"
+                      decoding="sync"
+                      onLoad={(e) => {
+                        imageRefs.current[layer.id] = e.currentTarget;
+                      }}
                     />
                   )
                 ))}
               </div>
 
               {layers.every(l => (!l.src && l.type !== 'generative')) && <Waves className="absolute inset-0 z-0 pointer-events-none" />}
-              <canvas ref={canvasRef} className={`w-full h-full object-contain relative ${layers.every(l => (!l.src && l.type !== 'generative')) ? 'opacity-0' : ''} z-10`} />
+              <canvas id="main-render-canvas" ref={canvasRef} className={`w-full h-full object-contain relative ${layers.every(l => (!l.src && l.type !== 'generative')) ? 'opacity-0' : ''} z-10`} />
 
               {!isPlaying && !layers.every(l => (!l.src && l.type !== 'generative')) && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-30 transition-all backdrop-blur-sm">
@@ -6769,6 +8257,74 @@ export default function App() {
                         </div>
                       )
                    }
+
+                   if (p.type === 'action') {
+                      return (
+                        <div key={p.name} className="flex flex-col gap-1 p-2 bg-transparent hover:bg-white/5 rounded transition-colors w-full relative">
+                           <div className="flex items-center justify-between w-full gap-2 px-2">
+                              <span className="text-[7px] font-mono uppercase tracking-widest text-white/30">Action</span>
+                              <button
+                                onClick={() => {
+                                   const newState = !isTriggerActive;
+                                   const targetId = isGen ? `generative-${p.name}` : `effect-${m.id}-${p.name}`;
+                                   if (isGen) {
+                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [p.name]: newState } } : l));
+                                      const hasMapping = layerTarget.generativeMappings?.find((gm: any) => gm.id === p.name);
+                                      if (newState && !hasMapping) {
+                                         const targetM = { 
+                                           ...INITIAL_MAPPINGS[0], 
+                                           id: p.name, 
+                                           name: p.name, 
+                                           active: true, 
+                                           triggerBehavior: 'momentary' as any,
+                                           noteSettings: { ...DEFAULT_NOTE_SETTINGS },
+                                           channels: Array.from({length: 16}, (_, i) => i)
+                                         };
+                                         setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: [...(l.generativeMappings || []), targetM] } : l));
+                                      }
+                                   } else {
+                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(map => map.id === m.id ? { ...map, triggerActive: { ...(map.triggerActive || {}), [p.name]: newState } } : map) } : l));
+                                   }
+                                   if (newState) {
+                                      setSelectedEffectId(targetId);
+                                      setSelectedLayerForEffect(layerTarget.id);
+                                      setSidebarTab('triggers');
+                                   } else {
+                                      setSelectedEffectId(prev => prev === targetId ? null : prev);
+                                   }
+                                }}
+                                className={`p-1.5 rounded-full transition-all flex items-center justify-center ${isTriggerActive ? 'text-red-500 bg-red-500/20' : 'text-white/20 hover:text-white hover:bg-white/10'}`}
+                                title={isTriggerActive ? "Action Trigger Active (Click to turn off)" : "Connect Action to Trigger (MIDI, Audio, Rhythm)"}
+                              >
+                                <Zap size={10} />
+                              </button>
+                           </div>
+
+                           {/* Center: Action Button matching Knob dimensions & styling */}
+                           <div className="flex-1 flex flex-col items-center justify-center mt-0.5">
+                             <button
+                                onClick={() => {
+                                   const currentCount = Number(isGen ? (layerTarget.generativeSettings?.[p.name] ?? 0) : (m.settings?.[p.name] ?? 0));
+                                   const nextCount = currentCount + 1;
+                                   if (isGen) {
+                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeSettings: { ...(l.generativeSettings || {}), [p.name]: nextCount } } : l));
+                                   } else {
+                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(map => map.id === m.id ? { ...map, settings: { ...map.settings, [p.name]: nextCount } } : map) } : l));
+                                   }
+                                }}
+                                className="w-11 h-11 rounded-full border border-white/20 bg-black/60 hover:bg-red-600 hover:border-red-500 hover:text-white text-white/80 active:scale-90 transition-all flex items-center justify-center shadow-lg group relative cursor-pointer"
+                                title={`Trigger Action: ${p.name.replace(/_/g, ' ')}`}
+                             >
+                                <RotateCcw size={16} className="group-hover:-rotate-90 transition-transform duration-300" />
+                                <div className="absolute inset-0 rounded-full border border-white/10 group-hover:border-red-400 group-hover:animate-ping opacity-25 pointer-events-none" />
+                             </button>
+                             <span className="text-[9px] uppercase font-bold text-gray-400 tracking-wider font-mono mt-1 text-center truncate max-w-[85px]">
+                                {p.name.replace(/_/g, ' ')}
+                             </span>
+                           </div>
+                        </div>
+                      );
+                   }
                    
                    if (p.type === 'string') {
                       const currentVal = isGen ? 
@@ -6854,7 +8410,7 @@ return (
                         {/* Center: Knob */}
                         <div className="flex-1 flex justify-center mt-1">
                           <Knob
-                             value={isGen ? (layerTarget.generativeSettings?.[p.name] ?? p.default) : m.settings?.[p.name]}
+                             value={isGen ? (layerTarget.generativeSettings?.[p.name] ?? (p.id ? layerTarget.generativeSettings?.[p.id] : undefined) ?? p.default) : ((p.id ? m.settings?.[p.id] : undefined) ?? m.settings?.[p.name] ?? p.default ?? p.min)}
                              min={p.min}
                              max={p.max}
                              label={p.name}
@@ -6875,9 +8431,22 @@ return (
                              ccLabel={layerTarget.ccBindings?.[paramId] ? `CC ${layerTarget.ccBindings[paramId].cc}` : undefined}
                              onChange={(val) => {
                                 if (isGen) {
-                                   setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeSettings: { ...(l.generativeSettings || {}), [p.name]: val } } : l));
+                                   setLayers(prev => prev.map(l => {
+                                      if (l.id !== layerTarget.id) return l;
+                                      const nextSettings = { ...(l.generativeSettings || {}), [p.name]: val };
+                                      if (p.id) nextSettings[p.id] = val;
+                                      return { ...l, generativeSettings: nextSettings };
+                                   }));
                                 } else {
-                                   setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map((map: any) => map.id === m.id ? { ...map, settings: { ...map.settings, [p.name]: val } } : map) } : l));
+                                   setLayers(prev => prev.map(l => {
+                                      if (l.id !== layerTarget.id) return l;
+                                      return { ...l, mappings: l.mappings.map((map: any) => {
+                                         if (map.id !== m.id) return map;
+                                         const nextSettings = { ...map.settings, [p.name]: val };
+                                         if (p.id) nextSettings[p.id] = val;
+                                         return { ...map, settings: nextSettings };
+                                      })};
+                                   }));
                                 }
                              }}
                           />
@@ -6900,6 +8469,262 @@ return (
                             return renderKnob(p, mapping, activeLayer, true);
                           })}
                         </div>
+
+                        {/* Generative Colours & Palette Presets Section */}
+                        {(() => {
+                          const genDef = generativesRef.current.find(g => g.uuid === activeLayer.generativeId);
+                          const elements: GenerativeElement[] = genDef?.elements || [
+                            { id: "background", name: "Background", defaultColor: "#ffffff" },
+                            { id: "primary", name: "Primary Geometry", defaultColor: "#eb556b" },
+                            { id: "secondary", name: "Secondary Accent", defaultColor: "#7599a4" },
+                            { id: "highlight", name: "Highlights & Lines", defaultColor: "#f5a6b5" }
+                          ];
+
+                          const currentColors = activeLayer.generativeColors || {};
+                          const lockedMap = activeLayer.generativeLockedColors || {};
+                          const activePaletteId = activeLayer.generativeActivePaletteId || 'crimson_slate';
+                          const activePalette = BUILTIN_PALETTES.find(p => p.id === activePaletteId) || BUILTIN_PALETTES[0];
+                          const isPaletteTriggerActive = !!activeLayer.generativeTriggerActive?.['palette_cycle'];
+                          const lockedCount = Object.values(lockedMap).filter(Boolean).length;
+
+                          const handleApplyPalette = (palette: ColorPalettePreset) => {
+                            const nextColors = { ...currentColors };
+                            elements.forEach((el, idx) => {
+                              if (!lockedMap[el.id]) {
+                                nextColors[el.id] = palette.colors[idx % palette.colors.length];
+                              }
+                            });
+                            if (actionTriggerStateRef.current[`pal-cycle-${activeLayer.id}`]) {
+                              actionTriggerStateRef.current[`pal-cycle-${activeLayer.id}`].count = 0;
+                            }
+                            setLayers(prev => prev.map(l => l.id === activeLayer.id ? {
+                              ...l,
+                              generativeColors: nextColors,
+                              generativeActivePaletteId: palette.id,
+                              generativeColorCycleIndex: 0
+                            } : l));
+                          };
+
+                          const handleCycleColors = () => {
+                            const nextColors = { ...currentColors };
+                            const nextCycle = ((activeLayer.generativeColorCycleIndex ?? 0) + 1) % activePalette.colors.length;
+                            elements.forEach((el, idx) => {
+                              if (!lockedMap[el.id]) {
+                                nextColors[el.id] = activePalette.colors[(idx + nextCycle) % activePalette.colors.length];
+                              }
+                            });
+                            if (actionTriggerStateRef.current[`pal-cycle-${activeLayer.id}`]) {
+                              actionTriggerStateRef.current[`pal-cycle-${activeLayer.id}`].count = 0;
+                            }
+                            setLayers(prev => prev.map(l => l.id === activeLayer.id ? {
+                              ...l,
+                              generativeColors: nextColors,
+                              generativeColorCycleIndex: nextCycle
+                            } : l));
+                          };
+
+                          const toggleLock = (elId: string) => {
+                            const nextLocked = { ...lockedMap, [elId]: !lockedMap[elId] };
+                            setLayers(prev => prev.map(l => l.id === activeLayer.id ? {
+                              ...l,
+                              generativeLockedColors: nextLocked
+                            } : l));
+                          };
+
+                          return (
+                            <div className="space-y-4 pt-3 border-t border-white/10 mt-4">
+                              {/* Collapsible Header */}
+                              <div 
+                                onClick={() => setIsColorsMenuExpanded(prev => !prev)}
+                                className="flex items-center justify-between cursor-pointer py-1 select-none group"
+                              >
+                                <div className="flex items-center gap-3">
+                                  <h3 className="text-[11px] font-bold uppercase tracking-widest text-red-400 flex items-center gap-2">
+                                    <Palette size={13} className="text-red-400" />
+                                    Colours
+                                  </h3>
+                                  {/* Active palette mini-swatches */}
+                                  <div className="flex items-center gap-1 bg-black/40 border border-white/10 rounded-full px-2 py-0.5">
+                                    <span className="text-[9px] text-white/50 font-mono font-medium truncate max-w-[120px]">{activePalette.name}</span>
+                                    <div className="flex items-center -space-x-1 ml-1.5">
+                                      {elements.map(el => (
+                                        <div 
+                                          key={el.id}
+                                          className="w-2.5 h-2.5 rounded-full border border-black"
+                                          style={{ backgroundColor: currentColors[el.id] || el.defaultColor }}
+                                        />
+                                      ))}
+                                    </div>
+                                  </div>
+
+                                  {lockedCount > 0 && (
+                                    <span className="text-[8px] bg-red-600/20 text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded-full font-mono flex items-center gap-1">
+                                      <Lock size={9} />
+                                      {lockedCount} Locked
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  {/* Trigger Button: Connect to MIDI / Audio */}
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const newState = !isPaletteTriggerActive;
+                                      setLayers(prev => prev.map(l => l.id === activeLayer.id ? {
+                                        ...l,
+                                        generativeTriggerActive: { ...(l.generativeTriggerActive || {}), ['palette_cycle']: newState }
+                                      } : l));
+
+                                      const hasMapping = activeLayer.generativeMappings?.find(gm => gm.id === 'palette_cycle');
+                                      if (newState && !hasMapping) {
+                                        const targetM = {
+                                          ...INITIAL_MAPPINGS[0],
+                                          id: 'palette_cycle',
+                                          name: 'Palette Cycle',
+                                          active: true,
+                                          triggerBehavior: 'momentary' as any,
+                                          noteSettings: { ...DEFAULT_NOTE_SETTINGS },
+                                          channels: Array.from({length: 16}, (_, i) => i)
+                                        };
+                                        setLayers(prev => prev.map(l => l.id === activeLayer.id ? {
+                                          ...l,
+                                          generativeMappings: [...(l.generativeMappings || []), targetM]
+                                        } : l));
+                                      }
+                                      setSelectedEffectId('generative-palette_cycle');
+                                      setSelectedLayerForEffect(activeLayer.id);
+                                      setSidebarTab('triggers');
+                                    }}
+                                    className={`p-1 px-2 rounded flex items-center gap-1.5 transition-all text-[9px] font-mono uppercase ${isPaletteTriggerActive ? 'bg-red-500/20 text-red-400 border border-red-500/40' : 'bg-white/5 hover:bg-white/10 text-white/40 hover:text-white border border-white/10'}`}
+                                    title="Connect Palette Cycle to Trigger (MIDI, Audio, Rhythm)"
+                                  >
+                                    <Zap size={11} className={isPaletteTriggerActive ? 'text-red-400 animate-pulse' : ''} />
+                                    <span>Trigger</span>
+                                  </button>
+
+                                  {/* Manual Cycle Button */}
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleCycleColors();
+                                    }}
+                                    className="p-1 px-2 bg-white/5 hover:bg-white/15 border border-white/10 hover:border-white/30 rounded flex items-center gap-1.5 text-[9px] font-mono uppercase text-white/80 hover:text-white transition-all active:scale-95"
+                                    title="Cycle Colors Across Unlocked Elements"
+                                  >
+                                    <RotateCcw size={11} />
+                                    <span>Cycle</span>
+                                  </button>
+
+                                  <button className="text-white/40 group-hover:text-white transition-colors p-1">
+                                    <ChevronDown size={14} className={`transform transition-transform ${isColorsMenuExpanded ? 'rotate-180' : ''}`} />
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Expanded Content */}
+                              {isColorsMenuExpanded && (
+                                <div className="space-y-4 pt-1">
+                                  {/* Top Bar (Palette Preset Deck) */}
+                                  <div className="space-y-2">
+                                    <span className="text-[8px] uppercase tracking-widest text-white/40 font-mono">Palette Preset Deck</span>
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 overflow-x-auto pb-1">
+                                      {BUILTIN_PALETTES.map(p => {
+                                        const isSelected = activePaletteId === p.id;
+                                        return (
+                                          <button
+                                            key={p.id}
+                                            onClick={() => handleApplyPalette(p)}
+                                            className={`p-2 rounded border text-left flex flex-col justify-between gap-1.5 transition-all group/pal ${isSelected ? 'bg-red-600/10 border-red-500 text-white shadow-md' : 'bg-black/40 border-white/10 hover:border-white/30 text-white/60 hover:text-white'}`}
+                                            title={`Apply ${p.name}`}
+                                          >
+                                            <div className="flex items-center justify-between w-full">
+                                              <span className="text-[9px] font-mono font-bold truncate max-w-[100px]">{p.name}</span>
+                                              {isSelected && <Check size={10} className="text-red-400" />}
+                                            </div>
+                                            {/* Swatch strip */}
+                                            <div className="flex items-center h-3 w-full rounded overflow-hidden border border-white/10">
+                                              {p.colors.map((c, i) => (
+                                                <div 
+                                                  key={i} 
+                                                  className="flex-1 h-full"
+                                                  style={{ backgroundColor: c }}
+                                                />
+                                              ))}
+                                            </div>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+
+                                  {/* Element List (Target Mapping) */}
+                                  <div className="space-y-2 pt-2 border-t border-white/5">
+                                    <span className="text-[8px] uppercase tracking-widest text-white/40 font-mono">Element Color Mappings</span>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                                      {elements.map(el => {
+                                        const elColor = currentColors[el.id] || el.defaultColor;
+                                        const isLocked = !!lockedMap[el.id];
+
+                                        return (
+                                          <div 
+                                            key={el.id}
+                                            className={`p-2.5 rounded-lg border transition-all flex items-center justify-between gap-3 ${isLocked ? 'bg-red-950/20 border-red-500/30' : 'bg-black/40 border-white/10 hover:border-white/20'}`}
+                                          >
+                                            {/* Left: Label */}
+                                            <div className="flex flex-col min-w-0 flex-1">
+                                              <span className="text-[10px] font-bold text-white tracking-wider font-mono truncate">{el.name}</span>
+                                              <span className="text-[8px] text-white/40 font-mono uppercase">{isLocked ? 'Locked' : 'Unlocked'}</span>
+                                            </div>
+
+                                            {/* Center: Lock Button */}
+                                            <button
+                                              onClick={() => toggleLock(el.id)}
+                                              className={`p-1.5 rounded transition-all flex items-center justify-center ${isLocked ? 'bg-red-600 text-white shadow-sm' : 'bg-white/5 text-white/40 hover:text-white hover:bg-white/10 border border-white/10'}`}
+                                              title={isLocked ? "Element Locked: Ignores Palette Swaps & Trigger Cycles" : "Element Unlocked: Updates with Palettes & Trigger Cycles"}
+                                            >
+                                              {isLocked ? <Lock size={12} /> : <Unlock size={12} />}
+                                            </button>
+
+                                            {/* Right: Color Chip (Swatch Circle) + Popover Trigger */}
+                                            <button
+                                              onClick={(e) => {
+                                                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                                setActiveColorPickerTarget({
+                                                  elementId: el.id,
+                                                  elementName: el.name,
+                                                  color: elColor,
+                                                  anchorRect: rect
+                                                });
+                                              }}
+                                              className="flex items-center gap-2 group/chip cursor-pointer"
+                                              title="Click to Open Detail Color Picker"
+                                            >
+                                              <div 
+                                                className="w-7 h-7 rounded-full border-2 border-white/40 group-hover/chip:border-white group-hover/chip:scale-105 transition-all shadow-md flex-shrink-0 relative overflow-hidden"
+                                                style={{ 
+                                                  backgroundColor: isTransparentColor(elColor) ? 'transparent' : elColor,
+                                                  backgroundImage: isTransparentColor(elColor) ? 'repeating-conic-gradient(#888 0% 25%, #333 0% 50%) 50% / 5px 5px' : undefined
+                                                }}
+                                              >
+                                                {isTransparentColor(elColor) && (
+                                                  <div className="absolute inset-0 border-t-2 border-red-500 transform rotate-45 scale-125" />
+                                                )}
+                                              </div>
+                                              <span className="text-[10px] font-mono text-white/60 group-hover/chip:text-white font-bold uppercase">
+                                                {isTransparentColor(elColor) ? 'TRANSPARENT' : elColor.toUpperCase()}
+                                              </span>
+                                            </button>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
 
@@ -6985,6 +8810,7 @@ return (
                               {renderTransformKnob('rotation', 0, 360, 0, 'Rotation')}
                               {renderTransformKnob('posX', -100, 100, 0, 'Position X')}
                               {renderTransformKnob('posY', -100, 100, 0, 'Position Y')}
+                              {activeLayer.type === 'video' && renderTransformKnob('speed', 0, 2, 1, 'Speed')}
                             </div>
                           );
                         })()}
@@ -6992,59 +8818,111 @@ return (
                         {activeLayer.type === 'video' && activeLayer.src && (
                           <div className="space-y-6 pt-6 mt-6 border-t border-white/10">
                             <h3 className="text-[11px] font-bold uppercase tracking-widest text-red-400 pb-2 border-b border-white/5">Video Modes</h3>
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                               <div className="space-y-4">
-                                 <RangeSlider 
-                                   label="Video Segment"
-                                   min={0}
-                                   max={videoRefs.current[activeLayer.id]?.duration || 10}
-                                   start={activeLayer.videoStart || 0}
-                                   end={activeLayer.videoEnd || videoRefs.current[activeLayer.id]?.duration || 10}
-                                   onChange={(s, e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoStart: s, videoEnd: e } : l))}
-                                 />
-                               </div>
-                               <div className="space-y-4">
-                                 <label className="text-[10px] uppercase tracking-widest opacity-40">Trigger Mode</label>
-                                 <select 
-                                   value={activeLayer.videoTriggerMode || 'continuous'}
-                                   onChange={(e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoTriggerMode: e.target.value as any } : l))}
-                                   className="w-full bg-black/40 border border-white/10 rounded p-2 text-[10px] uppercase tracking-widest outline-none"
-                                 >
-                                   <option value="continuous">Continuous Playback</option>
-                                   <option value="restart">Restart on Trigger</option>
-                                   <option value="advance">Frame Advance</option>
-                                   <option value="rewind">Rewind on Release</option>
-                                   <option value="frame-accumulator">Frame Accumulator</option>
-                                 </select>
+                            {(() => {
+                              const isLayerTriggerActive = !!activeLayer.midiMode || !!activeLayer.audioMapping?.enabled || !!activeLayer.rhythmMapping?.enabled;
+                              return (
+                                <div className={`grid grid-cols-1 ${isLayerTriggerActive ? 'lg:grid-cols-2' : ''} gap-8`}>
+                                   <div className="space-y-4">
+                                     <RangeSlider 
+                                       label="Video Segment"
+                                       min={0}
+                                       max={videoRefs.current[activeLayer.id]?.duration || 10}
+                                       start={activeLayer.videoStart || 0}
+                                       end={activeLayer.videoEnd || videoRefs.current[activeLayer.id]?.duration || 10}
+                                       onChange={(s, e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoStart: s, videoEnd: e } : l))}
+                                     />
+                                   </div>
 
-                                 {activeLayer.videoTriggerMode === 'advance' && (
-                                    <div className="space-y-3 p-3 bg-black/30 border border-white/5 rounded mt-2">
-                                      <label className="text-[8px] uppercase tracking-widest opacity-60 font-bold text-red-400">Advance Settings</label>
-                                      <div className="space-y-2">
-                                        <label className="text-[8px] uppercase opacity-30">Unit</label>
-                                        <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
-                                          <button onClick={() => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoAdvanceUnit: 'frames' } : l))} className={`flex-1 py-1.5 text-[8px] uppercase transition-colors ${activeLayer.videoAdvanceUnit === 'frames' ? 'bg-white/20 text-white' : 'text-white/40 hover:bg-transparent'}`}>Frames</button>
-                                          <button onClick={() => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoAdvanceUnit: 'seconds' } : l))} className={`flex-1 py-1.5 text-[8px] uppercase transition-colors ${activeLayer.videoAdvanceUnit === 'seconds' ? 'bg-white/20 text-white' : 'text-white/40 hover:bg-transparent'}`}>Seconds</button>
-                                        </div>
-                                      </div>
-                                      <div className="space-y-2">
-                                        <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Amount</span><span>{activeLayer.videoAdvanceAmount || 1}</span></div>
-                                        <input type="range" min="1" max="60" step="1" value={activeLayer.videoAdvanceAmount || 1} onChange={(e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoAdvanceAmount: parseFloat(e.target.value) } : l))} className="w-full accent-white h-1" />
-                                      </div>
-                                    </div>
-                                 )}
+                                   {isLayerTriggerActive && (
+                                     <div className="space-y-4">
+                                       <label className="text-[10px] uppercase tracking-widest opacity-40">Trigger Mode</label>
+                                       <select 
+                                         value={activeLayer.videoTriggerMode || 'continuous'}
+                                         onChange={(e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoTriggerMode: e.target.value as any } : l))}
+                                         className="w-full bg-black/40 border border-white/10 rounded p-2 text-[10px] uppercase tracking-widest outline-none"
+                                       >
+                                         <option value="continuous">Continuous Playback</option>
+                                         <option value="restart">Restart on Trigger</option>
+                                         <option value="advance">Frame Advance</option>
+                                         <option value="rewind">Boomerang</option>
+                                         <option value="frame-accumulator">Frame Accumulator</option>
+                                       </select>
 
-                                 {activeLayer.videoTriggerMode === 'rewind' && (
-                                    <div className="space-y-3 p-3 bg-black/30 border border-white/5 rounded mt-2">
-                                      <label className="text-[8px] uppercase tracking-widest opacity-60 font-bold text-red-400">Rewind Settings</label>
-                                      <div className="space-y-2">
-                                        <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Rewind Speed</span><span>{activeLayer.videoRewindSpeed || 2}x</span></div>
-                                        <input type="range" min="1" max="10" step="0.5" value={activeLayer.videoRewindSpeed || 2} onChange={(e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoRewindSpeed: parseFloat(e.target.value) } : l))} className="w-full accent-white h-1" />
-                                      </div>
-                                    </div>
-                                 )}
-                               </div>
-                            </div>
+                                       {activeLayer.videoTriggerMode === 'advance' && (
+                                          <div className="space-y-3 p-3 bg-black/30 border border-white/5 rounded mt-2">
+                                            <label className="text-[8px] uppercase tracking-widest opacity-60 font-bold text-red-400">Advance Settings</label>
+                                            <div className="space-y-2">
+                                              <label className="text-[8px] uppercase opacity-30">Unit</label>
+                                              <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+                                                <button onClick={() => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoAdvanceUnit: 'frames' } : l))} className={`flex-1 py-1.5 text-[8px] uppercase transition-colors ${activeLayer.videoAdvanceUnit === 'frames' ? 'bg-white/20 text-white' : 'text-white/40 hover:bg-transparent'}`}>Frames</button>
+                                                <button onClick={() => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoAdvanceUnit: 'seconds' } : l))} className={`flex-1 py-1.5 text-[8px] uppercase transition-colors ${activeLayer.videoAdvanceUnit === 'seconds' ? 'bg-white/20 text-white' : 'text-white/40 hover:bg-transparent'}`}>Seconds</button>
+                                              </div>
+                                            </div>
+                                            <div className="space-y-2">
+                                              <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Amount</span><span>{activeLayer.videoAdvanceAmount || 1}</span></div>
+                                              <input type="range" min="1" max="60" step="1" value={activeLayer.videoAdvanceAmount || 1} onChange={(e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoAdvanceAmount: parseFloat(e.target.value) } : l))} className="w-full accent-white h-1" />
+                                            </div>
+                                          </div>
+                                       )}
+
+                                       {activeLayer.videoTriggerMode === 'rewind' && (
+                                          <div className="space-y-3 p-3 bg-black/30 border border-white/5 rounded mt-2">
+                                            <label className="text-[8px] uppercase tracking-widest opacity-60 font-bold text-red-400">Boomerang Settings</label>
+                                            <div className="space-y-2">
+                                              <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Boomerang Speed</span><span>{activeLayer.videoRewindSpeed || 1}x</span></div>
+                                              <input type="range" min="0.5" max="5" step="0.5" value={activeLayer.videoRewindSpeed || 1} onChange={(e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoRewindSpeed: parseFloat(e.target.value) } : l))} className="w-full accent-white h-1" />
+                                            </div>
+                                          </div>
+                                       )}
+
+                                       {activeLayer.videoTriggerMode === 'frame-accumulator' && (
+                                          <div className="space-y-3 p-3 bg-black/30 border border-white/5 rounded mt-2">
+                                            <div className="flex items-center justify-between">
+                                              <label className="text-[8px] uppercase tracking-widest opacity-60 font-bold text-red-400">Accumulator Settings</label>
+                                              <button 
+                                                onClick={() => {
+                                                  if (stutterStateRef.current[activeLayer.id]) {
+                                                    stutterStateRef.current[activeLayer.id].clearBuffer = true;
+                                                  }
+                                                  if (frameAccumulatorSnapshotsRef.current[activeLayer.id]) {
+                                                    frameAccumulatorSnapshotsRef.current[activeLayer.id] = [];
+                                                  }
+                                                }}
+                                                className="px-2 py-0.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 text-[8px] font-bold uppercase rounded transition-colors"
+                                              >
+                                                Clear Canvas
+                                              </button>
+                                            </div>
+                                            <div className="space-y-2">
+                                              <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Stamp Opacity</span><span>{Math.round((activeLayer.accumulateOpacity ?? 0.6) * 100)}%</span></div>
+                                              <input type="range" min="0.1" max="1" step="0.05" value={activeLayer.accumulateOpacity ?? 0.6} onChange={(e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, accumulateOpacity: parseFloat(e.target.value) } : l))} className="w-full accent-white h-1" />
+                                            </div>
+                                            <div className="space-y-2">
+                                              <label className="text-[8px] uppercase opacity-30 block">Blend Mode</label>
+                                              <select
+                                                value={activeLayer.accumulateBlendMode || 'source-over'}
+                                                onChange={(e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, accumulateBlendMode: e.target.value as GlobalCompositeOperation } : l))}
+                                                className="w-full bg-black/60 border border-white/10 rounded px-2 py-1 text-[9px] uppercase text-white outline-none"
+                                              >
+                                                <option value="source-over">Normal (Source Over)</option>
+                                                <option value="screen">Screen (Lighten)</option>
+                                                <option value="lighten">Lighten</option>
+                                                <option value="overlay">Overlay</option>
+                                                <option value="difference">Difference</option>
+                                                <option value="color-dodge">Color Dodge</option>
+                                              </select>
+                                            </div>
+                                            <div className="space-y-2">
+                                              <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Max Stamped Frames</span><span>{activeLayer.accumulateMaxFrames || 16}</span></div>
+                                              <input type="range" min="2" max="32" step="1" value={activeLayer.accumulateMaxFrames || 16} onChange={(e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, accumulateMaxFrames: parseInt(e.target.value) } : l))} className="w-full accent-white h-1" />
+                                            </div>
+                                          </div>
+                                       )}
+                                     </div>
+                                   )}
+                                </div>
+                              );
+                            })()}
                           </div>
                         )}
                       </div>
@@ -7077,11 +8955,41 @@ return (
                   <input type="file" multiple accept="audio/*" onChange={handleAddAudioStem} className="hidden" />
                 </label>
                 <button 
+                  onClick={async () => {
+                    const id = 'live-mic';
+                    await engine.addLiveInput(id, 'Live Mic/Line', selectedAudioDevice || undefined);
+                    setAudioStems(prev => {
+                      const filtered = prev.filter(s => s.id !== id);
+                      return [...filtered, { id, name: 'Live Mic/Line', fileUrl: 'live', isMuted: false, isSoloed: false }];
+                    });
+                  }}
+                  className="px-4 border border-white/10 rounded-none bg-transparent hover:border-white hover:bg-white hover:text-black transition-colors flex items-center justify-center"
+                  title="Use Live Microphone / Audio Interface"
+                >
+                  <Mic size={14} />
+                </button>
+                <button 
                   onClick={toggleAudioPlay}
                   className={`px-4 rounded-none flex items-center justify-center transition-colors ${audioPlaying ? 'bg-red-600 text-white' : 'border border-white hover:bg-white hover:text-black hover:bg-white/20'}`}
                 >
                   {audioPlaying ? <Pause size={14} /> : <Play size={14} />}
                 </button>
+              </div>
+
+              <div className="space-y-1 mb-2">
+                <div className="flex justify-between items-center">
+                  <label className="text-[8px] uppercase tracking-widest opacity-40 block">Live Input Device</label>
+                </div>
+                <select 
+                  className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[9px] outline-none font-mono"
+                  value={selectedAudioDevice}
+                  onChange={(e) => setSelectedAudioDevice(e.target.value)}
+                >
+                  <option value="">Default Microphone</option>
+                  {audioDevices.map(d => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Mic ${d.deviceId.slice(0,5)}`}</option>
+                  ))}
+                </select>
               </div>
               
               <div className="space-y-2">
@@ -7276,18 +9184,58 @@ return (
                       <div className="space-y-4">
                         <h3 className="text-[10px] font-bold uppercase tracking-widest text-red-400 border-b border-white/5 pb-2 mb-2">{headerTitle}</h3>
                         <div className="space-y-6">
-                        <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+                          <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
                             <button 
-                              onClick={() => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: true } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: true } } : m) } : l)))}
+                              onClick={() => {
+                                 const updater = (m: any) => ({ ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: true }, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false } });
+                                 if (isGenerativeParam) setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? updater(m) : m) } : l));
+                                 else setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? updater(m) : m) } : l));
+                              }}
                               className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${mapping.audioMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
                             >
                               Audio
                             </button>
                             <button 
-                              onClick={() => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false } } : m) } : l)))}
-                              className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${!mapping.audioMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                              onClick={() => {
+                                 const updater = (m: any) => ({ ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false }, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false } });
+                                 if (isGenerativeParam) setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? updater(m) : m) } : l));
+                                 else setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? updater(m) : m) } : l));
+                              }}
+                              className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${!mapping.audioMapping?.enabled && !mapping.rhythmMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
                             >
                               MIDI
+                            </button>
+                            <button 
+                              onClick={() => {
+                                 const updater = (m: any) => ({ ...m, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: true }, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false } });
+                                 if (isGenerativeParam) setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? updater(m) : m) } : l));
+                                 else setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? updater(m) : m) } : l));
+                              }}
+                              className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${mapping.rhythmMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                            >
+                              Rhythm
+                            </button>
+                            <button 
+                              onClick={() => {
+                                 // To turn off a parameter trigger, we just set its triggerActive to false
+                                 if (isGenerativeParam) {
+                                    setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [mapping.id]: false } } : l));
+                                 } else {
+                                    if (selectedEffectId?.startsWith('effect-') && selectedEffectId.split('-').length >= 3) {
+                                       const paramName = selectedEffectId.split('-').slice(2).join('-');
+                                       setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, triggerActive: { ...(m.triggerActive || {}), [paramName]: false } } : m) } : l));
+                                    } else if (selectedEffectId?.startsWith('transform-')) {
+                                       const paramName = selectedEffectId.split('-')[1];
+                                       setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, transformTriggerActive: { ...(l.transformTriggerActive || {}), [paramName]: false } } : l));
+                                    }
+                                 }
+                                 setSelectedEffectId(null);
+                                 setSidebarTab('layers');
+                              }}
+                              className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest font-bold transition-colors text-white/40 hover:bg-red-500/10 hover:text-red-500`}
+                              title="Turn Off Trigger"
+                            >
+                              OFF
                             </button>
                           </div>
 
@@ -7621,7 +9569,23 @@ return (
                         </button>
                         <button 
                           onClick={() => {
-                             setLayers(prev => prev.map(layer => layer.id === assetBrowserLayerTarget ? {...layer, type: 'generative', generativeId: layer.generativeId || generativesRef.current[0]?.uuid, mappings: [], generativeSettings: {}, generativeMappings: [], generativeTriggerActive: {}, generativeTriggerAmount: {} } : layer));
+                             setLayers(prev => prev.map(layer => {
+                               if (layer.id !== assetBrowserLayerTarget) return layer;
+                               const defaultGen = generativesRef.current.find(g => g.uuid === layer.generativeId) || generativesRef.current[0];
+                               return {
+                                 ...layer,
+                                 type: 'generative',
+                                 name: defaultGen ? defaultGen.description : 'Generative Script',
+                                 src: null,
+                                 missingMedia: false,
+                                 generativeId: defaultGen?.uuid,
+                                 mappings: [],
+                                 generativeSettings: {},
+                                 generativeMappings: [],
+                                 generativeTriggerActive: {},
+                                 generativeTriggerAmount: {}
+                               };
+                             }));
                           }}
                           className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layers.find(l => l.id === assetBrowserLayerTarget)?.type === 'generative' ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
                         >
@@ -7632,13 +9596,13 @@ return (
 
                    {layers.find(l => l.id === assetBrowserLayerTarget)?.type !== 'generative' ? (
                        <div className="space-y-2 pt-4 border-t border-white/5">
-                          <label className="text-[10px] uppercase tracking-widest opacity-40">Upload Media</label>
+                          <label className="text-[10px] uppercase tracking-widest opacity-40">Upload Media (Single or Multiple)</label>
                           <div className="relative group">
-                            <input type="file" accept="video/*,image/*" onChange={(e) => { handleFileUpload(e, assetBrowserLayerTarget!); setShowAssetBrowser(false); }} className="absolute inset-0 opacity-0 cursor-pointer z-10" />
+                            <input type="file" multiple accept="video/*,image/*" onChange={(e) => { if (e.target.files) importAssetFiles(Array.from(e.target.files), assetBrowserLayerTarget || undefined); setShowAssetBrowser(false); }} className="absolute inset-0 opacity-0 cursor-pointer z-10" />
                             <div className="border border-white/10 p-3 rounded-none bg-transparent group-hover:border border-white hover:bg-white hover:text-black transition-colors flex items-center justify-between">
                               <div className="flex items-center gap-3 min-w-0">
                                 <Upload size={14} className="opacity-50" />
-                                <span className="text-[10px] truncate">{layers.find(l => l.id === assetBrowserLayerTarget)?.src ? layers.find(l => l.id === assetBrowserLayerTarget)?.name : 'Click to Browse...'}</span>
+                                <span className="text-[10px] truncate">{layers.find(l => l.id === assetBrowserLayerTarget)?.src ? layers.find(l => l.id === assetBrowserLayerTarget)?.name : 'Click to Browse (Select one or multiple files)...'}</span>
                               </div>
                             </div>
                           </div>
@@ -7656,8 +9620,8 @@ return (
                                    if (uuid === 'text-boat-sea-canvas-1') return '⛵';
                                    if (uuid === 'brutalist-grid-1') return '🔲';
                                    if (uuid === 'ferrofluid-1') return '🌑';
-                                   if (uuid === 'shader-clouds-1') return '🌫️';
                                    if (uuid === 'bubble-spheres-1') return '🫧';
+                                   if (uuid === 'dancing-cubes-canvas-1') return '🎲';
                                    return '✨';
                                };
                                return (
@@ -7680,15 +9644,57 @@ return (
                                         />
                                         <span className="text-4xl mb-1 opacity-80 filter grayscale group-hover:grayscale-0 transition-all duration-500" style={{ display: 'none' }}>{getIconForGenerative(g.uuid)}</span>
                                      </div>
-                                     <div className="flex items-center justify-between mb-2">
+                                    <div className="flex items-center justify-between mb-2">
                                        <h3 className="text-xs font-bold uppercase tracking-widest">{g.description}</h3>
                                      </div>
                                      <p className="text-[10px] opacity-40 leading-relaxed mb-4">{g.parameters.length} Interactive Params</p>
                                    </div>
                                    <button 
                                      onClick={() => {
-                                       setLayers(prev => prev.map(layer => layer.id === assetBrowserLayerTarget ? { ...layer, generativeId: g.uuid, mappings: [], generativeSettings: {}, generativeMappings: [], generativeTriggerActive: {}, generativeTriggerAmount: {} } : layer));
-                                       setShowAssetBrowser(false);
+                                        const initColors: Record<string, string> = {};
+                                        (g.elements || []).forEach(el => {
+                                          initColors[el.id] = el.defaultColor;
+                                        });
+                                        const defaultPalId = g.defaultPaletteId || (
+                                          (g.elements && g.elements.length <= 2)
+                                            ? (g.color === 'white' ? 'monochrome_duo_white' : 'monochrome_duo')
+                                            : 'acid_matrix'
+                                        );
+
+                                        setLayers(prev => prev.map(layer => layer.id === assetBrowserLayerTarget ? { 
+                                          ...layer, 
+                                          type: 'generative',
+                                          name: g.description,
+                                          src: null,
+                                          missingMedia: false,
+                                          generativeId: g.uuid, 
+                                          mappings: [], 
+                                          generativeSettings: {}, 
+                                          generativeMappings: [
+                                            {
+                                              ...INITIAL_MAPPINGS[0],
+                                              id: 'palette_cycle',
+                                              name: 'Palette Cycle',
+                                              description: 'Cycles colors across unlocked elements on each trigger hit.',
+                                              active: true,
+                                              manualActive: false,
+                                              isMuted: false,
+                                              isSoloed: false,
+                                              channels: Array.from({length: 16}, (_, i) => i),
+                                              noteStart: 0,
+                                              noteEnd: 127,
+                                              triggerBehavior: 'momentary' as any,
+                                              noteSettings: { ...DEFAULT_NOTE_SETTINGS }
+                                            }
+                                          ], 
+                                          generativeTriggerActive: { palette_cycle: false }, 
+                                          generativeTriggerAmount: {},
+                                          generativeColors: initColors,
+                                          generativeLockedColors: {},
+                                          generativeActivePaletteId: defaultPalId,
+                                          generativeColorCycleIndex: 0
+                                        } : layer));
+                                        setShowAssetBrowser(false);
                                      }}
                                      className={`w-full py-2 rounded-none text-[10px] uppercase tracking-widest font-bold transition-all ${isActive ? 'bg-transparent text-red-500/50 cursor-not-allowed' : 'border border-white hover:bg-white hover:text-black hover:bg-red-600 hover:text-white'}`}
                                    >
@@ -7754,12 +9760,46 @@ return (
               <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 custom-scrollbar">
                 {ALL_EFFECTS.map(effect => {
                   const isAdded = layers.find(l => l.id === selectedLayerForEffect)?.mappings.find(m => m.id === effect.id);
+                  const getIconForEffect = (id: string) => {
+                    switch (id) {
+                      case 'motion-symbols': return '🔣';
+                      case 'invert': return '🌓';
+                      case 'edges': return '⚡';
+                      case 'pixelate': return '👾';
+                      case 'rgb-shift': return '📺';
+                      case 'hue-rotate': return '🌈';
+                      case 'vhs': return '📼';
+                      case 'dithering': return '🏁';
+                      case 'ascii': return '📟';
+                      case 'motion-detector': return '🎯';
+                      case 'matrix': return '🟢';
+                      case 'windows-98': return '🪟';
+                      case 'glitch-box': return '🔲';
+                      case 'long-exposure': return '💫';
+                      default: return '✨';
+                    }
+                  };
                   return (
                     <div 
                       key={effect.id}
-                      className={`group p-4 rounded-none border transition-all flex flex-col justify-between ${isAdded ? 'bg-red-600/5 border-red-500/20 opacity-50' : 'bg-transparent border-white/10 hover:border-white'}`}
+                      onClick={() => { if (!isAdded) addEffect(selectedLayerForEffect!, effect); }}
+                      className={`group p-4 rounded-none border transition-all flex flex-col justify-between cursor-pointer ${isAdded ? 'bg-red-600/5 border-red-500/20 opacity-50 cursor-default' : 'bg-transparent border-white/10 hover:border-white hover:bg-white/5'}`}
                     >
                       <div>
+                        <div className="w-full aspect-square mb-4 border border-white/10 bg-black/60 flex flex-col items-center justify-center opacity-85 group-hover:opacity-100 transition-opacity relative overflow-hidden rounded-sm">
+                          <img 
+                            src={`/effect-previews/${effect.id}.png`} 
+                            alt={effect.name} 
+                            className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                            onError={(e) => {
+                                e.currentTarget.style.display = 'none';
+                                if (e.currentTarget.nextElementSibling) {
+                                    (e.currentTarget.nextElementSibling as HTMLElement).style.display = 'block';
+                                }
+                            }}
+                          />
+                          <span className="text-4xl mb-1 opacity-80 filter grayscale group-hover:grayscale-0 transition-all duration-500" style={{ display: 'none' }}>{getIconForEffect(effect.id)}</span>
+                        </div>
                         <div className="flex items-center justify-between mb-2">
                           <h3 className="text-xs font-bold uppercase tracking-widest">{effect.name}</h3>
                           <HelpIcon text={effect.description} />
@@ -7835,7 +9875,61 @@ return (
                         disabled={!!isActive}
                         onClick={() => {
                           if (activeLayerId) {
-                            setLayers(prev => prev.map(l => l.id === activeLayerId ? { ...l, generativeId: g.uuid, mappings: [], generativeSettings: {}, generativeMappings: [], generativeTriggerActive: {}, generativeTriggerAmount: {} } : l));
+                            const initColors: Record<string, string> = {};
+                            (g.elements || []).forEach(el => {
+                              initColors[el.id] = el.defaultColor;
+                            });
+                            const defaultPalId = g.defaultPaletteId || (
+                              (g.elements && g.elements.length <= 2)
+                                ? (g.color === 'white' ? 'monochrome_duo_white' : 'monochrome_duo')
+                                : 'acid_matrix'
+                            );
+
+                            setLayers(prev => prev.map(l => {
+                              if (l.id !== activeLayerId) return l;
+                              const newBindings = l.ccBindings ? { ...l.ccBindings } : undefined;
+                              if (newBindings) {
+                                for (const key of Object.keys(newBindings)) {
+                                  if (key.startsWith('generative-')) {
+                                    delete newBindings[key];
+                                  }
+                                }
+                              }
+                              return { 
+                                ...l, 
+                                type: 'generative',
+                                name: g.description,
+                                src: null,
+                                missingMedia: false,
+                                generativeId: g.uuid, 
+                                mappings: [], 
+                                generativeSettings: {}, 
+                                ccBindings: newBindings,
+                                generativeMappings: [
+                                  {
+                                    ...INITIAL_MAPPINGS[0],
+                                    id: 'palette_cycle',
+                                    name: 'Palette Cycle',
+                                    description: 'Cycles colors across unlocked elements on each trigger hit.',
+                                    active: true,
+                                    manualActive: false,
+                                    isMuted: false,
+                                    isSoloed: false,
+                                    channels: Array.from({length: 16}, (_, i) => i),
+                                    noteStart: 0,
+                                    noteEnd: 127,
+                                    triggerBehavior: 'momentary' as any,
+                                    noteSettings: { ...DEFAULT_NOTE_SETTINGS }
+                                  }
+                                ], 
+                                generativeTriggerActive: { palette_cycle: false }, 
+                                generativeTriggerAmount: {},
+                                generativeColors: initColors,
+                                generativeLockedColors: {},
+                                generativeActivePaletteId: defaultPalId,
+                                generativeColorCycleIndex: 0
+                              };
+                            }));
                             setShowGenerativeBrowser(false);
                           }
                         }}
@@ -7850,6 +9944,36 @@ return (
             </motion.div>
           </div>
         )}
+      </AnimatePresence>
+
+      {/* Detail Color Picker Popover */}
+      <AnimatePresence>
+        {activeColorPickerTarget && (() => {
+          const currentActiveLayer = layers.find(l => l.id === activeLayerId);
+          const activePalId = currentActiveLayer?.generativeActivePaletteId || 'acid_matrix';
+          const activePal = BUILTIN_PALETTES.find(p => p.id === activePalId) || BUILTIN_PALETTES[0];
+
+          return (
+            <ColorPickerPopover
+              color={activeColorPickerTarget.color}
+              title={activeColorPickerTarget.elementName}
+              anchorRect={activeColorPickerTarget.anchorRect}
+              paletteColors={activePal?.colors || []}
+              paletteName={activePal?.name}
+              onChange={(newHex) => {
+                setActiveColorPickerTarget(prev => prev ? { ...prev, color: newHex } : null);
+                if (activeLayerId) {
+                  setLayers(prev => prev.map(l => l.id === activeLayerId ? {
+                    ...l,
+                    generativeColors: { ...(l.generativeColors || {}), [activeColorPickerTarget.elementId]: newHex },
+                    generativeLockedColors: { ...(l.generativeLockedColors || {}), [activeColorPickerTarget.elementId]: true }
+                  } : l));
+                }
+              }}
+              onClose={() => setActiveColorPickerTarget(null)}
+            />
+          );
+        })()}
       </AnimatePresence>
     </div>
   );

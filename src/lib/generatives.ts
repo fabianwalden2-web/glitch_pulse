@@ -3,8 +3,85 @@ export interface GenerativeParameter {
   min?: number;
   max?: number;
   default: number | string;
-  type?: 'number' | 'string' | 'boolean';
+  type?: 'number' | 'string' | 'boolean' | 'action';
+  icon?: string;
 }
+
+export interface GenerativeElement {
+  id: string;
+  name: string;
+  defaultColor: string;
+  icon?: string;
+}
+
+export interface ColorPalettePreset {
+  id: string;
+  name: string;
+  colors: string[]; // array of hex colors
+}
+
+export const BUILTIN_PALETTES: ColorPalettePreset[] = [
+  {
+    id: 'monochrome_duo',
+    name: 'Black & White',
+    colors: ['#000000', '#ffffff']
+  },
+  {
+    id: 'monochrome_duo_white',
+    name: 'White & Black',
+    colors: ['#ffffff', '#000000']
+  },
+  {
+    id: 'crimson_slate',
+    name: 'Crimson & Slate',
+    colors: ['#ffffff', '#eb556b', '#7599a4', '#f5a6b5', '#233136']
+  },
+  {
+    id: 'retro_amber',
+    name: 'Retro Amber & Teal',
+    colors: ['#cf7d2a', '#4de8e0', '#df9bf3', '#6ec7f8', '#2e2117']
+  },
+  {
+    id: 'cyberpunk_neon',
+    name: 'Cyberpunk Neon',
+    colors: ['#0a0a12', '#ff007f', '#00f0ff', '#ffe600', '#7000ff']
+  },
+  {
+    id: 'tokyo_synth',
+    name: 'Tokyo Synthwave',
+    colors: ['#1a1b26', '#f7768e', '#7aa2f7', '#bb9af7', '#7dcfff']
+  },
+  {
+    id: 'acid_matrix',
+    name: 'Acid Matrix',
+    colors: ['#0d1117', '#39d353', '#00ff66', '#2ea043', '#033a16']
+  },
+  {
+    id: 'monochrome_brutalist',
+    name: 'Monochrome Brutalist',
+    colors: ['#000000', '#ffffff', '#888888', '#e5e5e5', '#333333']
+  },
+  {
+    id: 'warm_sunset',
+    name: 'Warm Sunset',
+    colors: ['#1f1427', '#f25c54', '#f27059', '#f7b267', '#f4845f']
+  },
+  {
+    id: 'nordic_ice',
+    name: 'Nordic Ice',
+    colors: ['#2e3440', '#88c0d0', '#81a1c1', '#eceff4', '#5e81ac']
+  },
+  {
+    id: 'bauhaus_primary',
+    name: 'Bauhaus Primary',
+    colors: ['#ffffff', '#e63946', '#1d3557', '#f1faee', '#457b9d']
+  },
+  {
+    id: 'obsidian_gold',
+    name: 'Obsidian Gold',
+    colors: ['#121212', '#d4af37', '#aa7c11', '#f3e5ab', '#5b4511']
+  }
+];
 
 export interface GenerativeDefinition {
   uuid: string;
@@ -12,15 +89,44 @@ export interface GenerativeDefinition {
   color: string;
   movement: boolean;
   parameters: GenerativeParameter[];
+  elements?: GenerativeElement[];
+  defaultPaletteId?: string;
   fragmentShader: string;
 }
 
 export const GENERATIVES_DATA = [
   {
     header: `/*{
+  "description": "Dancing Cubes Isometric",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "acid_matrix",
+  "parameters": [
+    { "name": "grid_size", "min": 2.0, "max": 8.0, "default": 5.0, "type": "number" },
+    { "name": "cube_size", "min": 40.0, "max": 260.0, "default": 115.0, "type": "number" },
+    { "name": "x_movement", "min": 0.0, "max": 100.0, "default": 30.0, "type": "number" },
+    { "name": "y_movement", "min": 0.0, "max": 100.0, "default": 45.0, "type": "number" },
+    { "name": "z_movement", "min": 0.0, "max": 100.0, "default": 30.0, "type": "number" },
+    { "name": "delay", "min": 0.0, "max": 2.0, "default": 0.35, "type": "number" },
+    { "name": "wireframe_ratio", "min": 0.0, "max": 1.0, "default": 0.5, "type": "number" },
+    { "name": "rotate_face", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#050a05" },
+    { "id": "cubes_crimson", "name": "Primary Cubes", "defaultColor": "#00ff41" },
+    { "id": "cubes_slate", "name": "Secondary Cubes", "defaultColor": "#008f11" },
+    { "id": "wireframes", "name": "Wireframe Frames", "defaultColor": "#50ff70" }
+  ],
+  "uuid": "dancing-cubes-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
   "description": "3D Cubes Matrix",
   "color": "white",
   "movement": true,
+  "defaultPaletteId": "crimson_slate",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "rotation", "min": 0.0, "max": 5.0, "default": 0.0, "type": "number" },
@@ -31,22 +137,32 @@ export const GENERATIVES_DATA = [
     { "name": "dispersion", "min": 0.0, "max": 350.0, "default": 90.0, "type": "number" },
     { "name": "opacity", "min": 0.1, "max": 1.0, "default": 0.70, "type": "number" }
   ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
+    { "id": "cubes", "name": "Cubes Matrix", "defaultColor": "#eb556b" }
+  ],
   "uuid": "cubes-matrix-3d-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   },
   {
     header: `/*{
-  "description": "Growing Red Circles",
-  "color": "white",
+  "description": "Drops",
+  "color": "black",
   "movement": true,
+  "defaultPaletteId": "acid_matrix",
   "parameters": [
-    { "name": "count", "min": 1.0, "max": 100.0, "default": 25.0, "type": "number" },
+    { "name": "count", "min": 0.0, "max": 100.0, "default": 25.0, "type": "number" },
     { "name": "size", "min": 10.0, "max": 1200.0, "default": 280.0, "type": "number" },
     { "name": "speed", "min": 0.1, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "duration", "min": 0.5, "max": 30.0, "default": 6.0, "type": "number" },
     { "name": "delay", "min": 0.0, "max": 3.0, "default": 0.25, "type": "number" },
-    { "name": "transparency", "min": 0.0, "max": 1.0, "default": 0.0, "type": "number" }
+    { "name": "drop", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#0d1117" },
+    { "id": "circles", "name": "Growing Circles", "defaultColor": "#39d353" },
+    { "id": "accent", "name": "Accent Glow", "defaultColor": "#00ff66" }
   ],
   "uuid": "growing-circles-canvas-1"
 }*/`,
@@ -54,300 +170,20 @@ export const GENERATIVES_DATA = [
   },
   {
     header: `/*{
-  "description": "3D Studio Still Life",
-  "color": "white",
-  "movement": true,
-  "parameters": [
-    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "light_angle", "min": 0.0, "max": 6.28, "default": 1.15, "type": "number" },
-    { "name": "balance", "min": 0.0, "max": 1.0, "default": 0.5, "type": "number" },
-    { "name": "roughness", "min": 0.1, "max": 2.0, "default": 1.0, "type": "number" },
-    { "name": "camera_orbit", "min": -1.0, "max": 1.0, "default": 0.0, "type": "number" }
-  ],
-  "uuid": "studio-still-life-3d"
-}*/`,
-    code: `
-#ifdef GL_ES
-precision highp float;
-#endif
-
-uniform float time;
-uniform vec2 resolution;
-uniform float speed;
-uniform float light_angle;
-uniform float balance;
-uniform float roughness;
-uniform float camera_orbit;
-
-varying vec2 texCoord;
-
-// --- Procedural Hash & Noise for PBR Textures ---
-float hash(vec3 p) {
-    p = fract(p * 0.3183099 + 0.1);
-    p *= 17.0;
-    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
-}
-
-float noise(vec3 x) {
-    vec3 p = floor(x);
-    vec3 w = fract(x);
-    vec3 u = w * w * (3.0 - 2.0 * w);
-    return mix(mix(mix(hash(p + vec3(0.0,0.0,0.0)), hash(p + vec3(1.0,0.0,0.0)), u.x),
-                   mix(hash(p + vec3(0.0,1.0,0.0)), hash(p + vec3(1.0,1.0,0.0)), u.x), u.y),
-               mix(mix(hash(p + vec3(0.0,0.0,1.0)), hash(p + vec3(1.0,0.0,1.0)), u.x),
-                   mix(hash(p + vec3(0.0,1.0,1.0)), hash(p + vec3(1.0,1.0,1.0)), u.x), u.y), u.z);
-}
-
-// --- SDF Primitives ---
-float sdSphere(vec3 p, float r) {
-    return length(p) - r;
-}
-
-float sdBox(vec3 p, vec3 b) {
-    vec3 q = abs(p) - b;
-    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
-}
-
-// Global material ID:
-// 1 = Floor (sandstone ground)
-// 2 = Left Wall (dusty teal)
-// 3 = Right Wall (terracotta red)
-// 4 = Pedestal Box (sandstone)
-// 5 = Bottom Red Ceramic Sphere (Left)
-// 6 = Top Red Lacquer Sphere (Left)
-// 7 = Travertine Stone Sphere (Right)
-// 8 = Small Turquoise Enamel Sphere (Foreground)
-
-vec2 map(vec3 p) {
-    float t = time * speed;
-    
-    // 1. Floor Plane
-    float dFloor = p.y - (-1.15);
-    vec2 res = vec2(dFloor, 1.0);
-    
-    // 2. Corner Walls: Left Teal Wall & Right Terracotta Wall
-    // Left Teal Wall at x <= 0.0, z = 0.95
-    float dLeftWall = sdBox(p - vec3(-2.0, 1.5, 0.95), vec3(2.0, 3.0, 0.05));
-    if (dLeftWall < res.x) res = vec2(dLeftWall, 2.0);
-    
-    // Right Terracotta Wall at x > 0.0, z = 0.95
-    float dRightWall = sdBox(p - vec3(2.0, 1.5, 0.95), vec3(2.0, 3.0, 0.05));
-    if (dRightWall < res.x) res = vec2(dRightWall, 3.0);
-    
-    // 3. Sandstone Pedestal Block on Right
-    vec3 bPos = p - vec3(0.65, -0.75, 0.10);
-    float dBox = sdBox(bPos, vec3(0.60, 0.40, 0.50)) - 0.02;
-    if (dBox < res.x) res = vec2(dBox, 4.0);
-    
-    // 4. Large Bottom Red Sphere (textured ceramic) on Left
-    vec3 posRed1 = vec3(-0.45, -0.36, -0.05);
-    float dRed1 = sdSphere(p - posRed1, 0.76);
-    if (dRed1 < res.x) res = vec2(dRed1, 5.0);
-    
-    // 5. Top Red Sphere (balanced on bottom sphere with subtle breathing wobble)
-    float wobble = sin(t * 1.2) * (0.02 * balance);
-    float breath = cos(t * 0.8) * (0.015 * balance);
-    vec3 posRed2 = vec3(-0.38 + wobble, 0.70 + breath, -0.02);
-    float dRed2 = sdSphere(p - posRed2, 0.44);
-    if (dRed2 < res.x) res = vec2(dRed2, 6.0);
-    
-    // 6. Large Travertine Limestone Sphere (sitting on pedestal) on Right
-    vec3 posStone = vec3(0.52, 0.04, 0.08);
-    float dStone = sdSphere(p - posStone, 0.65);
-    if (dStone < res.x) res = vec2(dStone, 7.0);
-    
-    // 7. Small Turquoise Enamel Sphere in foreground
-    float floatTurq = sin(t * 1.5 + 1.0) * (0.02 * balance);
-    vec3 posTurq = vec3(0.14, -0.80 + floatTurq, -0.70);
-    float dTurq = sdSphere(p - posTurq, 0.32);
-    if (dTurq < res.x) res = vec2(dTurq, 8.0);
-    
-    return res;
-}
-
-vec3 calcNormal(vec3 p) {
-    const float eps = 0.001;
-    vec2 h = vec2(eps, 0.0);
-    return normalize(vec3(
-        map(p + h.xyy).x - map(p - h.xyy).x,
-        map(p + h.yxy).x - map(p - h.yxy).x,
-        map(p + h.yyx).x - map(p - h.yyx).x
-    ));
-}
-
-// Raymarching soft shadows
-float calcShadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
-    float res = 1.0;
-    float t = mint;
-    for (int i = 0; i < 56; i++) {
-        float h = map(ro + rd * t).x;
-        res = min(res, k * h / t);
-        t += clamp(h, 0.015, 0.22);
-        if (res < 0.001 || t > maxt) break;
-    }
-    return clamp(res, 0.0, 1.0);
-}
-
-// Ambient occlusion
-float calcAO(vec3 p, vec3 n) {
-    float occ = 0.0;
-    float sca = 1.0;
-    for (int i = 0; i < 5; i++) {
-        float h = 0.01 + 0.12 * float(i) / 4.0;
-        float d = map(p + h * n).x;
-        occ += (h - d) * sca;
-        sca *= 0.85;
-    }
-    return clamp(1.0 - 2.5 * occ, 0.0, 1.0);
-}
-
-void main() {
-    vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / resolution.y;
-    float t = time * speed;
-    
-    // Camera setup with interactive orbit
-    float camAngle = 0.02 + camera_orbit * 0.45;
-    float camDist = 3.8;
-    vec3 ro = vec3(sin(camAngle) * camDist, 0.20, -cos(camAngle) * camDist);
-    vec3 ta = vec3(0.02, -0.05, 0.0);
-    
-    vec3 ww = normalize(ta - ro);
-    vec3 uu = normalize(cross(vec3(0.0, 1.0, 0.0), ww)); // Right-handed view matrix
-    vec3 vv = normalize(cross(ww, uu));
-    
-    // Ray direction with balanced studio lens
-    vec3 rd = normalize(uv.x * uu + uv.y * vv + 1.35 * ww);
-    
-    // Sun key light direction from top-right casting diagonal shadow across left teal wall
-    float sunA = light_angle;
-    vec3 lightDir = normalize(vec3(-cos(sunA) * 1.5, 1.7, -sin(sunA) * 1.2 - 0.2));
-    vec3 lightCol = vec3(1.0, 0.95, 0.88) * 1.45;
-    
-    // Raymarch
-    float dO = 0.0;
-    float matID = 0.0;
-    for (int i = 0; i < 115; i++) {
-        vec3 p = ro + rd * dO;
-        vec2 dMat = map(p);
-        if (dMat.x < 0.001) {
-            matID = dMat.y;
-            break;
-        }
-        if (dO > 22.0) break;
-        dO += dMat.x;
-    }
-    
-    vec3 col = vec3(0.92, 0.86, 0.80); // Warm ambient background fallback
-    
-    if (dO < 22.0) {
-        vec3 p = ro + rd * dO;
-        vec3 n = calcNormal(p);
-        vec3 v = -rd;
-        
-        // Procedural micro-texture
-        float nVal = noise(p * 32.0);
-        float speckle = noise(p * 95.0);
-        
-        vec3 albedo = vec3(1.0);
-        float specPower = 32.0;
-        float specIntensity = 0.6;
-        float fresnelPower = 4.0;
-        
-        // Assign Material Properties
-        if (matID < 1.5) {
-            // Floor: Sandstone / Terracotta Floor
-            albedo = vec3(0.92, 0.78, 0.64) * (0.93 + 0.12 * nVal);
-            specPower = 14.0 / max(0.1, roughness);
-            specIntensity = 0.18;
-        }
-        else if (matID < 2.5) {
-            // Left Wall: Dusty Sage / Teal Cyan
-            albedo = vec3(0.36, 0.58, 0.60) * (0.95 + 0.08 * nVal);
-            specPower = 8.0 / max(0.1, roughness);
-            specIntensity = 0.08;
-        }
-        else if (matID < 3.5) {
-            // Right Wall: Rich Terracotta Red
-            albedo = vec3(0.68, 0.20, 0.18) * (0.95 + 0.08 * nVal);
-            specPower = 8.0 / max(0.1, roughness);
-            specIntensity = 0.08;
-        }
-        else if (matID < 4.5) {
-            // Pedestal Box: Sandy Limestone Block
-            albedo = vec3(0.90, 0.74, 0.58) * (0.9 + 0.15 * nVal);
-            specPower = 18.0 / max(0.1, roughness);
-            specIntensity = 0.22;
-        }
-        else if (matID < 5.5) {
-            // Bottom Large Red Ceramic Sphere (speckled micro-glaze)
-            albedo = vec3(0.76, 0.12, 0.09) * (0.88 + 0.2 * speckle);
-            specPower = 64.0 / max(0.1, roughness);
-            specIntensity = 1.35;
-        }
-        else if (matID < 6.5) {
-            // Top Red Lacquer Sphere (smooth high-gloss)
-            albedo = vec3(0.84, 0.16, 0.12);
-            specPower = 84.0 / max(0.1, roughness);
-            specIntensity = 1.5;
-        }
-        else if (matID < 7.5) {
-            // Travertine / Sandstone Sphere (matte stone with pores)
-            albedo = vec3(0.84, 0.85, 0.74) * (0.86 + 0.22 * nVal + 0.12 * speckle);
-            specPower = 22.0 / max(0.1, roughness);
-            specIntensity = 0.38;
-        }
-        else {
-            // Small Turquoise Enamel Sphere
-            albedo = vec3(0.38, 0.72, 0.72) * (0.95 + 0.08 * speckle);
-            specPower = 76.0 / max(0.1, roughness);
-            specIntensity = 1.4;
-        }
-        
-        // Lighting Computation
-        float diff = max(dot(n, lightDir), 0.0);
-        float shadow = calcShadow(p + n * 0.02, lightDir, 0.03, 7.0, 26.0);
-        float ao = calcAO(p, n);
-        
-        // Specular Blinn-Phong
-        vec3 h = normalize(lightDir + v);
-        float spec = pow(max(dot(n, h), 0.0), specPower) * specIntensity;
-        
-        // Fresnel Rim Reflection
-        float fresnel = pow(clamp(1.0 - dot(n, v), 0.0, 1.0), fresnelPower);
-        
-        // Ambient Fill / Indirect Color Bleed
-        vec3 skyLight = vec3(0.40, 0.55, 0.68) * max(n.y * 0.5 + 0.5, 0.0) * 0.35;
-        vec3 bounceLight = vec3(0.85, 0.40, 0.30) * max(-n.y * 0.5 + 0.5, 0.0) * 0.28;
-        
-        // Direct Sun Light + Specular
-        vec3 direct = lightCol * diff * shadow;
-        vec3 specular = lightCol * spec * shadow;
-        
-        col = albedo * (direct + skyLight + bounceLight) * ao + specular + fresnel * 0.16 * albedo;
-    }
-    
-    // Tone mapping & gamma correction
-    col = col / (col + vec3(0.82)) * 1.82;
-    col = pow(col, vec3(1.0 / 2.2));
-    
-    // Subtle Vignette
-    col *= 1.0 - 0.22 * dot(uv, uv);
-    
-    gl_FragColor = vec4(col, 1.0);
-}
-`
-  },
-  {
-    header: `/*{
   "description": "Vein Labyrinth",
   "color": "white",
-  "movement": false,
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo_white",
   "parameters": [
-    { "name": "growth", "min": 0.0, "max": 45.0, "default": 25.0, "type": "number" },
+    { "name": "growth", "min": 1.0, "max": 45.0, "default": 25.0, "type": "number" },
     { "name": "branch_chance", "min": 0.0, "max": 1.0, "default": 0.45, "type": "number" },
-    { "name": "split_mode", "min": 2.0, "max": 3.0, "default": 2.5, "type": "number" },
+    { "name": "split_mode", "min": 0.5, "max": 5.0, "default": 2.5, "type": "number" },
     { "name": "segment_size", "min": 10.0, "max": 45.0, "default": 20.0, "type": "number" },
     { "name": "grid_mesh", "min": 0.0, "max": 1.0, "default": 0.35, "type": "number" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
+    { "id": "veins", "name": "Vein Network", "defaultColor": "#000000" }
   ],
   "uuid": "vein-labyrinth-canvas-1"
 }*/`,
@@ -358,12 +194,19 @@ void main() {
   "description": "Neon 3D Polygon",
   "color": "white",
   "movement": true,
+  "defaultPaletteId": "crimson_slate",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "shadows", "min": 0.0, "max": 2.0, "default": 1.0, "type": "number" },
     { "name": "sides", "min": 4.0, "max": 12.0, "default": 6.0, "type": "number" },
     { "name": "symmetry", "min": 0.0, "max": 1.0, "default": 1.0, "type": "number" },
     { "name": "size", "min": 0.1, "max": 3.0, "default": 1.0, "type": "number" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Void Background", "defaultColor": "#ffffff" },
+    { "id": "wireframe", "name": "Polygon Edges", "defaultColor": "#eb556b" },
+    { "id": "faces", "name": "Crystal Faces", "defaultColor": "#7599a4" },
+    { "id": "glow", "name": "Core Glow", "defaultColor": "#f5a6b5" }
   ],
   "uuid": "3d-polygon-neon-1"
 }*/`,
@@ -372,14 +215,21 @@ void main() {
   {
     header: `/*{
   "description": "3D Ferrofluid",
-  "color": "white",
+  "color": "black",
   "movement": true,
+  "defaultPaletteId": "acid_matrix",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "blobbiness", "min": 0.1, "max": 2.0, "default": 0.8, "type": "number" },
     { "name": "droplets", "min": 1.0, "max": 10.0, "default": 5.0, "type": "number" },
     { "name": "size", "min": 0.5, "max": 3.0, "default": 1.0, "type": "number" },
     { "name": "gravity", "min": 0.5, "max": 5.0, "default": 1.5, "type": "number" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#0d1117" },
+    { "id": "spikes", "name": "Magnetic Spikes", "defaultColor": "#39d353" },
+    { "id": "specular", "name": "Specular Light", "defaultColor": "#00ff66" },
+    { "id": "rim", "name": "Rim Light", "defaultColor": "#2ea043" }
   ],
   "uuid": "ferrofluid-3d-1"
 }*/`,
@@ -393,6 +243,11 @@ uniform vec2 resolution;
 uniform float speed;
 uniform float blobbiness;
 uniform float droplets;
+
+uniform vec3 u_color_0;
+uniform vec3 u_color_1;
+uniform vec3 u_color_2;
+uniform vec3 u_color_3;
 
 varying vec2 texCoord;
 
@@ -468,7 +323,7 @@ void main() {
         t += d;
     }
     
-    vec3 bg = vec3(0.95, 0.95, 0.97); // light background
+    vec3 bg = (length(u_color_0) > 0.001) ? u_color_0 : vec3(0.05, 0.07, 0.09);
     vec3 col = bg;
     
     if(t < maxD) {
@@ -486,16 +341,14 @@ void main() {
         float spe = pow(clamp(dot(ref, lig), 0.0, 1.0), 32.0);
         float fre = pow(clamp(1.0 + dot(n, rd), 0.0, 1.0), 2.0);
         
-        // Very dark material (ferrofluid)
-        vec3 mat = vec3(0.02, 0.02, 0.02);
+        vec3 mat = (length(u_color_1) > 0.001) ? u_color_1 : vec3(0.22, 0.83, 0.33);
+        vec3 specCol = (length(u_color_2) > 0.001) ? u_color_2 : vec3(0.0, 1.0, 0.4);
+        vec3 rimCol = (length(u_color_3) > 0.001) ? u_color_3 : vec3(0.18, 0.63, 0.26);
         
-        col = mat;
-        // subtle rim light
-        col += vec3(0.1) * fre;
-        // sharp specular highlights
-        col += vec3(1.0) * spe * 1.5;
-        // subtle secondary reflection
-        col += vec3(0.05) * dif2;
+        col = mat * (0.3 + 0.7 * dif);
+        col += rimCol * fre;
+        col += specCol * spe * 1.5;
+        col += mat * dif2 * 0.2;
     }
     
     gl_FragColor = vec4(col, 1.0);
@@ -507,12 +360,18 @@ void main() {
   "description": "Stacked Balls",
   "color": "white",
   "movement": true,
+  "defaultPaletteId": "crimson_slate",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "count", "min": 10.0, "max": 100.0, "default": 40.0, "type": "number" },
     { "name": "max_size", "min": 20.0, "max": 200.0, "default": 100.0, "type": "number" },
     { "name": "movement", "min": 0.0, "max": 100.0, "default": 30.0, "type": "number" },
     { "name": "chaos", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
+    { "id": "spheres_shade", "name": "Sphere Shading", "defaultColor": "#eb556b" },
+    { "id": "contour", "name": "Outlines & Sparkles", "defaultColor": "#7599a4" }
   ],
   "uuid": "stacked-balls-canvas-1"
 }*/`,
@@ -521,13 +380,18 @@ void main() {
   {
     header: `/*{
   "description": "3D Debris Rocks",
-  "color": "white",
+  "color": "black",
   "movement": true,
+  "defaultPaletteId": "monochrome_duo",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "count", "min": 10.0, "max": 150.0, "default": 80.0, "type": "number" },
     { "name": "scatter", "min": 100.0, "max": 800.0, "default": 400.0, "type": "number" },
     { "name": "size", "min": 0.5, "max": 3.0, "default": 1.0, "type": "number" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "debris", "name": "Flying Debris", "defaultColor": "#ffffff" }
   ],
   "uuid": "3d-debris-canvas-1"
 }*/`,
@@ -538,6 +402,7 @@ void main() {
   "description": "Random Symbols Mix",
   "color": "white",
   "movement": true,
+  "defaultPaletteId": "crimson_slate",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "density", "min": 50.0, "max": 500.0, "default": 250.0, "type": "number" },
@@ -545,22 +410,32 @@ void main() {
     { "name": "movement", "min": 0.0, "max": 100.0, "default": 20.0, "type": "number" },
     { "name": "chaos", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" }
   ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
+    { "id": "circles", "name": "Circle Symbols", "defaultColor": "#eb556b" },
+    { "id": "triangles", "name": "Triangle Symbols", "defaultColor": "#7599a4" },
+    { "id": "squares", "name": "Square & Bar Symbols", "defaultColor": "#233136" }
+  ],
   "uuid": "random-symbols-canvas-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation`
   },
-
   {
     header: `/*{
   "description": "Multicolor Terrain",
-  "color": "white",
+  "color": "black",
   "movement": true,
+  "defaultPaletteId": "acid_matrix",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 0.8, "type": "number" },
     { "name": "amplitude", "min": 30.0, "max": 300.0, "default": 140.0, "type": "number" },
     { "name": "density", "min": 0.5, "max": 2.5, "default": 1.2, "type": "number" },
     { "name": "ruggedness", "min": 0.5, "max": 3.0, "default": 1.8, "type": "number" },
     { "name": "thickness", "min": 0.5, "max": 5.0, "default": 1.5, "type": "number" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#0d1117" },
+    { "id": "terrain_lines", "name": "Terrain Ribs", "defaultColor": "#39d353" }
   ],
   "uuid": "terrain-lines-canvas-1"
 }*/`,
@@ -569,8 +444,9 @@ void main() {
   {
     header: `/*{
   "description": "Squares Decomposition",
-  "color": "white",
+  "color": "black",
   "movement": true,
+  "defaultPaletteId": "monochrome_duo",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "count", "min": 5.0, "max": 50.0, "default": 22.0, "type": "number" },
@@ -579,6 +455,10 @@ void main() {
     { "name": "movement", "min": 0.0, "max": 50.0, "default": 15.0, "type": "number" },
     { "name": "rotation", "min": 0.0, "max": 6.28, "default": 0.0, "type": "number" },
     { "name": "delay", "min": 0.0, "max": 1.0, "default": 0.05, "type": "number" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "squares", "name": "Grid Squares", "defaultColor": "#ffffff" }
   ],
   "uuid": "squares-noise-canvas-1"
 }*/`,
@@ -589,6 +469,7 @@ void main() {
   "description": "Number Paths",
   "color": "white",
   "movement": true,
+  "defaultPaletteId": "crimson_slate",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "nodes", "min": 5.0, "max": 40.0, "default": 16.0, "type": "number" },
@@ -596,6 +477,13 @@ void main() {
     { "name": "spread", "min": 0.0, "max": 1.0, "default": 0.4, "type": "number" },
     { "name": "movement", "min": 0.0, "max": 100.0, "default": 15.0, "type": "number" },
     { "name": "chaos", "min": 0.0, "max": 5.0, "default": 0.0, "type": "number" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
+    { "id": "color_1", "name": "Node Crimson", "defaultColor": "#eb556b" },
+    { "id": "color_2", "name": "Node Slate", "defaultColor": "#7599a4" },
+    { "id": "color_3", "name": "Node Rose", "defaultColor": "#f5a6b5" },
+    { "id": "color_4", "name": "Node Dark", "defaultColor": "#233136" }
   ],
   "uuid": "number-paths-canvas-1"
 }*/`,
@@ -606,6 +494,7 @@ void main() {
   "description": "Buildings Rising",
   "color": "white",
   "movement": true,
+  "defaultPaletteId": "crimson_slate",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "count", "min": 2.0, "max": 15.0, "default": 7.0, "type": "number" },
@@ -615,16 +504,20 @@ void main() {
     { "name": "movement", "min": 0.0, "max": 2.0, "default": 1.0, "type": "number" },
     { "name": "chaos", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" }
   ],
+  "elements": [
+    { "id": "background", "name": "Sky Background", "defaultColor": "#ffffff" },
+    { "id": "buildings", "name": "Cityscape Edges", "defaultColor": "#eb556b" }
+  ],
   "uuid": "isometric-buildings-canvas-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   },
-
   {
     header: `/*{
   "description": "Umbrella Rain Canvas",
-  "color": "blue",
+  "color": "black",
   "movement": true,
+  "defaultPaletteId": "monochrome_duo",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "font_size", "min": 10.0, "max": 60.0, "default": 16.0, "type": "number" },
@@ -634,6 +527,10 @@ void main() {
     { "name": "umbrella_y", "min": -100.0, "max": 100.0, "default": 0.0, "type": "number" },
     { "name": "text_content", "default": "01", "type": "string" }
   ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "umbrella", "name": "Umbrella & Rain Text", "defaultColor": "#ffffff" }
+  ],
   "uuid": "text-umbrella-canvas-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation`
@@ -641,14 +538,19 @@ void main() {
   {
     header: `/*{
   "description": "Word Ripples Canvas",
-  "color": "white",
+  "color": "black",
   "movement": true,
+  "defaultPaletteId": "monochrome_duo",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 10.0, "default": 2.0, "type": "number" },
     { "name": "font_size", "min": 10.0, "max": 60.0, "default": 20.0, "type": "number" },
     { "name": "frequency", "min": 0.01, "max": 0.2, "default": 0.05, "type": "number" },
     { "name": "amplitude", "min": 0.0, "max": 50.0, "default": 20.0, "type": "number" },
     { "name": "text_content", "default": "滴水穿石 | 海纳百川 | 润物无声", "type": "string" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "ripples", "name": "Ripple Typography", "defaultColor": "#ffffff" }
   ],
   "uuid": "text-water-drop-canvas-1"
 }*/`,
@@ -657,8 +559,9 @@ void main() {
   {
     header: `/*{
   "description": "Sea of Words Canvas",
-  "color": "white",
+  "color": "black",
   "movement": true,
+  "defaultPaletteId": "monochrome_duo",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "font_size", "min": 10.0, "max": 60.0, "default": 18.0, "type": "number" },
@@ -668,6 +571,10 @@ void main() {
     { "name": "chaos", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "text_content", "default": "~波浪~海洋~航行~漂流~", "type": "string" }
   ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "boat_sea", "name": "Boat & Sea Text", "defaultColor": "#ffffff" }
+  ],
   "uuid": "text-boat-sea-canvas-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation`
@@ -675,8 +582,9 @@ void main() {
   {
     header: `/*{
   "description": "Text Mask Canvas",
-  "color": "white",
+  "color": "black",
   "movement": true,
+  "defaultPaletteId": "monochrome_duo",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 10.0, "default": 1.0, "type": "number" },
     { "name": "font_size", "min": 10.0, "max": 100.0, "default": 24.0, "type": "number" },
@@ -688,6 +596,10 @@ void main() {
     { "name": "displacement", "min": 0.0, "max": 150.0, "default": 50.0, "type": "number" },
     { "name": "text_content", "default": "学而不思则罔，思而不学则殆。 | 温故而知新，可以为师矣。 | 三人行，必有我师焉。择其善者而从之，其不善者而改之。 | 己所不欲，勿施于人。 | 君子坦荡荡，小人长戚戚。 | 君子和而不同，小人同而不和。 | 知之为知之，不知为不知，是知也。 | 逝者如斯夫，不舍昼夜。", "type": "string" }
   ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "dragon", "name": "Dragon Typography", "defaultColor": "#ffffff" }
+  ],
   "uuid": "dragon-text-mask-canvas-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
@@ -698,6 +610,7 @@ void main() {
   "description": "Brutalist Grid",
   "color": "white",
   "movement": true,
+  "defaultPaletteId": "bauhaus_primary",
   "parameters": [
     { "name": "columns", "min": 1.0, "max": 10.0, "default": 3.0 },
     { "name": "rows", "min": 1.0, "max": 10.0, "default": 3.0 },
@@ -705,6 +618,12 @@ void main() {
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0 },
     { "name": "thickness", "min": 0.01, "max": 0.2, "default": 0.05 },
     { "name": "aberration", "min": 0.0, "max": 0.1, "default": 0.02 }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
+    { "id": "primary_shapes", "name": "Red Shadow / Accent", "defaultColor": "#e63946" },
+    { "id": "secondary_shapes", "name": "Navy Blue Structure", "defaultColor": "#1b2a47" },
+    { "id": "accent_shapes", "name": "Inner Fill / Highlight", "defaultColor": "#ffffff" }
   ],
   "uuid": "brutalist-grid-1"
 }*/`,
@@ -721,6 +640,12 @@ uniform float shape_type;
 uniform float speed;
 uniform float thickness;
 uniform float aberration;
+
+uniform vec3 u_color_0;
+uniform vec3 u_color_1;
+uniform vec3 u_color_2;
+uniform vec3 u_color_3;
+uniform float u_color_0_alpha;
 
 varying vec2 texCoord;
 
@@ -797,13 +722,27 @@ void main() {
     float g = smoothstep(blur, 0.0, dG);
     float b = smoothstep(blur, 0.0, dB);
     
-    // red background
-    vec3 result = vec3(0.8, 0.1, 0.1); 
-    result = mix(result, vec3(1.0, 1.0, 0.0), r); 
-    result = mix(result, vec3(0.0, 1.0, 1.0), b); 
-    result = mix(result, vec3(1.0, 1.0, 1.0), g); 
+    vec3 cBg = (length(u_color_0) > 0.001) ? u_color_0 : vec3(1.0, 1.0, 1.0);
+    vec3 cRed = (length(u_color_1) > 0.001) ? u_color_1 : vec3(0.90, 0.22, 0.27);
+    vec3 cBlue = (length(u_color_2) > 0.001) ? u_color_2 : vec3(0.106, 0.165, 0.278);
+    vec3 cAccent = (length(u_color_3) > 0.001) ? u_color_3 : vec3(1.0, 1.0, 1.0);
     
-    gl_FragColor = vec4(result, 1.0);
+    float bgAlpha = (u_color_0_alpha > 0.01) ? 1.0 : 0.0;
+    vec4 result = vec4(cBg, bgAlpha);
+    
+    // Layer 1: Red shadow offset
+    result.rgb = mix(result.rgb, cRed, r);
+    result.a = max(result.a, r);
+    
+    // Layer 2: Inner shape core
+    result.rgb = mix(result.rgb, cAccent, g * 0.95);
+    result.a = max(result.a, g);
+    
+    // Layer 3: Navy blue stroke on top
+    result.rgb = mix(result.rgb, cBlue, b);
+    result.a = max(result.a, b);
+    
+    gl_FragColor = result;
 }
 `
   },
@@ -812,12 +751,19 @@ void main() {
   "description": "Ferrofluid",
   "color": "white",
   "movement": true,
+  "defaultPaletteId": "bauhaus_primary",
   "parameters": [
     { "name": "blob_size", "min": 1.0, "max": 50.0, "default": 21.0 },
     { "name": "blobs", "min": 1.0, "max": 10.0, "default": 1.0 },
     { "name": "density", "min": 1.0, "max": 100.0, "default": 52.0 },
     { "name": "speed", "min": 0.0, "max": 100.0, "default": 38.0 },
     { "name": "opacity", "min": 0.0, "max": 1.0, "default": 1.0 }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
+    { "id": "fluid", "name": "Liquid Ferrofluid", "defaultColor": "#e63946" },
+    { "id": "specular", "name": "Specular Highlight", "defaultColor": "#457b9d" },
+    { "id": "ambient", "name": "Ambient Base", "defaultColor": "#1d3557" }
   ],
   "uuid": "ferrofluid-1"
 }*/`,
@@ -833,6 +779,11 @@ uniform float blobs;
 uniform float density;
 uniform float speed;
 uniform float opacity;
+
+uniform vec3 u_color_0;
+uniform vec3 u_color_1;
+uniform vec3 u_color_2;
+uniform vec3 u_color_3;
 
 varying vec2 texCoord;
 
@@ -881,10 +832,16 @@ void main() {
     float diffuse = max(dot(normal, lightDir), 0.0);
     float spec = pow(max(dot(reflect(-lightDir, normal), vec3(0.0, 0.0, 1.0)), 0.0), 16.0);
     
-    vec3 color = vec3(0.8, 0.2, 0.05) * diffuse + vec3(1.0, 0.8, 0.6) * spec;
-    color *= ridges * 1.5; 
+    vec3 cBg = (length(u_color_0) > 0.001) ? u_color_0 : vec3(1.0, 1.0, 1.0);
+    vec3 cFluid = (length(u_color_1) > 0.001) ? u_color_1 : vec3(0.9, 0.22, 0.27);
+    vec3 cSpec = (length(u_color_2) > 0.001) ? u_color_2 : vec3(0.27, 0.48, 0.62);
+    vec3 cAmb = (length(u_color_3) > 0.001) ? u_color_3 : vec3(0.11, 0.21, 0.34);
+
+    vec3 diffuseColor = cFluid * diffuse + cAmb * (1.0 - diffuse) * 0.4;
+    vec3 specularColor = cSpec * spec * 1.5;
+    vec3 fluidColor = (diffuseColor + specularColor) * ridges * 1.5;
     
-    color = mix(vec3(0.05, 0.0, 0.0), color, ridges);
+    vec3 color = mix(cBg, fluidColor, ridges);
     
     gl_FragColor = vec4(color, opacity);
 }
@@ -895,12 +852,18 @@ void main() {
   "description": "Cloudy Shader",
   "color": "white",
   "movement": true,
+  "defaultPaletteId": "bauhaus_primary",
   "parameters": [
     { "name": "smooth_bands", "default": 1.0, "type": "boolean" },
     { "name": "warp_depth", "min": 0.0, "max": 10.0, "default": 1.0 },
     { "name": "complexity", "min": 1.0, "max": 10.0, "default": 6.0 },
     { "name": "bands", "min": 1.0, "max": 100.0, "default": 48.0 },
     { "name": "speed", "min": 0.0, "max": 100.0, "default": 57.0 }
+  ],
+  "elements": [
+    { "id": "sky", "name": "Atmosphere", "defaultColor": "#ffffff" },
+    { "id": "clouds", "name": "Volumetric Clouds", "defaultColor": "#e63946" },
+    { "id": "sunlight", "name": "Matrix Energy", "defaultColor": "#1d3557" }
   ],
   "uuid": "shader-clouds-1"
 }*/`,
@@ -916,6 +879,10 @@ uniform float complexity;
 uniform float bands;
 uniform float speed;
 uniform float smooth_bands;
+
+uniform vec3 u_color_0;
+uniform vec3 u_color_1;
+uniform vec3 u_color_2;
 
 varying vec2 texCoord;
 
@@ -958,9 +925,9 @@ void main() {
         n = sin(n * bands * 3.1415) * 0.5 + 0.5;
     }
     
-    vec3 col1 = vec3(0.05, 0.2, 0.4);
-    vec3 col2 = vec3(0.2, 0.5, 0.8);
-    vec3 col3 = vec3(0.8, 0.9, 1.0);
+    vec3 col1 = (length(u_color_0) > 0.001) ? u_color_0 : vec3(1.0, 1.0, 1.0);
+    vec3 col2 = (length(u_color_1) > 0.001) ? u_color_1 : vec3(0.9, 0.22, 0.27);
+    vec3 col3 = (length(u_color_2) > 0.001) ? u_color_2 : vec3(0.11, 0.21, 0.34);
     
     vec3 color = mix(col1, col2, clamp(n*2.0, 0.0, 1.0));
     color = mix(color, col3, clamp(n*2.0 - 1.0, 0.0, 1.0));
@@ -973,8 +940,9 @@ void main() {
   {
     header: `/*{
   "description": "Auto-Rotating Arcs (Tempo Sync)",
-  "color": "white",
+  "color": "black",
   "movement": true,
+  "defaultPaletteId": "monochrome_duo",
   "parameters": [
     { "name": "speed_rel",   "min": 0.0,  "max": 1.0,  "default": 0.5 },
     { "name": "tail_style",  "min": 0.0,  "max": 1.0,  "default": 0.0 },
@@ -983,6 +951,12 @@ void main() {
     { "name": "tail_length", "min": 0.1,  "max": 1.0,  "default": 0.6 },
     { "name": "offset",      "min": 0.0,  "max": 1.0,  "default": 0.1 },
     { "name": "spacing",     "min": 0.01, "max": 0.65, "default": 0.04 }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "inner_arcs", "name": "Primary Arcs", "defaultColor": "#ffffff" },
+    { "id": "outer_arcs", "name": "Secondary Rings", "defaultColor": "#ffffff" },
+    { "id": "dots", "name": "Trailing Points", "defaultColor": "#ffffff" }
   ],
   "uuid": "arcs-auto-tail-v4"
 }*/`,
@@ -1002,6 +976,9 @@ uniform float thickness;
 uniform float tail_length;
 uniform float offset;
 uniform float spacing;
+
+uniform vec3 u_color_0;
+uniform vec3 u_color_1;
 
 varying vec2 texCoord;
 
@@ -1041,14 +1018,18 @@ void main() {
     }
 
     float finalAlpha = clamp(m, 0.0, 1.0);
-    gl_FragColor = vec4(1.0, 1.0, 1.0, finalAlpha); // default white as per JSON
-}`
+    vec3 cBg = (length(u_color_0) > 0.001) ? u_color_0 : vec3(0.0, 0.0, 0.0);
+    vec3 cFg = (length(u_color_1) > 0.001) ? u_color_1 : vec3(1.0, 1.0, 1.0);
+    vec3 col = mix(cBg, cFg, finalAlpha);
+    gl_FragColor = vec4(col, 1.0);
+} `
   },
   {
     header: `/*{
   "description": "Stickiness",
-  "color": "white",
+  "color": "black",
   "movement": true,
+  "defaultPaletteId": "monochrome_duo",
   "parameters": [
     { "name": "count",      "min": 2,   "max": 12,  "default": 3 },
     { "name": "ball_size",  "min": 10,  "max": 150, "default": 15 },
@@ -1056,6 +1037,11 @@ void main() {
     { "name": "chaos",      "min": 0.0, "max": 1.0, "default": 0.3 },
     { "name": "speed",      "min": 0.1, "max": 3.0, "default": 0.6 },
     { "name": "diffusion",  "min": 0.1, "max": 0.95,"default": 0.85 }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "metaballs", "name": "Liquid Blobs", "defaultColor": "#ffffff" },
+    { "id": "filaments", "name": "Sticky Tendrils", "defaultColor": "#ffffff" }
   ],
   "uuid": "stickiness-canvas-gen-1"
 }*/`,
@@ -1072,6 +1058,9 @@ uniform float speed;
 uniform float radius;
 uniform float ball_size;
 uniform float diffusion;
+
+uniform vec3 u_color_0;
+uniform vec3 u_color_1;
 
 varying vec2 texCoord;
 
@@ -1115,20 +1104,28 @@ void main(void) {
     col = smoothstep(0.0, 1.0, (col - t_thresh) / t_thresh);
     col = pow(col, glow);
 
-    gl_FragColor = vec4(1.0, 1.0, 1.0, clamp(col, 0.0, 1.0)); // white output
+    vec3 cBg = (length(u_color_0) > 0.001) ? u_color_0 : vec3(0.0, 0.0, 0.0);
+    vec3 cFg = (length(u_color_1) > 0.001) ? u_color_1 : vec3(1.0, 1.0, 1.0);
+    vec3 colRGB = mix(cBg, cFg, clamp(col, 0.0, 1.0));
+    gl_FragColor = vec4(colRGB, 1.0);
 }`
   },
   {
     header: `/*{
   "description": "Waves",
-  "color": "white",
+  "color": "black",
   "movement": true,
+  "defaultPaletteId": "monochrome_duo",
   "parameters": [
     { "name": "speed",     "min": 0.5, "max": 20.0, "default": 4.0 },
     { "name": "freq",      "min": 0.1, "max": 4.0,  "default": 0.8 },
     { "name": "amp",       "min": 1.0, "max": 60.0, "default": 18.0 },
     { "name": "lines",     "min": 5.0, "max": 150.0,"default": 45.0 },
     { "name": "thickness", "min": 0.5, "max": 8.0,  "default": 2.2 }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "waves", "name": "Flow Waves", "defaultColor": "#ffffff" }
   ],
   "uuid": "waves-canvas-gen-1"
 }*/`,
@@ -1137,14 +1134,19 @@ void main(void) {
   {
     header: `/*{
   "description": "Topography",
-  "color": "white",
+  "color": "black",
   "movement": true,
+  "defaultPaletteId": "monochrome_duo",
   "parameters": [
     { "name": "speed",     "min": 0.0, "max": 10.0,  "default": 1.0 },
     { "name": "freq",      "min": 0.2, "max": 6.0,   "default": 1.5 },
     { "name": "amp",       "min": 10.0,"max": 400.0, "default": 320.0 },
     { "name": "lines",     "min": 5.0, "max": 100.0, "default": 25.0 },
     { "name": "thickness", "min": 0.5, "max": 8.0,   "default": 2.2 }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "contours", "name": "Contour Lines", "defaultColor": "#ffffff" }
   ],
   "uuid": "topography-canvas-gen-1"
 }*/`,
@@ -1166,12 +1168,21 @@ export function parseGeneratives(): GenerativeDefinition[] {
       console.error("Failed to parse generative header", e);
     }
 
+    const defaultElements: GenerativeElement[] = [
+      { id: "background", name: "Background", defaultColor: metadata.color === 'white' ? "#ffffff" : "#000000" },
+      { id: "primary", name: "Primary Geometry", defaultColor: metadata.color === 'white' ? "#eb556b" : "#ffffff" },
+      { id: "secondary", name: "Secondary Accent", defaultColor: "#7599a4" },
+      { id: "highlight", name: "Highlights & Lines", defaultColor: "#f5a6b5" }
+    ];
+
     return {
       uuid: metadata.uuid || Math.random().toString(),
       description: metadata.description || 'Generative',
-      color: metadata.color || 'white',
+      color: metadata.color || 'black',
       movement: metadata.movement || false,
       parameters: metadata.parameters || [],
+      elements: metadata.elements || defaultElements,
+      defaultPaletteId: metadata.defaultPaletteId || (metadata.color === 'white' ? 'monochrome_duo_white' : 'monochrome_duo'),
       fragmentShader: g.code
     };
   });
@@ -1187,6 +1198,25 @@ const VERTEX_SHADER = `
     gl_Position = vec4(position, 0.0, 1.0);
   }
 `;
+
+export function isTransparentColor(c?: string): boolean {
+  if (!c) return false;
+  const s = c.trim().toLowerCase();
+  return s === 'transparent' || s === 'none' || (s.startsWith('rgba(') && s.endsWith(', 0)')) || (s.startsWith('rgba(') && s.endsWith(',0)')) || s === '#00000000' || s === '#0000' || (s.startsWith('#') && s.length === 9 && s.endsWith('00'));
+}
+
+function parseHexColorVec3(hex: string): [number, number, number] {
+  if (!hex || isTransparentColor(hex)) return [0, 0, 0];
+  let clean = hex.replace('#', '');
+  if (clean.length === 3) clean = clean.split('').map(c => c + c).join('');
+  if (clean.length >= 6) {
+    const r = parseInt(clean.substring(0, 2), 16) / 255.0;
+    const g = parseInt(clean.substring(2, 4), 16) / 255.0;
+    const b = parseInt(clean.substring(4, 6), 16) / 255.0;
+    return [isNaN(r) ? 0 : r, isNaN(g) ? 0 : g, isNaN(b) ? 0 : b];
+  }
+  return [0, 0, 0];
+}
 
 export class WebGLGenerativeRenderer {
   private gl: WebGLRenderingContext | null = null;
@@ -1266,15 +1296,29 @@ export class WebGLGenerativeRenderer {
     }
 
     const uniforms: Record<string, WebGLUniformLocation> = {};
-    ['time', 'resolution', ...def.parameters.map(p => p.name)].forEach(name => {
+    [
+      'time', 'resolution', 
+      'u_color_0', 'u_color_1', 'u_color_2', 'u_color_3', 'u_color_4',
+      'u_color_0_alpha', 'u_color_1_alpha', 'u_color_2_alpha', 'u_color_3_alpha', 'u_color_4_alpha',
+      ...def.parameters.map(p => p.name)
+    ].forEach(name => {
       const loc = gl.getUniformLocation(program, name);
       if (loc) uniforms[name] = loc;
     });
 
+    if (def.elements) {
+      def.elements.forEach(el => {
+        const loc = gl.getUniformLocation(program, `u_${el.id}`) || gl.getUniformLocation(program, el.id);
+        if (loc) uniforms[`u_${el.id}`] = loc;
+        const locA = gl.getUniformLocation(program, `u_${el.id}_alpha`);
+        if (locA) uniforms[`u_${el.id}_alpha`] = locA;
+      });
+    }
+
     this.programs[def.uuid] = { program, uniforms };
   }
 
-  render(def: GenerativeDefinition, time: number, settings: Record<string, number>) {
+  render(def: GenerativeDefinition, time: number, settings: Record<string, number>, colors?: Record<string, string>) {
     const gl = this.gl;
     if (!gl || !this.positionBuffer) return;
 
@@ -1306,6 +1350,26 @@ export class WebGLGenerativeRenderer {
         }
       }
     });
+
+    if (def.elements) {
+      def.elements.forEach((el, idx) => {
+        const rawColor = (colors && colors[el.id]) ? colors[el.id] : el.defaultColor;
+        const [r, g, b] = parseHexColorVec3(rawColor);
+        const isTransp = isTransparentColor(rawColor);
+        
+        const uIdx = progData.uniforms[`u_color_${idx}`];
+        if (uIdx) gl.uniform3f(uIdx, r, g, b);
+
+        const uIdxAlpha = progData.uniforms[`u_color_${idx}_alpha`];
+        if (uIdxAlpha) gl.uniform1f(uIdxAlpha, isTransp ? 0.0 : 1.0);
+        
+        const uNamed = progData.uniforms[`u_${el.id}`];
+        if (uNamed) gl.uniform3f(uNamed, r, g, b);
+
+        const uNamedAlpha = progData.uniforms[`u_${el.id}_alpha`];
+        if (uNamedAlpha) gl.uniform1f(uNamedAlpha, isTransp ? 0.0 : 1.0);
+      });
+    }
 
     gl.clearColor(0,0,0,0);
     gl.clear(gl.COLOR_BUFFER_BIT);
