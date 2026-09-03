@@ -10476,9 +10476,9 @@ return (
                             {(() => {
                               const isLayerTriggerActive = !!activeLayer.midiMode || !!activeLayer.audioMapping?.enabled || !!activeLayer.rhythmMapping?.enabled;
                               return (
-                                <div className={`grid grid-cols-1 ${isLayerTriggerActive ? 'lg:grid-cols-2' : ''} gap-8`}>
+                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                                    <div className="space-y-4">
-                                     <RangeSlider 
+                                     <RangeSlider
                                        label="Video Segment"
                                        min={0}
                                        max={videoRefs.current[activeLayer.id]?.duration || 10}
@@ -10488,10 +10488,10 @@ return (
                                      />
                                    </div>
 
-                                   {isLayerTriggerActive && (
+                                   {(
                                      <div className="space-y-4">
                                        <label className="text-[10px] uppercase tracking-widest opacity-40">Trigger Mode</label>
-                                       <select 
+                                       <select
                                          value={activeLayer.videoTriggerMode || 'continuous'}
                                          onChange={(e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoTriggerMode: e.target.value as any } : l))}
                                          className="w-full bg-black/40 border border-white/10 rounded p-2 text-[10px] uppercase tracking-widest outline-none"
@@ -10502,6 +10502,11 @@ return (
                                          <option value="rewind">Boomerang</option>
                                          <option value="frame-accumulator">Frame Accumulator</option>
                                        </select>
+                                       {!isLayerTriggerActive && (
+                                         <p className="text-[8px] uppercase tracking-widest text-white/30 leading-relaxed">
+                                           Restart / Advance / Boomerang / Accumulator react to a trigger — enable a MIDI, Audio or Rhythm trigger on this layer to drive them.
+                                         </p>
+                                       )}
 
                                        {activeLayer.videoTriggerMode === 'advance' && (
                                           <div className="space-y-3 p-3 bg-black/30 border border-white/5 rounded mt-2">
