@@ -8,12 +8,18 @@ import { createPortal } from 'react-dom';
 import { 
   Upload, 
   Music, 
-  Play, 
-  Pause, 
+  Play,
+  Pause,
+  Volume2,
+  VolumeX,
+  Repeat,
   Activity, 
   Layers, 
-  ChevronDown, 
+  ChevronDown,
   ChevronRight,
+  ChevronLeft,
+  PanelLeftClose,
+  PanelRightClose,
   Maximize2,
   Zap,
   Eye,
@@ -46,7 +52,7 @@ import {
   Mic
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
-import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition, BUILTIN_PALETTES, GenerativeElement, ColorPalettePreset } from './lib/generatives';
+import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition, BUILTIN_PALETTES, GenerativeElement, ColorPalettePreset, GENERATIVE_CATEGORY_ORDER } from './lib/generatives';
 import { engine, AudioStemNode } from './lib/audioEngine';
 import { AudioSpectrogram } from './components/AudioSpectrogram';
 import { Waves } from './components/Waves';
@@ -64,6 +70,16 @@ export interface AudioMapping {
   release: number;
   smoothing?: number;
   cooldownMs?: number;
+  /** Audio-processing engine: 'level' = amplitude follower (original), 'transient' = pops on each hit. */
+  engine?: 'level' | 'transient';
+  /** 'level' engine tracking style. */
+  mode?: 'fast' | 'smooth';
+  /** 'transient' engine: how eager the hit detector is (higher = more sensitive). */
+  sensitivity?: number;
+  /** 'transient' engine: how long each hit takes to fade, ms. */
+  decayMs?: number;
+  /** optional per-mapping note/envelope settings (used by the 'level' engine). */
+  noteSettings?: any;
   target: 'trigger' | 'opacity';
 }
 
@@ -391,10 +407,65 @@ export const DEFAULT_AUDIO_MAPPING: AudioMapping = {
   threshold: 0.1,
   attack: 0.0,
   release: 0.2,
-  smoothing: 0.1,
+  smoothing: 0.85,
   cooldownMs: 50,
+  engine: 'level',
+  mode: 'fast',
+  sensitivity: 0.7,
+  decayMs: 220,
   target: 'trigger'
 };
+
+// --- 'transient' audio engine: onset detection on band ENERGY (not 1-frame flux,
+// which collapses to ~0 at 60fps). Tracks a fast envelope vs a slow baseline and
+// fires when the envelope jumps above the baseline. Returns 0..1: snaps to 1 on a
+// detected hit, then fades over `decayMs`.
+type TransientTrackerState = {
+  value: number;
+  lastTriggerTime: number;
+  fast?: number;
+  base?: number;
+  peakRise?: number;
+  armed?: boolean;
+};
+function processTransientHit(
+  intensity: number,     // 0..1 band energy from engine.getBandIntensity().intensity
+  sensitivity: number,   // 0..1 slider, 1 = most eager
+  decayMs: number,
+  cooldownMs: number,
+  tr: TransientTrackerState,
+  dtSec: number,
+  now: number,
+): number {
+  const dt = dtSec > 0 && dtSec < 0.25 ? dtSec : 1 / 60;
+  const aBase = Math.exp(-dt / 0.35);   // ~350ms baseline follower
+
+  // fast envelope: instant attack, quick release — tracks the peak of each hit
+  const fastPrev = tr.fast ?? intensity;
+  tr.fast = intensity > fastPrev ? intensity : intensity + Math.exp(-dt / 0.06) * (fastPrev - intensity);
+
+  // slow baseline: the "recent average" energy in this band
+  tr.base = (tr.base ?? intensity) * aBase + intensity * (1 - aBase);
+
+  const rise = tr.fast - (tr.base ?? 0);
+  // sensitivity 1 -> needs only +0.02 over baseline; sensitivity 0 -> needs +0.18
+  const s = Math.max(0, Math.min(1, sensitivity));
+  const openDelta = 0.02 + (1 - s) * 0.16;
+  const closeDelta = openDelta * 0.4;
+
+  const armed = tr.armed ?? true;
+  if (armed && rise > openDelta && now - tr.lastTriggerTime > cooldownMs) {
+    tr.lastTriggerTime = now;
+    tr.armed = false;
+    tr.value = 1;
+  } else if (!armed && rise < closeDelta) {
+    tr.armed = true;
+  }
+
+  const dec = Math.max(0.001, decayMs / 1000);
+  tr.value = Math.max(0, (tr.value ?? 0) - dt / dec);
+  return tr.value;
+}
 
 const DEFAULT_TRIGGER_MAPPING: LayerTriggerMapping = {
   channels: Array.from({length: 16}, (_, i) => i),
@@ -1466,9 +1537,9 @@ export default function App() {
     return [
       {
         id: 'layer-1',
-        name: 'Background',
-        type: forceGen ? 'generative' : 'video',
-        generativeId: forceGen || undefined,
+        name: 'Dancing Cubes',
+        type: 'generative',
+        generativeId: forceGen || 'dancing-cubes-canvas-1',
         src: null,
         opacity: 1,
         blendMode: 'source-over',
@@ -1497,10 +1568,35 @@ export default function App() {
             noteEnd: 127,
             triggerBehavior: 'momentary' as any,
             noteSettings: { ...DEFAULT_NOTE_SETTINGS }
+          },
+          {
+            ...INITIAL_MAPPINGS[0],
+            id: 'rotate_face',
+            name: 'rotate_face',
+            description: 'Rotates a cube face on each detected hit.',
+            active: true,
+            manualActive: false,
+            isMuted: false,
+            isSoloed: false,
+            channels: Array.from({length: 16}, (_, i) => i),
+            noteStart: 0,
+            noteEnd: 127,
+            triggerBehavior: 'momentary' as any,
+            noteSettings: { ...DEFAULT_NOTE_SETTINGS },
+            audioMapping: {
+              ...DEFAULT_AUDIO_MAPPING,
+              enabled: true,
+              engine: 'transient',
+              stemId: 'funky-drums',
+              freqRange: [35, 120],
+              sensitivity: 0.7,
+              decayMs: 200,
+            },
           }
         ],
         generativeTriggerActive: {
-          palette_cycle: false
+          palette_cycle: false,
+          rotate_face: true
         },
         generativeTriggerAmount: {},
         generativeColors: initColors,
@@ -1535,8 +1631,8 @@ export default function App() {
   // UI State
   const [activeTab, setActiveTab] = useState<'visual' | 'midi' | 'effects'>('visual');
   const [expandedSection, setExpandedSection] = useState<string | null>('layers');
-  const [selectedEffectId, setSelectedEffectId] = useState<string | null>(null);
-  const [selectedLayerForEffect, setSelectedLayerForEffect] = useState<string | null>(null);
+  const [selectedEffectId, setSelectedEffectId] = useState<string | null>('generative-rotate_face');
+  const [selectedLayerForEffect, setSelectedLayerForEffect] = useState<string | null>('layer-1');
   const [showEffectBrowser, setShowEffectBrowser] = useState(false);
   const [showAssetBrowser, setShowAssetBrowser] = useState(false);
   const [assetBrowserLayerTarget, setAssetBrowserLayerTarget] = useState<string | null>(null);
@@ -1545,10 +1641,16 @@ export default function App() {
   const [currentProjectFile, setCurrentProjectFile] = useState<string | null>(null);
   const [showRoutingGuide, setShowRoutingGuide] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<string | null>('midi-devices');
+  const [rightSection, setRightSection] = useState<string | null>('triggers');
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
   const [compositionLayout, setCompositionLayout] = useState<'stack' | 'split-vertical' | 'split-horizontal' | 'grid-2x2' | 'grid-3x3' | 'grid-4x4'>('stack');
   const [aspectRatioValue, setAspectRatioValue] = useState<number>(() => { const p = new URLSearchParams(window.location.search); return p.get('gen') ? 50 : 60; });
   const [resolutionScale, setResolutionScale] = useState(1.0); // Default to 100% Quality
   const [sidebarTab, setSidebarTab] = useState<'config' | 'triggers'>('config');
+  const [belowPanel, setBelowPanel] = useState<'params' | 'colours' | 'fx'>('params');
   const [isRecording, setIsRecording] = useState(false);
   const [isPanic, setIsPanic] = useState(false);
   const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null);
@@ -1593,7 +1695,13 @@ export default function App() {
   const bufferCtxRef = useRef<CanvasRenderingContext2D | null>(null);
   const asciiAtlasRef = useRef<HTMLCanvasElement | null>(null);
   const asciiDownsampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const generativesRef = useRef<GenerativeDefinition[]>(parseGeneratives());
+  const generativesRef = useRef<GenerativeDefinition[]>(
+    [...parseGeneratives()].sort((a, b) => {
+      const ai = GENERATIVE_CATEGORY_ORDER.indexOf(a.category);
+      const bi = GENERATIVE_CATEGORY_ORDER.indexOf(b.category);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi) || a.description.localeCompare(b.description);
+    })
+  );
   const triggerStatesRef = useRef<Record<string, {
     isDown: boolean;
     velocity: number;
@@ -1616,7 +1724,20 @@ export default function App() {
   const layerOutputCanvasesRef = useRef<Record<string, HTMLCanvasElement>>({});
   const actionTriggerStateRef = useRef<Record<string, { lastTriggered: number, count: number, prevActive: boolean }>>({});
   const dancingCubesRotationRef = useRef<Record<string, { current: number, target: number }>>({});
-  
+  const kineticTypeStateRef = useRef<Record<string, { words: any[], lastImpact: number, lastCount: number }>>({});
+  const circleBloomStateRef = useRef<Record<string, { circles: any[], lastSpawn: number, lastAction: number }>>({});
+  const gridLitStateRef = useRef<Record<string, { lit: number[], lastShuffle: number, lastAction: number, total: number }>>({});
+  const stackedBallsStateRef = useRef<Record<string, { balls: any[], lastSpawn: number }>>({});
+  const reactionDiffusionStateRef = useRef<Record<string, any>>({});
+  const voronoiStateRef = useRef<Record<string, any>>({});
+  const contourStateRef = useRef<Record<string, any>>({});
+  const neonLabyrinthStateRef = useRef<Record<string, any>>({});
+  const pixelSwarmStateRef = useRef<Record<string, any>>({});
+  const tetrominoStateRef = useRef<Record<string, any>>({});
+  const hillscapeStateRef = useRef<Record<string, any>>({});
+  const orbitDeflectionStateRef = useRef<Record<string, any>>({});
+  const centipedeStateRef = useRef<Record<string, any>>({});
+
   // Accumulation Mode Refs
   const accumulateCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
   const referenceFrameRef = useRef<Record<string, HTMLCanvasElement>>({});
@@ -1632,17 +1753,44 @@ export default function App() {
   const lastRenderTimeRef = useRef<number>(performance.now());
   const [audioStems, setAudioStems] = useState<{ id: string, name: string, fileUrl: string, isMuted: boolean, isSoloed: boolean }[]>([]);
   const [audioPlaying, setAudioPlaying] = useState(false);
+  const [audioMuted, setAudioMuted] = useState(false);
+  const [audioLoop, setAudioLoop] = useState(true);
+  const [ytUrl, setYtUrl] = useState('');
+  const [ytVideoId, setYtVideoId] = useState<string | null>(null);
+  const [ytStatus, setYtStatus] = useState('');
+  const extractYouTubeId = (url: string): string | null => {
+    const m = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+    return m ? m[1] : (/^[A-Za-z0-9_-]{11}$/.test(url.trim()) ? url.trim() : null);
+  };
   const [audioTime, setAudioTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
 
   useEffect(() => {
-    if (!audioPlaying) return;
     const interval = setInterval(() => {
       setAudioTime(engine.getCurrentTime());
       setAudioDuration(engine.getMaxDuration());
-    }, 100);
+    }, 150);
     return () => clearInterval(interval);
-  }, [audioPlaying]);
+  }, []);
+
+  // Load the bundled default track ("Funky drums.wav") as a stem on first mount.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        await engine.addStem('funky-drums', 'Funky Drums', './funky-drums.wav');
+        if (cancelled) return;
+        engine.setLoop(true);
+        setAudioStems(prev => prev.some(s => s.id === 'funky-drums')
+          ? prev
+          : [{ id: 'funky-drums', name: 'Funky Drums', fileUrl: './funky-drums.wav', isMuted: false, isSoloed: false }, ...prev]);
+        setAudioDuration(engine.getMaxDuration());
+      } catch (e) {
+        console.warn('Default audio failed to load', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Screen Wake Lock & Tablet Keep-Awake Manager
   const wakeLockRef = useRef<any>(null);
@@ -1830,8 +1978,16 @@ export default function App() {
 
 
   const toggleAudioPlay = () => {
-    if (audioPlaying) { engine.stopAll(); setAudioPlaying(false); }
-    else { engine.playAll(); setAudioPlaying(true); }
+    if (audioPlaying) { engine.pauseAll(); setAudioPlaying(false); }
+    else { engine.resumeAll(); setAudioPlaying(true); }
+  };
+
+  const toggleAudioMute = () => {
+    setAudioMuted(m => { const nv = !m; engine.setMasterMuted(nv); return nv; });
+  };
+
+  const toggleAudioLoop = () => {
+    setAudioLoop(l => { const nv = !l; engine.setLoop(nv); return nv; });
   };
 
   const toggleStemMute = (id: string) => {
@@ -2599,9 +2755,23 @@ export default function App() {
           tracker.lastUpdate = now;
 
           const mode = layer.audioMapping.mode || 'smooth';
+          const audioEngineType = layer.audioMapping.engine || 'level';
           const { intensity, flux } = engine.getBandIntensity(layer.audioMapping.stemId || '', layer.audioMapping.freqRange || [20, 20000]);
-          
-          if (mode === 'smooth') {
+
+          if (audioEngineType === 'transient') {
+              const v = processTransientHit(
+                  intensity,
+                  layer.audioMapping.sensitivity ?? 0.6,
+                  layer.audioMapping.decayMs ?? 220,
+                  layer.audioMapping.cooldownMs ?? 50,
+                  tracker,
+                  dt,
+                  now,
+              );
+              audioIntensity = v;
+              audioIsActive = v > 0.01;
+              audioVisualOpacity = layer.audioMapping.target === 'opacity' ? v : 1.0;
+          } else if (mode === 'smooth') {
               const attackSecs = layer.audioMapping.attack ?? 0.05;
               const releaseSecs = layer.audioMapping.release ?? 0.2;
 
@@ -2777,7 +2947,7 @@ export default function App() {
           else if (layer.rhythmMapping?.enabled) isVisibleNormally = rhythmIsActive;
           else isVisibleNormally = midiIsActive;
       }
-      
+
       // We still process the layer even if hidden if it has effects that could be drawing something (e.g. generative)
       // or if it's midi-triggered but currently silent, we still need to process its parameters.
       if (!(isVisibleNormally || hasActiveEffect || layer.midiMode)) return;
@@ -2814,9 +2984,20 @@ export default function App() {
                           tracker.lastUpdate = now;
 
                           const mode = pMap.audioMapping.mode || 'smooth';
-                          const { intensity } = engine.getBandIntensity(pMap.audioMapping.stemId || '', pMap.audioMapping.freqRange || [20, 20000]);
-                          
-                          if (mode === 'smooth') {
+                          const pAudioEngine = pMap.audioMapping.engine || 'level';
+                          const { intensity, flux } = engine.getBandIntensity(pMap.audioMapping.stemId || '', pMap.audioMapping.freqRange || [20, 20000]);
+
+                          if (pAudioEngine === 'transient') {
+                              activeMagnitude = processTransientHit(
+                                  intensity,
+                                  pMap.audioMapping.sensitivity ?? 0.6,
+                                  pMap.audioMapping.decayMs ?? 220,
+                                  pMap.audioMapping.cooldownMs ?? 50,
+                                  tracker,
+                                  dt,
+                                  now,
+                              );
+                          } else if (mode === 'smooth') {
                               const attackSecs = pMap.audioMapping.attack ?? 0.05;
                               const releaseSecs = pMap.audioMapping.release ?? 0.2;
 
@@ -2918,7 +3099,7 @@ export default function App() {
                   }
                   
                   modifiedSettings[p.name] = finalVal;
-                  
+
                   const knobId = `layer-${layer.id}-param-${p.name}`;
                   const lineEl = document.getElementById(`knob-line-${knobId}`);
                   const circleEl = document.getElementById(`knob-circle-${knobId}`);
@@ -2959,13 +3140,25 @@ export default function App() {
                   const tracker = audioTrackersRef.current[trackerId];
                   const dt = (now - tracker.lastUpdate) / 1000.0;
                   tracker.lastUpdate = now;
-                  const { intensity } = engine.getBandIntensity(palMapping.audioMapping.stemId || '', palMapping.audioMapping.freqRange || [20, 20000]);
-                  if (intensity >= palMapping.audioMapping.threshold && (now - tracker.lastTriggerTime > 120)) {
-                      tracker.value = 1.0;
-                      tracker.lastTriggerTime = now;
+                  const { intensity, flux } = engine.getBandIntensity(palMapping.audioMapping.stemId || '', palMapping.audioMapping.freqRange || [20, 20000]);
+                  if ((palMapping.audioMapping.engine || 'level') === 'transient') {
+                      palMagnitude = processTransientHit(
+                          intensity,
+                          palMapping.audioMapping.sensitivity ?? 0.6,
+                          palMapping.audioMapping.decayMs ?? 220,
+                          Math.max(120, palMapping.audioMapping.cooldownMs ?? 120),
+                          tracker,
+                          dt,
+                          now,
+                      );
+                  } else {
+                      if (intensity >= palMapping.audioMapping.threshold && (now - tracker.lastTriggerTime > 120)) {
+                          tracker.value = 1.0;
+                          tracker.lastTriggerTime = now;
+                      }
+                      tracker.value *= (palMapping.audioMapping.smoothing ?? 0.5);
+                      palMagnitude = tracker.value;
                   }
-                  tracker.value *= (palMapping.audioMapping.smoothing ?? 0.5);
-                  palMagnitude = tracker.value;
               } else {
                   const triggerKey = `gen-${layer.id}-palette_cycle`;
                   const state = triggerStatesRef.current[triggerKey];
@@ -3153,149 +3346,97 @@ export default function App() {
               element = canvas;
                     } else if (def.uuid === 'dragon-text-mask-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
-              
               const canvas = sphereCanvasRef.current[layer.id];
               if (canvas.width !== targetW || canvas.height !== targetH) {
-                  canvas.width = targetW;
-                  canvas.height = targetH;
+                  canvas.width = targetW; canvas.height = targetH;
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              
-              // 1. Draw background
-              const dragonBg = resolvedGenerativeColors['background'] || '#000000';
-              if (!isTransparentColor(dragonBg)) {
-                  ctx.fillStyle = dragonBg;
-                  ctx.fillRect(0, 0, targetW, targetH);
-              }
-              
-              const { speed, font_size, dragon_size, chaos, thickness, text_content } = modifiedSettings;
-              const textStr = (typeof text_content === 'string' && text_content.trim() !== '') ? text_content : (def.parameters.find(p=>p.name==='text_content')?.default || 'Text') as string;
-              
-              const chars = Array.from(textStr);
-              if (chars.length === 0) chars.push(' ');
-              
-              // 2. Draw typography text
-              ctx.fillStyle = resolvedGenerativeColors['dragon'] || resolvedGenerativeColors['foreground'] || '#ffffff';
-              ctx.font = `bold ${font_size}px sans-serif`;
+
+              const dtmBg = resolvedGenerativeColors['background'] || '#000000';
+              const dtmFg = resolvedGenerativeColors['dragon'] || resolvedGenerativeColors['foreground'] || '#ffffff';
+              const dtmAccent = resolvedGenerativeColors['accent'] || dtmFg;
+              const dtmBgOpaque = !isTransparentColor(dtmBg);
+
+              const { speed: dtmSpeed, font_size: dtmFs, glyph_size: dtmGlyphSize, invert: dtmInvert,
+                      line_gap: dtmLineGap, dir_x: dtmDirX, dir_y: dtmDirY, edge_glow: dtmEdgeGlow,
+                      glyph: dtmGlyphRaw, text_content: dtmTextRaw } = modifiedSettings;
+
+              const fs = Math.max(6, (dtmFs ?? 20) * (Math.min(targetW, targetH) / 620));
+              const lineGap = fs * (dtmLineGap ?? 1.06);
+              const glyphStr = (typeof dtmGlyphRaw === 'string' && dtmGlyphRaw.trim() !== '')
+                  ? Array.from(dtmGlyphRaw.trim())[0]
+                  : ((def.parameters.find(p => p.name === 'glyph')?.default as string) || 'A');
+              const bodyStr = (typeof dtmTextRaw === 'string' && dtmTextRaw.trim() !== '')
+                  ? dtmTextRaw : ((def.parameters.find(p => p.name === 'text_content')?.default as string) || 'Text ');
+              const bodyChars = Array.from(bodyStr.replace(/\s+/g, ' '));
+              if (bodyChars.length === 0) bodyChars.push(' ');
+
+              // 1. Flood the whole frame with tightly-set scrolling text
+              if (dtmBgOpaque) { ctx.fillStyle = dtmBg; ctx.fillRect(0, 0, targetW, targetH); }
+
+              const t = nowSec * (dtmSpeed ?? 1.4);
+              ctx.fillStyle = dtmFg;
+              ctx.font = `700 ${fs}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
               ctx.textBaseline = 'middle';
-              
-              const t = nowSec * speed;
-              const scrollY = (nowSec * speed * 20) % (font_size * 1.5);
-              
-              const cx = targetW / 2;
-              const cy = targetH / 2;
-              const scale = Math.min(targetW, targetH) * 0.4 * (dragon_size || 1.0);
-              const cVal = chaos ?? 1.0;
-              const thVal = thickness ?? 1.0;
-              
-              // Cache character widths
-              const charWidths = new Map<string, number>();
-              const getCharWidth = (c: string) => {
-                  if (!charWidths.has(c)) charWidths.set(c, ctx.measureText(c).width);
-                  return charWidths.get(c)!;
-              };
-              
-              // Helper to find closest point on dragon curve and push vector
-              const { dir_x, dir_y, displacement } = modifiedSettings;
-              const dxVal = dir_x ?? 0.0;
-              const dyVal = dir_y ?? 1.0;
-              const dispVal = displacement ?? 50.0;
-              
-              const getDragonDisplacement = (px: number, py: number) => {
-                  let minDist = 999999;
-                  let pushX = 0;
-                  let pushY = 0;
-                  
-                  for(let i=0; i<=40; i+=2) {
-                      const t_curr = t - i * 0.05;
-                      const bx = cx + Math.sin(t_curr) * scale * 0.8 + Math.sin(t_curr*3.0)*scale*0.1 * cVal;
-                      const by = cy + Math.cos(t_curr*0.8) * scale * 0.8 + Math.cos(t_curr*2.5)*scale*0.1 * cVal;
-                      const r = Math.max(0.1, scale * 0.2 * (1.0 - i/40) * thVal + scale * 0.02 * Math.sin(i + t*5.0) * thVal);
-                      
-                      const dx = px - bx;
-                      const dy = py - by;
-                      const dist = Math.hypot(dx, dy) - r;
-                      
-                      if (dist < minDist) {
-                          minDist = dist;
-                          if (dist < dispVal) { // area of effect
-                             const len = Math.hypot(dx, dy);
-                             if (len > 0.001) {
-                                 const pushStrength = dist < 0 ? (-dist + font_size * 0.5) : Math.max(0, (dispVal - dist) * (font_size / dispVal));
-                                 pushX = (dx / len) * pushStrength;
-                                 pushY = (dy / len) * pushStrength;
-                             }
-                          } else {
-                             pushX = 0;
-                             pushY = 0;
-                          }
-                      }
-                  }
-                  return { pushX, pushY };
-              };
-              
-              const lineSpacing = font_size * 1.5;
-              
-              // Infinite smooth wrapping offsets
-              let yShift = (t * dyVal * 20) % lineSpacing;
-              if (yShift < 0) yShift += lineSpacing;
-              let lineOffset = Math.floor((t * dyVal * 20) / lineSpacing);
-              
-              let xShift = (t * dxVal * 20) % font_size; // assumes monospace roughly
-              if (xShift < 0) xShift += font_size;
-              let xCharOffset = Math.floor((t * dxVal * 20) / font_size);
-              
-              let y = -font_size * 2 + yShift;
-              let lineIdx = -lineOffset;
-              
-              // Force monospace for seamless horizontal wrapping
-              ctx.font = `bold ${font_size}px monospace`;
-              
-              while (y < targetH + font_size * 2) {
-                  let x = -font_size * 2 + xShift;
-                  // Make sure base textIndex is positive for modulo
-                  let baseTextIndex = lineIdx * 137 - xCharOffset;
-                  while (baseTextIndex < 0) baseTextIndex += chars.length * 1000;
-                  let textIndex = baseTextIndex;
-                  
-                  while (x < targetW + font_size * 2) {
-                      const char = chars[textIndex % chars.length];
-                      const cw = getCharWidth(char);
-                      
-                      const { pushX, pushY } = getDragonDisplacement(x + cw/2, y);
-                      
-                      ctx.fillText(char, x + pushX, y + pushY);
-                      x += cw;
-                      textIndex++;
-                  }
-                  y += lineSpacing;
-                  lineIdx++;
+              ctx.textAlign = 'left';
+
+              const chW = ctx.measureText('0').width || fs * 0.6;
+              const scrollX = t * (dtmDirX ?? 0) * 40;
+              const scrollY = t * (dtmDirY ?? 1) * 40;
+              const cols = Math.ceil(targetW / chW) + 6;
+              const rows = Math.ceil(targetH / lineGap) + 4;
+              const yOff = ((scrollY % lineGap) + lineGap) % lineGap;
+              const xOff = ((scrollX % chW) + chW) % chW;
+              const rowSeed = Math.floor(scrollY / lineGap);
+              const colSeed = Math.floor(scrollX / chW);
+
+              for (let r = -2; r < rows; r++) {
+                  const py = r * lineGap - yOff + lineGap / 2;
+                  let idx = ((r + rowSeed) * 131 - colSeed) % bodyChars.length;
+                  if (idx < 0) idx += bodyChars.length;
+                  let line = '';
+                  for (let c = 0; c < cols; c++) line += bodyChars[(idx + c) % bodyChars.length];
+                  ctx.fillText(line, -2 * chW - xOff, py);
               }
-              
-              ctx.globalCompositeOperation = 'difference';
-              
-              ctx.fillStyle = '#FFF';
-              
-              ctx.beginPath();
-              for(let i=0; i<=40; i++) {
-                  const fi = i;
-                  const t_curr = t - fi * 0.05;
-                  const bx = cx + Math.sin(t_curr) * scale * 0.8 + Math.sin(t_curr*3.0)*scale*0.1 * cVal;
-                  const by = cy + Math.cos(t_curr*0.8) * scale * 0.8 + Math.cos(t_curr*2.5)*scale*0.1 * cVal;
-                  const r = Math.max(0.1, scale * 0.2 * (1.0 - i/40) + scale * 0.02 * Math.sin(fi + t*5.0));
-                  
-                  if (i === 0) {
-                      ctx.arc(bx, by, r, 0, Math.PI*2);
-                  } else {
-                      ctx.moveTo(bx + r, by);
-                      ctx.arc(bx, by, r, 0, Math.PI*2);
-                  }
+
+              // 2. Carve the giant glyph out of the text (or keep only text inside it)
+              const gh = Math.min(targetW, targetH) * (dtmGlyphSize ?? 1.05);
+              const glyphFont = `900 ${gh}px "Arial Black", "Helvetica Neue", Impact, sans-serif`;
+              const gx = targetW / 2;
+              const gy = targetH / 2 + gh * 0.02;
+              ctx.save();
+              ctx.font = glyphFont;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.globalCompositeOperation = (dtmInvert ?? 0) > 0.5 ? 'destination-in' : 'destination-out';
+              ctx.fillStyle = '#fff';
+              ctx.fillText(glyphStr, gx, gy);
+              ctx.restore();
+
+              // 3. Re-lay the background behind the carved-out area
+              if (dtmBgOpaque) {
+                  ctx.globalCompositeOperation = 'destination-over';
+                  ctx.fillStyle = dtmBg;
+                  ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.globalCompositeOperation = 'source-over';
               }
-              ctx.fill();
-              
-              ctx.globalCompositeOperation = 'source-over';
-              
+
+              // 4. Optional glowing edge tracing the glyph
+              if ((dtmEdgeGlow ?? 0) > 0.01) {
+                  ctx.save();
+                  ctx.font = glyphFont;
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'middle';
+                  ctx.strokeStyle = dtmAccent;
+                  ctx.lineWidth = Math.max(1, fs * 0.12);
+                  ctx.shadowColor = dtmAccent;
+                  ctx.shadowBlur = 22 * (dtmEdgeGlow ?? 0);
+                  ctx.globalAlpha = 0.45 + 0.55 * (dtmEdgeGlow ?? 0);
+                  ctx.strokeText(glyphStr, gx, gy);
+                  ctx.restore();
+              }
+
               element = canvas;
             } else if (def.uuid === 'terrain-lines-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
@@ -3383,23 +3524,39 @@ export default function App() {
                   return env * ridgedElevation;
               };
               
+              const viewScale = Math.min(targetW, targetH) / 720;
               const iso = (x: number, y: number, z: number) => {
                   const angle = Math.PI / 6;
                   const cosA = Math.cos(angle);
                   const sinA = Math.sin(angle);
                   return {
-                      x: targetW / 2 + (x - y) * cosA,
-                      y: targetH / 2 + 70 + (x + y) * sinA * 0.65 - z
+                      x: targetW / 2 + (x - y) * cosA * viewScale,
+                      y: targetH / 2 + 70 * viewScale + (x + y) * sinA * 0.65 * viewScale - z * viewScale
                   };
               };
-              
+
+              // Elevation → multicolour ramp (deep blue valleys → green → gold → coral → white peaks)
+              const rampStops = [
+                  { p: 0.0,  c: [bgRgb.r, bgRgb.g, bgRgb.b] },
+                  { p: 0.16, c: [26, 60, 120] },
+                  { p: 0.38, c: [30, 170, 110] },
+                  { p: 0.58, c: [225, 200, 70] },
+                  { p: 0.78, c: [235, 110, 90] },
+                  { p: 1.0,  c: [255, 255, 255] },
+              ];
               const getColorForHeight = (hNorm: number) => {
-                  const tVal = Math.max(0.15, Math.min(1.0, hNorm));
-                  const r = Math.round(bgRgb.r + (fgRgb.r - bgRgb.r) * tVal);
-                  const g = Math.round(bgRgb.g + (fgRgb.g - bgRgb.g) * tVal);
-                  const b = Math.round(bgRgb.b + (fgRgb.b - bgRgb.b) * tVal);
-                  return `rgb(${r}, ${g}, ${b})`;
+                  const v = Math.max(0, Math.min(1, hNorm));
+                  let a = rampStops[0], b = rampStops[rampStops.length - 1];
+                  for (let i = 0; i < rampStops.length - 1; i++) {
+                      if (v >= rampStops[i].p && v <= rampStops[i + 1].p) { a = rampStops[i]; b = rampStops[i + 1]; break; }
+                  }
+                  const f = b.p > a.p ? (v - a.p) / (b.p - a.p) : 0;
+                  const r = Math.round(a.c[0] + (b.c[0] - a.c[0]) * f);
+                  const g = Math.round(a.c[1] + (b.c[1] - a.c[1]) * f);
+                  const bl = Math.round(a.c[2] + (b.c[2] - a.c[2]) * f);
+                  return `rgb(${r}, ${g}, ${bl})`;
               };
+              void fgRgb;
               
               ctx.lineWidth = lineThickness;
               ctx.lineCap = 'square';
@@ -3471,17 +3628,18 @@ export default function App() {
               const { speed, count, size, spacing, movement, rotation, delay } = modifiedSettings;
               const spd = speed ?? 1.0;
               const num = Math.max(3, Math.min(60, Math.floor(count ?? 22)));
-              const sz = size ?? 130.0;
-              const spc = spacing ?? 32.0;
-              const mov = movement ?? 15.0;
+              const sqScale = Math.min(targetW, targetH) / 560;
+              const sz = (size ?? 130.0) * sqScale;
+              const spc = (spacing ?? 32.0) * sqScale;
+              const mov = (movement ?? 15.0) * sqScale;
               const rot = rotation ?? 0.0;
               const dly = delay ?? 0.05;
               const t = nowSec * spd;
-              
+
               const angle = Math.PI / 6;
               const cosA = Math.cos(angle);
               const sinA = Math.sin(angle);
-              
+
               const iso = (x: number, y: number, z: number) => ({
                  x: targetW / 2 + (x - y) * cosA,
                  y: targetH / 2 + (x + y) * sinA - z
@@ -3658,7 +3816,7 @@ export default function App() {
               }
               
               const { speed, nodes, grid_size, spread, movement, chaos } = modifiedSettings;
-              const gs = grid_size ?? 45.0;
+              const gs = Math.max(30, Math.min(260, grid_size ?? 45.0)) * (Math.min(targetW, targetH) / 620); // scale to canvas
               const numNodes = Math.max(4, Math.min(60, Math.floor(nodes ?? 16)));
               const spr = spread ?? 0.4;
               const mov = movement ?? 15.0;
@@ -3685,7 +3843,7 @@ export default function App() {
               }
               
               const pts: PathNode[] = [];
-              const gridSpan = Math.max(2, Math.floor(2 + mov * 0.08));
+              const gridSpan = Math.max(3, Math.floor(3 + mov * 0.16));
               
               for (let i = 0; i < numNodes; i++) {
                  // Dynamic time shift along the grid lines
@@ -3732,15 +3890,23 @@ export default function App() {
                  });
               }
               
-              // Draw connecting lines
-              ctx.lineWidth = 2.0;
+              // Draw connecting lines (glow underlay + crisp line)
               ctx.lineCap = 'round';
               ctx.lineJoin = 'round';
-              
+
+              for (let pass = 0; pass < 2; pass++) {
               for (let i = 1; i < pts.length; i++) {
                  const node = pts[i];
                  const parent = pts[node.parent];
-                 ctx.strokeStyle = node.color;
+                 if (pass === 0) {
+                    ctx.strokeStyle = node.color;
+                    ctx.globalAlpha = 0.18;
+                    ctx.lineWidth = gs * 0.14;
+                 } else {
+                    ctx.strokeStyle = node.color;
+                    ctx.globalAlpha = 1;
+                    ctx.lineWidth = Math.max(2, gs * 0.045);
+                 }
                  ctx.beginPath();
                  ctx.moveTo(parent.x, parent.y);
                  
@@ -3760,17 +3926,23 @@ export default function App() {
                  }
                  ctx.stroke();
               }
-              
+              }
+              ctx.globalAlpha = 1;
+
               // Draw nodes and numbers
-              const radius = gs * 0.36;
-              ctx.font = 'bold 11px monospace';
-              
+              const radius = gs * 0.42;
+              ctx.font = `${Math.round(radius * 0.5)}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+
               for (const p of pts) {
                  ctx.fillStyle = p.color;
                  ctx.beginPath();
                  ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
                  ctx.fill();
-                 
+                 // ring
+                 ctx.strokeStyle = isColorDark(numBg) ? 'rgba(255,255,255,0.85)' : 'rgba(0,0,0,0.8)';
+                 ctx.lineWidth = Math.max(1.5, radius * 0.06);
+                 ctx.stroke();
+
                  ctx.fillStyle = isColorDark(p.color) ? '#ffffff' : '#111111';
                  ctx.textAlign = 'center';
                  ctx.textBaseline = 'middle';
@@ -3778,7 +3950,7 @@ export default function App() {
                  ctx.textAlign = 'start';
                  ctx.textBaseline = 'alphabetic';
               }
-              
+
               element = canvas; } else if (def.uuid === 'isometric-buildings-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
               const canvas = sphereCanvasRef.current[layer.id];
@@ -3923,21 +4095,33 @@ export default function App() {
                 
                 if (!(window as any).__dropsState) (window as any).__dropsState = {};
                 const dropsGlobal = (window as any).__dropsState;
+                const gcMargin = 0.12;
                 if (!dropsGlobal[layer.id]) {
                     dropsGlobal[layer.id] = { lastDropAction: 0, activeDrops: [], lastAutoSpawn: 0 };
+                    // Pre-seed a spread of ripples at staggered ages so it looks alive from frame 1
+                    const seed = Math.min(numCircles, 8);
+                    for (let i = 0; i < seed; i++) {
+                        dropsGlobal[layer.id].activeDrops.push({
+                            birthTime: nowSec - (i / seed) * totalLife * 0.85,
+                            x: (gcMargin + Math.random() * (1 - 2 * gcMargin)) * targetW,
+                            y: (gcMargin + Math.random() * (1 - 2 * gcMargin)) * targetH,
+                            isAuto: true,
+                        });
+                    }
+                    dropsGlobal[layer.id].lastAutoSpawn = nowSec;
                 }
                 const state = dropsGlobal[layer.id];
-                
+
                 // Clean up dead drops
                 state.activeDrops = state.activeDrops.filter((d: any) => (nowSec - d.birthTime) < totalLife);
-                
+
                 // Auto spawning
                 const autoDrops = state.activeDrops.filter((d: any) => d.isAuto);
                 if (autoDrops.length < numCircles) {
                     const autoSpawnInterval = Math.max(0.01, delay ?? 0.25);
                     if (nowSec - state.lastAutoSpawn >= autoSpawnInterval) {
                         state.lastAutoSpawn = nowSec;
-                        const margin = 0.15;
+                        const margin = gcMargin;
                         state.activeDrops.push({
                             birthTime: nowSec,
                             x: (margin + Math.random() * (1.0 - 2 * margin)) * targetW,
@@ -3963,28 +4147,33 @@ export default function App() {
                     state.lastDropAction = dropAction;
                 }
                 
-                // Draw all drops
+                // Draw all drops as expanding ripple rings
+                void growthTime;
                 for (const d of state.activeDrops) {
                     const age = nowSec - d.birthTime;
-                    
-                    let currentRadius = 0.0;
-                    if (age < growthTime) {
-                        const growthProgress = age / growthTime;
-                        currentRadius = growthProgress * maxSize;
-                    } else {
-                        currentRadius = maxSize;
-                    }
-                    
-                    let alpha = 1.0;
-                    const fadeWindow = 0.35;
-                    if (age > (totalLife - fadeWindow)) {
-                        alpha = Math.max(0.0, (totalLife - age) / fadeWindow);
-                    }
-                    
-                    if (currentRadius > 0.5 && alpha > 0.01) {
-                        ctx.fillStyle = `rgba(${gcRgb.r}, ${gcRgb.g}, ${gcRgb.b}, ${alpha})`;
+                    const life = Math.min(1, age / totalLife);
+                    if (life >= 1) continue;
+                    const ease = 1 - Math.pow(1 - life, 2.2);       // ease-out expansion
+                    const baseR = ease * maxSize;
+                    const fade = Math.pow(1 - life, 1.4);           // opacity fades as ring expands
+                    if (fade <= 0.008 || baseR < 1) continue;
+
+                    for (let ring = 0; ring < 3; ring++) {
+                        const rr = baseR - ring * (maxSize * 0.09);
+                        if (rr <= 2) continue;
+                        const a = fade * (1 - ring * 0.32);
+                        ctx.strokeStyle = `rgba(${gcRgb.r}, ${gcRgb.g}, ${gcRgb.b}, ${a.toFixed(3)})`;
+                        ctx.lineWidth = Math.max(1, (2.8 - ring * 0.8) * (1 - life * 0.45));
                         ctx.beginPath();
-                        ctx.arc(d.x, d.y, currentRadius, 0, Math.PI * 2);
+                        ctx.arc(d.x, d.y, rr, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+                    // brief bright core at the impact point
+                    if (life < 0.22) {
+                        const coreA = 1 - life / 0.22;
+                        ctx.fillStyle = `rgba(${gcRgb.r}, ${gcRgb.g}, ${gcRgb.b}, ${(coreA * 0.85).toFixed(3)})`;
+                        ctx.beginPath();
+                        ctx.arc(d.x, d.y, 3 + coreA * 7, 0, Math.PI * 2);
                         ctx.fill();
                     }
                 }
@@ -4462,205 +4651,974 @@ export default function App() {
               }
               
               const { growth, branch_chance, split_mode, segment_size, grid_mesh } = modifiedSettings;
-              const currentStep = Math.max(0.0, growth ?? 25.0);
-              const brChance = branch_chance ?? 0.45;
-              const splitRatio = split_mode ?? 2.5;
-              const segSize = Math.max(10.0, Math.min(45.0, segment_size ?? 20.0));
-              const meshAlpha = grid_mesh ?? 0.35;
-              
+              const veinAccent = resolvedGenerativeColors['accent'] || veinFg;
+              const S = Math.min(targetW, targetH);
               const cx = targetW / 2;
               const cy = targetH / 2;
-              
-              if (meshAlpha > 0.01) {
-                  ctx.strokeStyle = isColorDark(veinBg) ? `rgba(255, 255, 255, ${0.065 * meshAlpha})` : `rgba(0, 0, 0, ${0.08 * meshAlpha})`;
-                  ctx.lineWidth = 0.75;
-                  const gridStep = segSize * 2.2;
-                  const cols = Math.ceil(targetW / gridStep) + 2;
-                  const rows = Math.ceil(targetH / gridStep) + 2;
-                  
-                  ctx.beginPath();
-                  for (let r = 0; r <= rows; r++) {
-                      for (let c = 0; c <= cols; c++) {
-                          const px = (c - 1) * gridStep + ((r % 2) * (gridStep * 0.5));
-                          const py = (r - 1) * (gridStep * 0.866);
-                          
-                          const pRight = px + gridStep;
-                          const pDownLeft = px - gridStep * 0.5;
-                          const pDownRight = px + gridStep * 0.5;
-                          const pDownY = py + gridStep * 0.866;
-                          
-                          ctx.moveTo(px, py); ctx.lineTo(pRight, py);
-                          ctx.moveTo(px, py); ctx.lineTo(pDownLeft, pDownY);
-                          ctx.moveTo(px, py); ctx.lineTo(pDownRight, pDownY);
-                      }
-                  }
-                  ctx.stroke();
-              }
-              
-              interface MazeSegment {
-                  x1: number;
-                  y1: number;
-                  x2: number;
-                  y2: number;
-                  generation: number;
-                  isFork: boolean;
-              }
-              
-              const segments: MazeSegment[] = [];
-              const occupiedNodes = new Set<string>();
-              const toNodeKey = (x: number, y: number) => `${Math.round(x * 10)},${Math.round(y * 10)}`;
-              
-              occupiedNodes.add(toNodeKey(cx, cy));
-              
-              interface FrontierTip {
-                  x: number;
-                  y: number;
-                  angle: number;
-                  generation: number;
-                  straightStreak: number;
-              }
-              
-              let currentTips: FrontierTip[] = [];
-              
-              // Root node: 3 seed branches outward from center (120 degrees apart)
-              const rootDirections = [0, (Math.PI * 2) / 3, (Math.PI * 4) / 3];
-              for (const a of rootDirections) {
-                  const x2 = cx + Math.cos(a) * segSize;
-                  const y2 = cy + Math.sin(a) * segSize;
-                  segments.push({ x1: cx, y1: cy, x2, y2, generation: 0, isFork: false });
-                  occupiedNodes.add(toNodeKey(x2, y2));
-                  currentTips.push({ x: x2, y: y2, angle: a, generation: 1, straightStreak: 0 });
-              }
-              
-              // 4. Synchronous Generative Expansion Loop
-              const totalGenerations = 45;
-              // Candidate relative turns on hexagonal grid (favoring 60-deg and 120-deg turns)
-              const angleTurns = [-Math.PI / 3, Math.PI / 3, -(Math.PI * 2) / 3, (Math.PI * 2) / 3, 0];
-              
-              interface TurnOption {
-                  angle: number;
-                  relAngle: number;
-                  candX: number;
-                  candY: number;
+
+              // growth 1..45 -> fractional recursion depth 3..13 (progressive reveal)
+              const depthF = 3 + ((Math.max(1, Math.min(45, growth ?? 25)) - 1) / 44) * 10;
+              const maxDepth = Math.min(13, Math.ceil(depthF));
+              const brChance = Math.max(0, Math.min(1, branch_chance ?? 0.45));
+              const splitAmt = Math.max(0.5, Math.min(5, split_mode ?? 2.5));
+              const segLen0 = Math.max(10, Math.min(45, segment_size ?? 20)) * (S / 340);
+              const glowAmt = Math.max(0, Math.min(1, grid_mesh ?? 0.35));
+
+              const rnd = (s: number) => { const x = Math.sin(s * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+              const sway = nowSec * 0.4;
+
+              interface Vein { x1: number; y1: number; x2: number; y2: number; cxp: number; cyp: number; depth: number; w: number; }
+              const veins: Vein[] = [];
+              const baseW = S * 0.019;
+              const rootCount = Math.round(2 + splitAmt);
+              const spread = (Math.PI / 6) * (0.7 + splitAmt * 0.18);
+
+              interface Seed { x: number; y: number; ang: number; depth: number; len: number; seed: number; }
+              const stack: Seed[] = [];
+              for (let i = 0; i < rootCount; i++) {
+                  const a = (i / rootCount) * Math.PI * 2 + rnd(i * 9.1) * 0.5;
+                  stack.push({ x: cx, y: cy, ang: a, depth: 0, len: segLen0 * (0.9 + rnd(i) * 0.3), seed: i * 17.3 + 1 });
               }
 
-              for (let gen = 1; gen <= totalGenerations; gen++) {
-                  const nextTips: FrontierTip[] = [];
-                  
-                  for (let i = 0; i < currentTips.length; i++) {
-                      const tip = currentTips[i];
-                      
-                      // Deterministic hash based on tip coordinates and generation
-                      const hashSeed = Math.sin(tip.x * 12.9898 + tip.y * 78.233 + gen * 37.719) * 43758.5453;
-                      const randVal = hashSeed - Math.floor(hashSeed);
-                      
-                      // Check if this tip will fork into 2 branches
-                      const shouldFork = randVal < (brChance * (splitRatio / 2.0));
-                      
-                      const validTurns: TurnOption[] = [];
-                      for (const tAngle of angleTurns) {
-                          const candidateAngle = tip.angle + tAngle;
-                          const candX = tip.x + Math.cos(candidateAngle) * segSize;
-                          const candY = tip.y + Math.sin(candidateAngle) * segSize;
-                          
-                          // Canvas boundary check
-                          if (candX < 20 || candX > targetW - 20 || candY < 20 || candY > targetH - 20) continue;
-                          
-                          // Self-avoidance check
-                          if (!occupiedNodes.has(toNodeKey(candX, candY))) {
-                              validTurns.push({ angle: candidateAngle, relAngle: tAngle, candX, candY });
-                          }
+              let guard = 0;
+              while (stack.length && guard < 4500) {
+                  guard++;
+                  const b = stack.pop()!;
+                  if (b.depth > maxDepth) continue;
+
+                  const drift = (rnd(b.seed * 2.7) - 0.5) * 0.7 + Math.sin(sway + b.seed) * 0.06;
+                  const ang = b.ang + drift;
+                  const x2 = b.x + Math.cos(ang) * b.len;
+                  const y2 = b.y + Math.sin(ang) * b.len;
+                  const perp = ang + Math.PI / 2;
+                  const bow = (rnd(b.seed * 5.3) - 0.5) * b.len * 0.5;
+                  const mx = (b.x + x2) / 2 + Math.cos(perp) * bow;
+                  const my = (b.y + y2) / 2 + Math.sin(perp) * bow;
+                  const w = Math.max(0.6, baseW * Math.pow(0.72, b.depth));
+                  veins.push({ x1: b.x, y1: b.y, x2, y2, cxp: mx, cyp: my, depth: b.depth, w });
+
+                  if (b.depth >= maxDepth) continue;
+                  if (x2 < -60 || x2 > targetW + 60 || y2 < -60 || y2 > targetH + 60) continue;
+
+                  const childLen = b.len * 0.85;
+                  const forkRoll = rnd(b.seed * 3.9);
+                  const doFork = forkRoll < brChance || b.depth === 0;
+                  if (doFork) {
+                      const n = (forkRoll < brChance * 0.35 && b.depth > 1) ? 3 : 2;
+                      for (let k = 0; k < n; k++) {
+                          const off = (k - (n - 1) / 2) * spread * (0.8 + rnd(b.seed + k) * 0.5);
+                          stack.push({ x: x2, y: y2, ang: ang + off, depth: b.depth + 1, len: childLen * (0.85 + rnd(b.seed * 2.1 + k) * 0.3), seed: b.seed * 3.13 + k + 1 });
                       }
-                      
-                      if (validTurns.length === 0) continue; // Terminate growth at this tip
-                      
-                      if (shouldFork && validTurns.length >= 2) {
-                          // Branching: choose two distinct turns that branch outward
-                          const bending = validTurns.filter(t => Math.abs(t.relAngle) > 0.01);
-                          const chosenA = (bending.length >= 2) ? bending[0] : validTurns[0];
-                          const chosenB = (bending.length >= 2) ? bending[bending.length - 1] : validTurns[validTurns.length - 1];
-                          
-                          occupiedNodes.add(toNodeKey(chosenA.candX, chosenA.candY));
-                          occupiedNodes.add(toNodeKey(chosenB.candX, chosenB.candY));
-                          
-                          segments.push({ x1: tip.x, y1: tip.y, x2: chosenA.candX, y2: chosenA.candY, generation: gen, isFork: true });
-                          segments.push({ x1: tip.x, y1: tip.y, x2: chosenB.candX, y2: chosenB.candY, generation: gen, isFork: true });
-                          
-                          nextTips.push({ x: chosenA.candX, y: chosenA.candY, angle: chosenA.angle, generation: gen + 1, straightStreak: 0 });
-                          nextTips.push({ x: chosenB.candX, y: chosenB.candY, angle: chosenB.angle, generation: gen + 1, straightStreak: 0 });
-                      } else {
-                          // Single elongation: strongly favor bending turns to eliminate long straight lines
-                          const bending = validTurns.filter(t => Math.abs(t.relAngle) > 0.01);
-                          let chosen: TurnOption;
-                          if (bending.length > 0 && (tip.straightStreak >= 1 || randVal > 0.10)) {
-                              const pickIdx = Math.floor(randVal * bending.length) % bending.length;
-                              chosen = bending[pickIdx];
-                          } else {
-                              const pickIdx = Math.floor(randVal * validTurns.length) % validTurns.length;
-                              chosen = validTurns[pickIdx];
-                          }
-                          
-                          occupiedNodes.add(toNodeKey(chosen.candX, chosen.candY));
-                          segments.push({ x1: tip.x, y1: tip.y, x2: chosen.candX, y2: chosen.candY, generation: gen, isFork: false });
-                          
-                          const isStraight = Math.abs(chosen.relAngle) < 0.01;
-                          nextTips.push({
-                              x: chosen.candX,
-                              y: chosen.candY,
-                              angle: chosen.angle,
-                              generation: gen + 1,
-                              straightStreak: isStraight ? (tip.straightStreak + 1) : 0
-                          });
-                      }
+                  } else {
+                      stack.push({ x: x2, y: y2, ang, depth: b.depth + 1, len: childLen * (0.9 + rnd(b.seed * 1.7) * 0.2), seed: b.seed * 3.13 + 7 });
                   }
-                  
-                  currentTips = nextTips;
-                  if (currentTips.length === 0) break;
               }
-              
-              const completedGens = Math.floor(currentStep);
-              const stepFraction = currentStep - completedGens;
-              
+
+              // thickest trunks drawn last so they sit on top
+              veins.sort((a, z) => z.depth - a.depth);
               ctx.lineCap = 'round';
               ctx.lineJoin = 'round';
-              
-              for (let i = 0; i < segments.length; i++) {
-                  const seg = segments[i];
-                  
-                  if (seg.generation < completedGens) {
-                      const normGen = seg.generation / (totalGenerations || 1);
-                      const w = 3.6 * (1.0 - normGen * 0.62);
-                      
-                      ctx.strokeStyle = veinFg;
-                      ctx.lineWidth = Math.max(1.1, w);
-                      
+
+              const floorDepth = Math.floor(depthF);
+              const frac = depthF - floorDepth;
+
+              if (glowAmt > 0.02) {
+                  ctx.strokeStyle = veinAccent;
+                  ctx.globalAlpha = 0.12 * glowAmt;
+                  for (const s of veins) {
+                      if (s.depth > floorDepth) continue;
+                      ctx.lineWidth = s.w + S * 0.02 * glowAmt;
                       ctx.beginPath();
-                      ctx.moveTo(seg.x1, seg.y1);
-                      ctx.lineTo(seg.x2, seg.y2);
-                      ctx.stroke();
-                  } else if (seg.generation === completedGens && stepFraction > 0.001) {
-                      const drawX2 = seg.x1 + (seg.x2 - seg.x1) * stepFraction;
-                      const drawY2 = seg.y1 + (seg.y2 - seg.y1) * stepFraction;
-                      
-                      const normGen = seg.generation / (totalGenerations || 1);
-                      const w = 3.6 * (1.0 - normGen * 0.62);
-                      
-                      ctx.strokeStyle = veinFg;
-                      ctx.lineWidth = Math.max(1.1, w);
-                      
-                      ctx.beginPath();
-                      ctx.moveTo(seg.x1, seg.y1);
-                      ctx.lineTo(drawX2, drawY2);
+                      ctx.moveTo(s.x1, s.y1);
+                      ctx.quadraticCurveTo(s.cxp, s.cyp, s.x2, s.y2);
                       ctx.stroke();
                   }
+                  ctx.globalAlpha = 1;
               }
-              
-              // 5. Center Starting Seed Point
+
+              ctx.strokeStyle = veinFg;
+              for (const s of veins) {
+                  if (s.depth > floorDepth) continue;
+                  let ex = s.x2, ey = s.y2, cxp = s.cxp, cyp = s.cyp;
+                  if (s.depth === floorDepth && frac < 0.999) {
+                      ex = s.x1 + (s.x2 - s.x1) * frac;
+                      ey = s.y1 + (s.y2 - s.y1) * frac;
+                      cxp = s.x1 + (s.cxp - s.x1) * frac;
+                      cyp = s.y1 + (s.cyp - s.y1) * frac;
+                  }
+                  ctx.lineWidth = s.w;
+                  ctx.beginPath();
+                  ctx.moveTo(s.x1, s.y1);
+                  ctx.quadraticCurveTo(cxp, cyp, ex, ey);
+                  ctx.stroke();
+              }
+
               ctx.fillStyle = veinFg;
               ctx.beginPath();
-              ctx.arc(cx, cy, 3.8, 0, Math.PI * 2);
+              ctx.arc(cx, cy, baseW * 0.95, 0, Math.PI * 2);
               ctx.fill();
-              
+
+              element = canvas;
+          } else if (def.uuid === 'reaction-diffusion-canvas-1') {
+              // Gray-Scott reaction-diffusion on a small CPU grid. `sim_speed` is steps
+              // per frame (direct, no wall-clock pacing) so it just grows faster/slower
+              // with the slider. 1-bit render, nearest-neighbour upscale (no antialiasing).
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const rdPaper = resolvedGenerativeColors['background'] || '#f2efe6';
+              const rdInk = resolvedGenerativeColors['ink'] || resolvedGenerativeColors['foreground'] || '#141414';
+              const rdPaperRgb = hexToRgb(rdPaper);
+              const rdInkRgb = hexToRgb(rdInk);
+
+              const rs = modifiedSettings;
+              const gw = Math.max(70, Math.min(200, Math.round(rs.resolution ?? 120)));
+              const gh = Math.max(48, Math.min(200, Math.round(gw * targetH / Math.max(1, targetW))));
+              const reseedAction = Number(rs.reseed ?? 0);
+
+              let rdSt = reactionDiffusionStateRef.current[layer.id];
+              const needInit = !rdSt || rdSt.w !== gw || rdSt.h !== gh || reseedAction > (rdSt?.lastReseed ?? 0);
+              if (needInit) {
+                  const n = gw * gh;
+                  const grid: HTMLCanvasElement = (rdSt && rdSt.grid) || document.createElement('canvas');
+                  grid.width = gw; grid.height = gh;
+                  const gctx0 = grid.getContext('2d')!;
+                  const A = new Float32Array(n), B = new Float32Array(n);
+                  A.fill(1.0);
+                  const seeds = [[0.30, 0.40], [0.66, 0.34], [0.48, 0.70]];
+                  const sr = Math.max(2, Math.round(gw * 0.02));
+                  for (let k = 0; k < seeds.length; k++) {
+                      const scx = Math.round(seeds[k][0] * gw), scy = Math.round(seeds[k][1] * gh);
+                      for (let dy = -sr; dy <= sr; dy++) for (let dx = -sr; dx <= sr; dx++) {
+                          if (dx * dx + dy * dy > sr * sr) continue;
+                          const ii = (((scy + dy) % gh + gh) % gh) * gw + (((scx + dx) % gw + gw) % gw);
+                          A[ii] = 0.0; B[ii] = 1.0;
+                      }
+                  }
+                  rdSt = {
+                      w: gw, h: gh, a: A, b: B,
+                      a2: new Float32Array(n), b2: new Float32Array(n),
+                      grid, img: gctx0.createImageData(gw, gh),
+                      born: nowSec, lastReseed: reseedAction, warm: 200,
+                  };
+                  reactionDiffusionStateRef.current[layer.id] = rdSt;
+              }
+
+              const w = rdSt.w, h = rdSt.h;
+              let a = rdSt.a as Float32Array, b = rdSt.b as Float32Array;
+              let a2 = rdSt.a2 as Float32Array, b2 = rdSt.b2 as Float32Array;
+              const DA = 1.0, DB = 0.5;
+              const fBase = Math.max(0.005, Math.min(0.11, rs.feed ?? 0.0545));
+              const kBase = Math.max(0.03, Math.min(0.08, rs.kill ?? 0.062));
+              const breatheAmt = Math.max(0, Math.min(0.03, rs.breathe ?? 0.006));
+              const fNow = fBase + breatheAmt * Math.sin((nowSec - rdSt.born) * (Math.PI * 2 / 28));
+
+              // steps this frame: sim_speed directly (plus a small one-time warm-up burst)
+              let steps = Math.max(1, Math.min(30, Math.round(rs.sim_speed ?? 12)));
+              if (rdSt.warm > 0) { const ex = Math.min(rdSt.warm, 24); rdSt.warm -= ex; steps += ex; }
+
+              for (let it = 0; it < steps; it++) {
+                  for (let y = 0; y < h; y++) {
+                      const yUp = (y === 0 ? h - 1 : y - 1) * w;
+                      const yDn = (y === h - 1 ? 0 : y + 1) * w;
+                      const yC = y * w;
+                      for (let x = 0; x < w; x++) {
+                          const xL = x === 0 ? w - 1 : x - 1;
+                          const xR = x === w - 1 ? 0 : x + 1;
+                          const i = yC + x;
+                          const av = a[i], bv = b[i];
+                          const lapA = (a[yC + xL] + a[yC + xR] + a[yUp + x] + a[yDn + x]) * 0.2
+                                     + (a[yUp + xL] + a[yUp + xR] + a[yDn + xL] + a[yDn + xR]) * 0.05 - av;
+                          const lapB = (b[yC + xL] + b[yC + xR] + b[yUp + x] + b[yDn + x]) * 0.2
+                                     + (b[yUp + xL] + b[yUp + xR] + b[yDn + xL] + b[yDn + xR]) * 0.05 - bv;
+                          const abb = av * bv * bv;
+                          const na = av + (DA * lapA - abb + fNow * (1.0 - av));
+                          const nb = bv + (DB * lapB + abb - (kBase + fNow) * bv);
+                          a2[i] = na < 0 ? 0 : (na > 1 ? 1 : na);
+                          b2[i] = nb < 0 ? 0 : (nb > 1 ? 1 : nb);
+                      }
+                  }
+                  const ta = a; a = a2; a2 = ta;
+                  const tb = b; b = b2; b2 = tb;
+              }
+              rdSt.a = a; rdSt.b = b; rdSt.a2 = a2; rdSt.b2 = b2;
+
+              const thr = Math.max(0.02, Math.min(0.6, rs.threshold ?? 0.22));
+              const px8 = rdSt.img.data as Uint8ClampedArray;
+              for (let i = 0; i < w * h; i++) {
+                  const p4 = i * 4;
+                  if (b[i] > thr) { px8[p4] = rdInkRgb.r; px8[p4 + 1] = rdInkRgb.g; px8[p4 + 2] = rdInkRgb.b; }
+                  else { px8[p4] = rdPaperRgb.r; px8[p4 + 1] = rdPaperRgb.g; px8[p4 + 2] = rdPaperRgb.b; }
+                  px8[p4 + 3] = 255;
+              }
+              rdSt.grid.getContext('2d')!.putImageData(rdSt.img, 0, 0);
+
+              ctx.imageSmoothingEnabled = false;
+              ctx.fillStyle = rdPaper;
+              ctx.fillRect(0, 0, targetW, targetH);
+              ctx.drawImage(rdSt.grid, 0, 0, w, h, 0, 0, targetW, targetH);
+
+              element = canvas;
+          } else if (def.uuid === 'voronoi-cells-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const vPage = resolvedGenerativeColors['background'] || '#ffffff';
+              const vLine = resolvedGenerativeColors['lines'] || '#000000';
+              const vHi = resolvedGenerativeColors['highlight'] || '#ff3b00';
+              const vs = modifiedSettings;
+              const nSeeds = Math.max(6, Math.min(80, Math.round(vs.seeds ?? 34)));
+              const vDrift = Math.max(0, vs.drift ?? 1);
+              const vLw = Math.max(0.5, vs.line_weight ?? 1);
+              const vShowHi = (vs.highlight ?? 1) > 0.5;
+              const vReseed = Number(vs.reseed ?? 0);
+
+              let vSt = voronoiStateRef.current[layer.id];
+              if (!vSt || vSt.n !== nSeeds || vReseed > (vSt?.lastReseed ?? 0)) {
+                  const seeds: any[] = [];
+                  for (let i = 0; i < nSeeds; i++) {
+                      seeds.push({
+                          bx: 0.08 + Math.random() * 0.84, by: 0.08 + Math.random() * 0.84,
+                          ax: 0.04 + Math.random() * 0.26, ay: 0.04 + Math.random() * 0.26,
+                          fx: 0.5 + Math.random() * 1.6, fy: 0.5 + Math.random() * 1.6,
+                          px: Math.random() * 6.283, py: Math.random() * 6.283,
+                      });
+                  }
+                  vSt = { n: nSeeds, seeds, lastReseed: vReseed, grid: document.createElement('canvas'), img: null };
+                  voronoiStateRef.current[layer.id] = vSt;
+              }
+
+              const vt = nowSec * 0.12 * vDrift;
+              const vSX = new Float32Array(nSeeds), vSY = new Float32Array(nSeeds);
+              for (let i = 0; i < nSeeds; i++) {
+                  const s = vSt.seeds[i];
+                  vSX[i] = (s.bx + s.ax * Math.sin(vt * s.fx + s.px)) * targetW;
+                  vSY[i] = (s.by + s.ay * Math.cos(vt * s.fy + s.py)) * targetH;
+              }
+
+              const vGW = Math.min(500, Math.max(200, Math.round(targetW * 0.5)));
+              const vGH = Math.max(1, Math.round(vGW * targetH / Math.max(1, targetW)));
+              const vGrid: HTMLCanvasElement = vSt.grid;
+              vGrid.width = vGW; vGrid.height = vGH;
+              const vgctx = vGrid.getContext('2d')!;
+              if (!vSt.img || vSt.img.width !== vGW || vSt.img.height !== vGH) vSt.img = vgctx.createImageData(vGW, vGH);
+              const vDat = vSt.img.data;
+              const vP = hexToRgb(vPage), vL = hexToRgb(vLine), vH = hexToRgb(vHi);
+
+              let centreOwner = 0, cBest = 1e18;
+              for (let i = 0; i < nSeeds; i++) {
+                  const dx = vSX[i] - targetW / 2, dy = vSY[i] - targetH / 2;
+                  const d = dx * dx + dy * dy;
+                  if (d < cBest) { cBest = d; centreOwner = i; }
+              }
+              const vEdge = (1.4 + vLw * 0.9) * (targetW / vGW);
+              const kx = targetW / vGW, ky = targetH / vGH;
+              for (let y = 0; y < vGH; y++) {
+                  const wy = (y + 0.5) * ky;
+                  for (let x = 0; x < vGW; x++) {
+                      const wx = (x + 0.5) * kx;
+                      let d1 = 1e18, d2 = 1e18, o1 = 0;
+                      for (let i = 0; i < nSeeds; i++) {
+                          const dx = vSX[i] - wx, dy = vSY[i] - wy;
+                          const d = dx * dx + dy * dy;
+                          if (d < d1) { d2 = d1; d1 = d; o1 = i; } else if (d < d2) { d2 = d; }
+                      }
+                      const gap = Math.sqrt(d2) - Math.sqrt(d1);
+                      const p4 = (y * vGW + x) * 4;
+                      let R = vP.r, G = vP.g, Bv = vP.b;
+                      if (gap < vEdge) { R = vL.r; G = vL.g; Bv = vL.b; }
+                      else if (vShowHi && o1 === centreOwner) { R = vH.r; G = vH.g; Bv = vH.b; }
+                      vDat[p4] = R; vDat[p4 + 1] = G; vDat[p4 + 2] = Bv; vDat[p4 + 3] = 255;
+                  }
+              }
+              vgctx.putImageData(vSt.img, 0, 0);
+              ctx.imageSmoothingEnabled = false;
+              ctx.fillStyle = vPage; ctx.fillRect(0, 0, targetW, targetH);
+              ctx.drawImage(vGrid, 0, 0, vGW, vGH, 0, 0, targetW, targetH);
+              element = canvas;
+          } else if (def.uuid === 'contour-lines-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const cPaper = resolvedGenerativeColors['background'] || '#ede9e2';
+              const cLine = resolvedGenerativeColors['lines'] || '#1a1a1a';
+              const cLabelCol = resolvedGenerativeColors['label'] || cLine;
+              const cs = modifiedSettings;
+              const cLevels = Math.max(4, Math.min(28, Math.round(cs.levels ?? 14)));
+              const cZoom = Math.max(0.3, cs.zoom ?? 1);
+              const cCrawl = Math.max(0, cs.crawl ?? 1);
+              const cLw = Math.max(0.4, cs.line_weight ?? 1) * (Math.min(targetW, targetH) / 900);
+              const cLabel = (typeof cs.label === 'string' && cs.label.trim()) ? cs.label : 'SURVEY / FIELD NOTES / SECTOR 07 / SHEET 1 OF 1';
+
+              ctx.fillStyle = cPaper; ctx.fillRect(0, 0, targetW, targetH);
+
+              const h3 = (x: number, y: number, z: number) => { const n = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453; return n - Math.floor(n); };
+              const lerp = (a: number, b: number, tt: number) => a + (b - a) * tt;
+              const vnoise = (x: number, y: number, z: number) => {
+                  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+                  const xf = x - xi, yf = y - yi, zf = z - zi;
+                  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf), w = zf * zf * (3 - 2 * zf);
+                  const c = (dx: number, dy: number, dz: number) => h3(xi + dx, yi + dy, zi + dz);
+                  return lerp(
+                      lerp(lerp(c(0, 0, 0), c(1, 0, 0), u), lerp(c(0, 1, 0), c(1, 1, 0), u), v),
+                      lerp(lerp(c(0, 0, 1), c(1, 0, 1), u), lerp(c(0, 1, 1), c(1, 1, 1), u), v), w);
+              };
+              const fbm3 = (x: number, y: number, z: number) =>
+                  vnoise(x, y, z) * 0.62 + vnoise(x * 2.1 + 5.2, y * 2.1 + 1.3, z * 1.7) * 0.28 + vnoise(x * 4.4 + 9.1, y * 4.4 + 7.7, z * 2.3) * 0.1;
+
+              const cCols = Math.min(190, Math.max(24, Math.round(targetW / 9)));
+              const cRows = Math.max(2, Math.round(cCols * targetH / Math.max(1, targetW)));
+              const fscale = 3.1 * cZoom;
+              const aspN = targetH / Math.max(1, targetW);
+              const zc = nowSec * 0.05 * cCrawl;
+              const fld = new Float32Array((cCols + 1) * (cRows + 1));
+              for (let j = 0; j <= cRows; j++) for (let i = 0; i <= cCols; i++) {
+                  fld[j * (cCols + 1) + i] = fbm3(i / cCols * fscale, j / cRows * fscale * aspN, zc);
+              }
+              const cw2 = targetW / cCols, ch2 = targetH / cRows;
+              ctx.strokeStyle = cLine; ctx.lineWidth = cLw; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+              ctx.beginPath();
+              for (let L = 0; L < cLevels; L++) {
+                  const iso = 0.2 + (L + 0.5) / cLevels * 0.6;
+                  for (let j = 0; j < cRows; j++) {
+                      for (let i = 0; i < cCols; i++) {
+                          const a = fld[j * (cCols + 1) + i], b = fld[j * (cCols + 1) + i + 1];
+                          const cc = fld[(j + 1) * (cCols + 1) + i + 1], d = fld[(j + 1) * (cCols + 1) + i];
+                          let code = 0;
+                          if (a > iso) code |= 8;
+                          if (b > iso) code |= 4;
+                          if (cc > iso) code |= 2;
+                          if (d > iso) code |= 1;
+                          if (code === 0 || code === 15) continue;
+                          const x0 = i * cw2, y0 = j * ch2;
+                          const it = (p: number, q: number) => (iso - p) / ((q - p) || 1e-6);
+                          const tp = [x0 + cw2 * it(a, b), y0];
+                          const rt = [x0 + cw2, y0 + ch2 * it(b, cc)];
+                          const bt = [x0 + cw2 * it(d, cc), y0 + ch2];
+                          const lf = [x0, y0 + ch2 * it(a, d)];
+                          const seg = (p: number[], q: number[]) => { ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); };
+                          switch (code) {
+                              case 1: case 14: seg(lf, bt); break;
+                              case 2: case 13: seg(bt, rt); break;
+                              case 3: case 12: seg(lf, rt); break;
+                              case 4: case 11: seg(tp, rt); break;
+                              case 5: seg(lf, tp); seg(bt, rt); break;
+                              case 6: case 9: seg(tp, bt); break;
+                              case 7: case 8: seg(lf, tp); break;
+                              case 10: seg(lf, bt); seg(tp, rt); break;
+                          }
+                      }
+                  }
+              }
+              ctx.stroke();
+
+              // tiny italic survey numbers dropped into gaps
+              const cFs = Math.max(8, Math.round(Math.min(targetW, targetH) / 95));
+              ctx.font = `italic ${cFs}px Georgia, 'Times New Roman', serif`;
+              ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+              for (let g = 0; g < 48; g++) {
+                  const gx = (((g * 0.6180339) % 1)) * targetW;
+                  const gy = (((g * 0.2419 + 0.13) % 1)) * targetH;
+                  const hh = fbm3(gx / targetW * fscale, gy / targetH * fscale * aspN, zc);
+                  const cont = (hh - 0.2) / 0.6 * cLevels;
+                  const lvl = Math.round(cont);
+                  if (lvl < 0 || lvl >= cLevels) continue;
+                  const frac = ((cont % 1) + 1) % 1;
+                  if (frac > 0.12 && frac < 0.88) continue;
+                  ctx.fillStyle = cPaper;
+                  ctx.fillRect(gx - cFs * 1.3, gy - cFs * 0.65, cFs * 2.6, cFs * 1.3);
+                  ctx.fillStyle = cLabelCol;
+                  ctx.fillText(String(40 + lvl * 10), gx, gy);
+              }
+
+              // bottom-left type block
+              const bmx = Math.round(Math.min(targetW, targetH) * 0.045);
+              const bBase = targetH - bmx;
+              const metaFs = Math.max(9, Math.round(Math.min(targetW, targetH) / 88));
+              const headFs = Math.round(metaFs * 2.5);
+              const parts = cLabel.toUpperCase().split('/').map(s => s.trim()).filter(Boolean);
+              ctx.fillStyle = cLabelCol; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+              ctx.font = `${metaFs}px 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif`;
+              ctx.fillText((parts[0] || 'FIELD NOTES') + (parts[1] ? '   ' + parts[1] : ''), bmx, bBase - headFs * 4.2);
+              ctx.font = `700 ${headFs}px 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif`;
+              const headWords = (parts.slice(2).join(' ') || cLabel).toUpperCase().split(/\s+/);
+              const lines: string[] = [];
+              let curLine = '';
+              for (const wd of headWords) {
+                  if ((curLine + ' ' + wd).trim().length > 15 && curLine) { lines.push(curLine); curLine = wd; }
+                  else curLine = (curLine + ' ' + wd).trim();
+              }
+              if (curLine) lines.push(curLine);
+              const filler = ['ISOLINE', 'FIELD', 'SURVEY', 'SHEET'];
+              while (lines.length < 4) lines.push(filler[lines.length]);
+              for (let li = 0; li < 4; li++) ctx.fillText(lines[li], bmx, bBase - headFs * (3 - li) + headFs * 0.15);
+              element = canvas;
+          } else if (def.uuid === 'neon-labyrinth-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const S = Math.min(targetW, targetH);
+              const nl = modifiedSettings;
+              const nlBg = resolvedGenerativeColors['background'] || '#05060f';
+              const nlWall = resolvedGenerativeColors['walls'] || '#2b1a63';
+              const nlPellet = resolvedGenerativeColors['pellets'] || '#ffe600';
+              const nlGhost = resolvedGenerativeColors['ghosts'] || '#ff2e88';
+              const nlDens = Math.max(0, Math.min(1, nl.corridor_density ?? 0.55));
+              const nlAggr = Math.max(0, Math.min(1, nl.ghost_aggression ?? 0.5));
+              const nlDecay = Math.max(0, Math.min(1, nl.glow_decay ?? 0.6));
+              const nlWrap = Math.max(0, Math.min(6, nl.wrap_frequency ?? 2));
+              const nlSurgeA = Number(nl.power_surge ?? 0), nlReseedA = Number(nl.grid_reseed ?? 0);
+              const nlCols = 16, nlRows = Math.max(7, Math.round(16 * targetH / Math.max(1, targetW)));
+              let nlS = neonLabyrinthStateRef.current[layer.id];
+              if (!nlS || nlS.cols !== nlCols || nlS.rows !== nlRows) {
+                  nlS = { cols: nlCols, rows: nlRows, seed: (Math.random() * 1e9) | 0, moveAcc: 0,
+                          player: { cx: nlCols >> 1, cy: nlRows >> 1, rx: nlCols >> 1, ry: nlRows >> 1, trail: [] as any[] },
+                          ghosts: [] as any[], surgeUntil: 0, lastSurge: nlSurgeA, lastReseed: nlReseedA };
+                  for (let i = 0; i < 4; i++) nlS.ghosts.push({ cx: i % 2 ? 1 : nlCols - 2, cy: i < 2 ? 1 : nlRows - 2, rx: 0, ry: 0 });
+                  for (const g of nlS.ghosts) { g.rx = g.cx; g.ry = g.cy; }
+                  neonLabyrinthStateRef.current[layer.id] = nlS;
+              }
+              if (nlReseedA > nlS.lastReseed) { nlS.seed = (Math.random() * 1e9) | 0; nlS.lastReseed = nlReseedA; }
+              if (nlSurgeA > nlS.lastSurge) { nlS.surgeUntil = nowSec + 5; nlS.lastSurge = nlSurgeA; }
+              const nlSurging = nowSec < nlS.surgeUntil;
+              const nlWH = (a: number, b: number) => { const n = Math.sin(a * 127.1 + b * 311.7 + nlS.seed * 0.00013) * 43758.5453; return n - Math.floor(n); };
+              const nlRight = (cx: number, cy: number) => cx < nlCols - 1 && nlWH(cx * 2 + 1, cy * 3) < nlDens * 0.7;
+              const nlDown = (cx: number, cy: number) => cy < nlRows - 1 && nlWH(cx * 3, cy * 2 + 1) < nlDens * 0.7;
+              const cw = targetW / nlCols, ch = targetH / nlRows;
+              const nlTick = 0.16 / (0.55 + nlAggr) / (nlSurging ? 1.7 : 1);
+              nlS.moveAcc += (deltaTime || 16.7) / 1000;
+              const nlStep = nlS.moveAcc >= nlTick;
+              if (nlStep) nlS.moveAcc = 0;
+              const nlMove = (e: any, tX: number, tY: number, aggro: number) => {
+                  const opts: number[][] = [];
+                  if (e.cx < nlCols - 1 && !nlRight(e.cx, e.cy)) opts.push([1, 0]);
+                  if (e.cx > 0 && !nlRight(e.cx - 1, e.cy)) opts.push([-1, 0]);
+                  if (e.cy < nlRows - 1 && !nlDown(e.cx, e.cy)) opts.push([0, 1]);
+                  if (e.cy > 0 && !nlDown(e.cx, e.cy - 1)) opts.push([0, -1]);
+                  if (!opts.length) return;
+                  let pick = opts[(Math.random() * opts.length) | 0];
+                  if (Math.random() < aggro) {
+                      pick = opts.reduce((pa, cb) => Math.hypot(e.cx + cb[0] - tX, e.cy + cb[1] - tY) < Math.hypot(e.cx + pa[0] - tX, e.cy + pa[1] - tY) ? cb : pa);
+                  }
+                  e.cx += pick[0]; e.cy += pick[1];
+                  if (nlWrap >= 1 && nlWH(e.cy, 7.0) < nlWrap / 6) {
+                      if (e.cx < 0) e.cx = nlCols - 1; else if (e.cx > nlCols - 1) e.cx = 0;
+                  }
+                  e.cx = Math.max(0, Math.min(nlCols - 1, e.cx)); e.cy = Math.max(0, Math.min(nlRows - 1, e.cy));
+              };
+              const nlP = nlS.player;
+              if (nlStep) {
+                  nlMove(nlP, Math.random() * nlCols, Math.random() * nlRows, 0.2);
+                  nlP.trail.push([nlP.cx, nlP.cy, nowSec]);
+                  const tLife = (nlSurging ? 3.4 : 1.5) * (0.35 + (1 - nlDecay) * 1.9);
+                  while (nlP.trail.length && nowSec - nlP.trail[0][2] > tLife) nlP.trail.shift();
+                  for (const g of nlS.ghosts) nlMove(g, nlP.cx, nlP.cy, nlSurging ? 0.04 : 0.15 + nlAggr * 0.8);
+              }
+              const nlLerp = Math.min(1, ((deltaTime || 16.7) / 1000) / Math.max(0.03, nlTick));
+              nlP.rx += (nlP.cx - nlP.rx) * nlLerp; nlP.ry += (nlP.cy - nlP.ry) * nlLerp;
+              for (const g of nlS.ghosts) { g.rx += (g.cx - g.rx) * nlLerp; g.ry += (g.cy - g.ry) * nlLerp; }
+
+              ctx.fillStyle = nlBg; ctx.fillRect(0, 0, targetW, targetH);
+              if (nlSurging) { ctx.fillStyle = nlGhost; ctx.globalAlpha = 0.16 + 0.1 * Math.sin(nowSec * 30); ctx.fillRect(0, 0, targetW, targetH); ctx.globalAlpha = 1; }
+              ctx.strokeStyle = nlWall; ctx.lineWidth = Math.max(1.5, S * 0.006);
+              ctx.shadowColor = nlWall; ctx.shadowBlur = S * 0.018; ctx.lineCap = 'round';
+              ctx.beginPath();
+              for (let cy = 0; cy < nlRows; cy++) for (let cx = 0; cx < nlCols; cx++) {
+                  if (nlRight(cx, cy)) { ctx.moveTo((cx + 1) * cw, cy * ch); ctx.lineTo((cx + 1) * cw, (cy + 1) * ch); }
+                  if (nlDown(cx, cy)) { ctx.moveTo(cx * cw, (cy + 1) * ch); ctx.lineTo((cx + 1) * cw, (cy + 1) * ch); }
+              }
+              ctx.rect(2, 2, targetW - 4, targetH - 4);
+              ctx.stroke(); ctx.shadowBlur = 0;
+              ctx.fillStyle = nlPellet;
+              const nlPr = Math.max(1.1, S * 0.005);
+              for (let cy = 0; cy < nlRows; cy++) for (let cx = 0; cx < nlCols; cx++) {
+                  if ((cx * 7 + cy * 5) % 3 === 0) continue;
+                  ctx.beginPath(); ctx.arc((cx + 0.5) * cw, (cy + 0.5) * ch, nlPr, 0, 6.283); ctx.fill();
+              }
+              ctx.strokeStyle = nlPellet; ctx.lineJoin = 'round';
+              ctx.shadowColor = nlPellet; ctx.shadowBlur = S * 0.03;
+              ctx.lineWidth = Math.max(2, S * 0.013 * (nlSurging ? 1.6 : 1));
+              ctx.beginPath();
+              for (let i = 0; i < nlP.trail.length; i++) { const tp = nlP.trail[i]; const x = (tp[0] + 0.5) * cw, y = (tp[1] + 0.5) * ch; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+              ctx.lineTo((nlP.rx + 0.5) * cw, (nlP.ry + 0.5) * ch);
+              ctx.stroke();
+              ctx.fillStyle = nlPellet; ctx.beginPath(); ctx.arc((nlP.rx + 0.5) * cw, (nlP.ry + 0.5) * ch, S * 0.015, 0, 6.283); ctx.fill();
+              ctx.shadowBlur = 0;
+              for (const g of nlS.ghosts) {
+                  ctx.fillStyle = nlGhost; ctx.shadowColor = nlGhost; ctx.shadowBlur = S * 0.022;
+                  const gx = (g.rx + 0.5) * cw, gy = (g.ry + 0.5) * ch, gr = S * 0.016;
+                  ctx.beginPath(); ctx.arc(gx, gy - gr * 0.15, gr, Math.PI, 0);
+                  ctx.lineTo(gx + gr, gy + gr);
+                  for (let k = 0; k < 3; k++) { ctx.lineTo(gx + gr - (k + 0.5) * (gr * 2 / 3), gy + gr * 0.5); ctx.lineTo(gx + gr - (k + 1) * (gr * 2 / 3), gy + gr); }
+                  ctx.closePath(); ctx.fill();
+              }
+              ctx.shadowBlur = 0;
+              element = canvas;
+          } else if (def.uuid === 'pixel-swarm-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const S = Math.min(targetW, targetH);
+              const ps = modifiedSettings;
+              const psBg = resolvedGenerativeColors['background'] || '#04120a';
+              const psInv = resolvedGenerativeColors['invaders'] || '#39ff88';
+              const psBul = resolvedGenerativeColors['bullets'] || '#eaffea';
+              const psAcc = resolvedGenerativeColors['accent'] || '#00b34a';
+              const psMarch = Math.max(0.1, ps.march_speed ?? 1);
+              const psRowSp = Math.max(0.4, ps.row_spacing ?? 1);
+              const psBarrage = Math.max(0, ps.barrage_rate ?? 1);
+              const psJit = Math.max(0, Math.min(1, ps.jitter_amplitude ?? 0.15));
+              const psStepA = Number(ps.step_down ?? 0), psScatA = Number(ps.scatter_strike ?? 0);
+              const dtSec = Math.min(0.05, (deltaTime || 16.7) / 1000);
+              const psCols = 11, psRows = 5;
+              let psS = pixelSwarmStateRef.current[layer.id];
+              if (!psS) {
+                  psS = { ox: 0, dir: 1, drop: 0, tempo: 1, bullets: [] as any[], scatter: [] as any[],
+                          lastStep: psStepA, lastScat: psScatA, fireAcc: 0 };
+                  pixelSwarmStateRef.current[layer.id] = psS;
+              }
+              if (psStepA > psS.lastStep) { psS.drop += 1; psS.tempo *= 1.15; psS.lastStep = psStepA; }
+              if (psScatA > psS.lastScat) {
+                  psS.lastScat = psScatA;
+                  for (let k = 0; k < 3; k++) psS.scatter.push({ col: (Math.random() * psCols) | 0, row: (Math.random() * psRows) | 0, t: 0, dur: 2.2, phase: Math.random() * 6.28 });
+              }
+              const cellW = targetW / (psCols + 3);
+              const cellH = cellW * 0.82 * psRowSp;
+              const amp = cellW * 1.4;
+              psS.ox += psS.dir * psMarch * psS.tempo * dtSec * 60 * (cellW * 0.02);
+              if (psS.ox > amp) { psS.ox = amp; psS.dir = -1; psS.drop += 0.5; }
+              else if (psS.ox < -amp) { psS.ox = -amp; psS.dir = 1; psS.drop += 0.5; }
+              const formTop = targetH * 0.14 + psS.drop * cellH * 0.6;
+              const formLeft = targetW * 0.5 - (psCols - 1) * cellW * 0.5;
+              // fire barrage
+              psS.fireAcc += dtSec * psBarrage * (1.2 + psS.tempo * 0.5);
+              while (psS.fireAcc > 1) {
+                  psS.fireAcc -= 1;
+                  const c = (Math.random() * psCols) | 0;
+                  psS.bullets.push({ x: formLeft + c * cellW + psS.ox, y: formTop + (psRows - 1) * cellH, vy: (2.4 + Math.random() * 1.5), z: Math.random() < 0.5 });
+              }
+              for (const b of psS.bullets) { b.y += b.vy * dtSec * 60 * (S * 0.006); }
+              psS.bullets = psS.bullets.filter((b: any) => b.y < targetH + 20);
+              for (const s of psS.scatter) s.t += dtSec;
+              psS.scatter = psS.scatter.filter((s: any) => s.t < s.dur + 0.5);
+
+              ctx.fillStyle = psBg; ctx.fillRect(0, 0, targetW, targetH);
+              // subtle scanlines
+              ctx.fillStyle = psAcc; ctx.globalAlpha = 0.06;
+              for (let y = 0; y < targetH; y += 3) ctx.fillRect(0, y, targetW, 1);
+              ctx.globalAlpha = 1;
+              const bmp = [0x08, 0x1c, 0x3e, 0x6b, 0x7f, 0x2a, 0x14, 0x22]; // 8x8-ish invader rows (7 wide)
+              const px = cellW / 9;
+              const drawInv = (gx: number, gy: number, tint: string) => {
+                  ctx.fillStyle = tint;
+                  const jx = psJit ? (Math.round((Math.random() - 0.5) * psJit * 4) * px) : 0;
+                  const jy = psJit ? (Math.round((Math.random() - 0.5) * psJit * 4) * px) : 0;
+                  for (let r = 0; r < 8; r++) for (let c = 0; c < 7; c++) {
+                      if ((bmp[r] >> (6 - c)) & 1) ctx.fillRect(gx + jx + c * px, gy + jy + r * px, px + 0.6, px + 0.6);
+                  }
+              };
+              for (let r = 0; r < psRows; r++) for (let c = 0; c < psCols; c++) {
+                  const inScatter = psS.scatter.find((s: any) => s.col === c && s.row === r && s.t < s.dur);
+                  let gx = formLeft + c * cellW + psS.ox;
+                  let gy = formTop + r * cellH;
+                  if (inScatter) {
+                      const k = inScatter.t / inScatter.dur;
+                      gx += Math.sin(inScatter.t * 6 + inScatter.phase) * cellW * 2.2 * Math.sin(k * Math.PI);
+                      gy += Math.sin(k * Math.PI) * targetH * 0.28;
+                  }
+                  drawInv(gx - 3.5 * px, gy - 3.5 * px, r === 0 ? psAcc : psInv);
+              }
+              ctx.fillStyle = psBul;
+              for (const b of psS.bullets) {
+                  if (b.z) ctx.fillRect(b.x - px * 0.6, b.y, px * 1.2, px * 3);
+                  else { ctx.fillRect(b.x - px, b.y, px * 2, px); ctx.fillRect(b.x - px * 0.5, b.y + px * 1.5, px, px); }
+              }
+              element = canvas;
+          } else if (def.uuid === 'tetromino-cascade-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const S = Math.min(targetW, targetH);
+              const ts = modifiedSettings;
+              const tBg = resolvedGenerativeColors['background'] || '#0c0c10';
+              const tBlk = resolvedGenerativeColors['blocks'] || '#e63946';
+              const tGrid = resolvedGenerativeColors['grid'] || '#1d3557';
+              const tFlash = resolvedGenerativeColors['flash'] || '#f1faee';
+              const tFall = Math.max(0.2, ts.fall_velocity ?? 1.6);
+              const tChaos = Math.max(0, Math.min(1, ts.grid_chaos ?? 0.15));
+              const tBounce = Math.max(0, Math.min(1, ts.settle_bounciness ?? 0.3));
+              const tDens = Math.max(0, Math.min(0.9, ts.line_density ?? 0.25));
+              const tClearA = Number(ts.line_clear ?? 0), tInvA = Number(ts.gravity_invert ?? 0);
+              const dtS = Math.min(0.05, (deltaTime || 16.7) / 1000);
+              const tCols = 12, tRows = Math.max(10, Math.round(12 * targetH / Math.max(1, targetW)));
+              const SHAPES = [[[0,0],[1,0],[0,1],[1,1]], [[0,0],[1,0],[2,0],[3,0]], [[0,0],[1,0],[2,0],[1,1]], [[0,0],[1,0],[1,1],[2,1]], [[1,0],[2,0],[0,1],[1,1]], [[0,0],[0,1],[1,1],[2,1]], [[2,0],[0,1],[1,1],[2,1]]];
+              const ODD = [[[0,0],[1,0],[0,1]], [[0,0],[1,0],[2,0],[1,1],[1,2]], [[0,0]], [[0,0],[1,0]]];
+              const tCol = (n: number) => { const h = (n * 47) % 360; return `hsl(${h} 70% 58%)`; };
+              let tS = tetrominoStateRef.current[layer.id];
+              const newPiece = () => {
+                  const useOdd = Math.random() < tChaos;
+                  const src = useOdd ? ODD[(Math.random() * ODD.length) | 0] : SHAPES[(Math.random() * SHAPES.length) | 0];
+                  return { cells: src.map(c => [c[0], c[1]]), x: (tCols / 2 - 1) | 0, y: -2, yf: -2, vy: 0, ci: (Math.random() * 6) | 0, settling: 0 };
+              };
+              if (!tS || tS.cols !== tCols || tS.rows !== tRows) {
+                  const grid: number[] = new Array(tCols * tRows).fill(-1);
+                  const baseRows = Math.round(tRows * tDens);
+                  for (let r = tRows - baseRows; r < tRows; r++) for (let c = 0; c < tCols; c++) if (Math.random() > 0.28) grid[r * tCols + c] = (Math.random() * 6) | 0;
+                  tS = { cols: tCols, rows: tRows, grid, piece: newPiece(), invertUntil: 0, lastClear: tClearA, lastInv: tInvA, flashRows: [] as number[], flashT: 0, dir: 1 };
+                  tetrominoStateRef.current[layer.id] = tS;
+              }
+              if (tInvA > tS.lastInv) { tS.invertUntil = nowSec + 1.4; tS.lastInv = tInvA; }
+              const invert = nowSec < tS.invertUntil;
+              tS.dir = invert ? -1 : 1;
+              const collide = (cells: number[][], px: number, py: number) => {
+                  for (const c of cells) {
+                      const gx = px + c[0], gy = Math.floor(py) + c[1];
+                      if (gx < 0 || gx >= tCols) return true;
+                      if (gy >= tRows) return true;
+                      if (gy >= 0 && tS.grid[gy * tCols + gx] >= 0) return true;
+                  }
+                  return false;
+              };
+              const pc = tS.piece;
+              pc.vy += (invert ? -1 : 1) * tFall * dtS * 22;
+              pc.vy = Math.max(-14, Math.min(16, pc.vy));
+              let ny = pc.yf + pc.vy * dtS * 3.4;
+              if (!collide(pc.cells, pc.x, ny)) { pc.yf = ny; pc.y = Math.floor(ny); }
+              else {
+                  if (Math.abs(pc.vy) > 3 && tBounce > 0.05 && pc.settling < 2) { pc.vy = -pc.vy * tBounce * 0.55; pc.settling++; }
+                  else {
+                      for (const c of pc.cells) { const gx = pc.x + c[0], gy = Math.floor(pc.yf) + c[1]; if (gy >= 0 && gy < tRows && gx >= 0 && gx < tCols) tS.grid[gy * tCols + gx] = pc.ci; }
+                      // check full rows
+                      for (let r = 0; r < tRows; r++) { let full = true; for (let c = 0; c < tCols; c++) if (tS.grid[r * tCols + c] < 0) { full = false; break; } if (full) tS.flashRows.push(r); }
+                      if (tS.flashRows.length) tS.flashT = nowSec + 0.35;
+                      tS.piece = newPiece();
+                  }
+              }
+              if (tClearA > tS.lastClear) {
+                  tS.lastClear = tClearA;
+                  for (let r = 0; r < tRows; r++) { let cnt = 0; for (let c = 0; c < tCols; c++) if (tS.grid[r * tCols + c] >= 0) cnt++; if (cnt >= tCols - 2) tS.flashRows.push(r); }
+                  if (tS.flashRows.length) tS.flashT = nowSec + 0.35;
+              }
+              if (tS.flashRows.length && nowSec > tS.flashT) {
+                  const rem = [...new Set(tS.flashRows)].sort((a, b) => a - b);
+                  for (const r of rem) { for (let rr = r; rr > 0; rr--) for (let c = 0; c < tCols; c++) tS.grid[rr * tCols + c] = tS.grid[(rr - 1) * tCols + c]; for (let c = 0; c < tCols; c++) tS.grid[c] = -1; }
+                  tS.flashRows = [];
+              }
+              const cellPx = Math.min(targetW / tCols, targetH / tRows);
+              const wellW = cellPx * tCols, wellH = cellPx * tRows;
+              const wx0 = (targetW - wellW) / 2, wy0 = (targetH - wellH) / 2;
+              ctx.fillStyle = tBg; ctx.fillRect(0, 0, targetW, targetH);
+              ctx.strokeStyle = tGrid; ctx.lineWidth = 1; ctx.globalAlpha = 0.5;
+              ctx.beginPath();
+              for (let c = 0; c <= tCols; c++) { ctx.moveTo(wx0 + c * cellPx, wy0); ctx.lineTo(wx0 + c * cellPx, wy0 + wellH); }
+              for (let r = 0; r <= tRows; r++) { ctx.moveTo(wx0, wy0 + r * cellPx); ctx.lineTo(wx0 + wellW, wy0 + r * cellPx); }
+              ctx.stroke(); ctx.globalAlpha = 1;
+              const flashSet = new Set(tS.flashRows);
+              const drawCell = (gx: number, gy: number, col: string) => {
+                  const x = wx0 + gx * cellPx, y = wy0 + gy * cellPx;
+                  ctx.fillStyle = col; ctx.fillRect(x + 1, y + 1, cellPx - 2, cellPx - 2);
+                  ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fillRect(x + 1, y + 1, cellPx - 2, Math.max(1, cellPx * 0.18));
+              };
+              for (let r = 0; r < tRows; r++) for (let c = 0; c < tCols; c++) {
+                  const v = tS.grid[r * tCols + c];
+                  if (v < 0) continue;
+                  drawCell(c, r, flashSet.has(r) ? tFlash : (v === 0 ? tBlk : tCol(v)));
+              }
+              for (const c of pc.cells) {
+                  const gx = pc.x + c[0], gy = Math.floor(pc.yf) + c[1];
+                  if (gy >= 0) drawCell(gx, gy, pc.ci === 0 ? tBlk : tCol(pc.ci));
+              }
+              element = canvas;
+          } else if (def.uuid === 'hillscape-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const S = Math.min(targetW, targetH);
+              const hs = modifiedSettings;
+              const hSky = resolvedGenerativeColors['background'] || '#1a2a4a';
+              const hTer = resolvedGenerativeColors['terrain'] || '#3aa856';
+              const hStr = resolvedGenerativeColors['structures'] || '#2e7d32';
+              const hCoin = resolvedGenerativeColors['coins'] || '#ffd23f';
+              const hRough = Math.max(0, Math.min(1, hs.terrain_roughness ?? 0.5));
+              const hGrav = Math.max(0.2, hs.jump_gravity ?? 1);
+              const hPipe = Math.max(0, Math.min(1, hs.pipe_density ?? 0.4));
+              const hPar = Math.max(0, Math.min(1, hs.cloud_parallax ?? 0.5));
+              const hCoinA = Number(hs.coin_burst ?? 0), hRushA = Number(hs.scroll_rush ?? 0);
+              const dtH = Math.min(0.05, (deltaTime || 16.7) / 1000);
+              let hS = hillscapeStateRef.current[layer.id];
+              if (!hS) hS = hillscapeStateRef.current[layer.id] = { scroll: 0, rushUntil: 0, coins: [] as any[], hopX: targetW * 0.32, hopY: 0, vy: 0, onG: true, lastCoin: hCoinA, lastRush: hRushA };
+              if (hRushA > hS.lastRush) { hS.rushUntil = nowSec + 2.5; hS.lastRush = hRushA; }
+              const rush = nowSec < hS.rushUntil;
+              const baseSpd = (rush ? 3.2 : 1) * (0.6 + hPar) * S * 0.6;
+              hS.scroll += baseSpd * dtH;
+              const nz = (x: number) => { const s = Math.sin(x * 12.9898) * 43758.5453; return s - Math.floor(s); };
+              const terrainY = (wx: number) => {
+                  const x = wx * 0.004;
+                  const lo = (Math.sin(x * 0.7) * 0.5 + 0.5);
+                  const mid = (nz(Math.floor(x)) * (1 - (x - Math.floor(x))) + nz(Math.floor(x) + 1) * (x - Math.floor(x)));
+                  return targetH * (0.62 - hRough * 0.22 * (lo * 0.6 + mid * 0.9) - 0.06 * Math.sin(x * 2.3));
+              };
+              const grav = 2600 * hGrav;
+              hS.vy += grav * dtH;
+              const groundAt = terrainY(hS.scroll + hS.hopX) - S * 0.03;
+              hS.hopY += hS.vy * dtH;
+              if (hS.hopY >= groundAt) { hS.hopY = groundAt; hS.vy = -900 - Math.random() * 350; }
+              if (hCoinA > hS.lastCoin) {
+                  hS.lastCoin = hCoinA;
+                  for (let k = 0; k < 10; k++) hS.coins.push({ x: hS.hopX + (Math.random() - 0.5) * 40, y: hS.hopY - S * 0.05, vx: (Math.random() - 0.5) * 260, vy: -420 - Math.random() * 380, t: 0 });
+              }
+              for (const c of hS.coins) { c.vy += 1800 * dtH; c.x += c.vx * dtH; c.y += c.vy * dtH; c.t += dtH; }
+              hS.coins = hS.coins.filter((c: any) => c.t < 2.2 && c.y < targetH + 40);
+
+              const grd = ctx.createLinearGradient(0, 0, 0, targetH);
+              grd.addColorStop(0, hSky); grd.addColorStop(1, '#000010');
+              ctx.fillStyle = grd; ctx.fillRect(0, 0, targetW, targetH);
+              // clouds (parallax)
+              ctx.fillStyle = 'rgba(255,255,255,0.5)';
+              for (let i = 0; i < 6; i++) {
+                  const cx = ((i * 320 - hS.scroll * (0.15 + hPar * 0.25)) % (targetW + 300) + targetW + 300) % (targetW + 300) - 150;
+                  const cy = targetH * (0.12 + 0.07 * i % 0.3);
+                  ctx.beginPath(); ctx.arc(cx, cy, S * 0.04, 0, 6.283); ctx.arc(cx + S * 0.04, cy + 4, S * 0.03, 0, 6.283); ctx.arc(cx - S * 0.035, cy + 4, S * 0.028, 0, 6.283); ctx.fill();
+              }
+              // back hills
+              ctx.fillStyle = hStr; ctx.globalAlpha = 0.45;
+              ctx.beginPath(); ctx.moveTo(0, targetH);
+              for (let x = 0; x <= targetW; x += 8) ctx.lineTo(x, terrainY(hS.scroll * 0.4 + x) + S * 0.09);
+              ctx.lineTo(targetW, targetH); ctx.closePath(); ctx.fill(); ctx.globalAlpha = 1;
+              // terrain
+              ctx.fillStyle = hTer;
+              ctx.beginPath(); ctx.moveTo(0, targetH);
+              for (let x = 0; x <= targetW; x += 6) ctx.lineTo(x, terrainY(hS.scroll + x));
+              ctx.lineTo(targetW, targetH); ctx.closePath(); ctx.fill();
+              // pipes + ? blocks
+              const period = 340 - hPipe * 180;
+              for (let k = -1; k < targetW / period + 2; k++) {
+                  const wx = k * period - (hS.scroll % period);
+                  const seed = Math.floor((hS.scroll + wx) / period);
+                  if (nz(seed * 3.3) < hPipe) {
+                      const gy = terrainY(hS.scroll + wx);
+                      const pw = S * 0.06, phh = S * (0.08 + 0.12 * nz(seed * 7.7));
+                      ctx.fillStyle = hStr; ctx.fillRect(wx - pw / 2, gy - phh, pw, phh);
+                      ctx.fillRect(wx - pw / 2 - 4, gy - phh, pw + 8, S * 0.03);
+                  }
+                  if (nz(seed * 5.1 + 2) < hPipe * 0.8) {
+                      const by = terrainY(hS.scroll + wx) - S * (0.24 + 0.08 * nz(seed));
+                      ctx.fillStyle = hCoin; ctx.fillRect(wx - S * 0.03, by, S * 0.06, S * 0.06);
+                      ctx.fillStyle = hStr; ctx.font = `${S * 0.045}px monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                      ctx.fillText('?', wx, by + S * 0.032);
+                  }
+              }
+              // hopper
+              ctx.fillStyle = hCoin;
+              ctx.fillRect(hS.hopX - S * 0.022, hS.hopY - S * 0.03, S * 0.044, S * 0.03);
+              ctx.fillStyle = hTer; ctx.fillRect(hS.hopX - S * 0.022, hS.hopY - S * 0.03, S * 0.044, S * 0.008);
+              // coins
+              for (const c of hS.coins) {
+                  ctx.fillStyle = hCoin; ctx.globalAlpha = Math.max(0, 1 - c.t / 2.2);
+                  const sc = Math.abs(Math.cos(c.t * 12));
+                  ctx.fillRect(c.x - S * 0.014 * sc, c.y - S * 0.014, S * 0.028 * sc, S * 0.028);
+              }
+              ctx.globalAlpha = 1;
+              element = canvas;
+          } else if (def.uuid === 'orbit-deflection-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const S = Math.min(targetW, targetH);
+              const os = modifiedSettings;
+              const oBg = resolvedGenerativeColors['background'] || '#12131f';
+              const oBrk = resolvedGenerativeColors['bricks'] || '#7aa2f7';
+              const oBall = resolvedGenerativeColors['ball'] || '#f7768e';
+              const oPad = resolvedGenerativeColors['paddle'] || '#bb9af7';
+              const oRings = Math.max(1, Math.min(8, Math.round(os.brick_ring_count ?? 4)));
+              const oAccel = Math.max(1, Math.min(1.15, os.ball_speed_multiplier ?? 1.03));
+              const oCurve = Math.max(0, Math.min(1, os.paddle_curvature ?? 0.5));
+              const oVisc = Math.max(0, Math.min(1, os.trail_viscosity ?? 0.5));
+              const oMultA = Number(os.multi_ball ?? 0), oDetA = Number(os.brick_detonation ?? 0);
+              const dtO = Math.min(0.05, (deltaTime || 16.7) / 1000);
+              const cx = targetW / 2, cy = targetH / 2;
+              const segPerRing = 22;
+              let oS = orbitDeflectionStateRef.current[layer.id];
+              if (!oS || oS.rings !== oRings) {
+                  const bricks: number[] = [];
+                  for (let r = 0; r < oRings; r++) for (let s = 0; s < segPerRing; s++) bricks.push(1 + ((r + s) % 2));
+                  oS = { rings: oRings, bricks, balls: [{ x: cx, y: cy - S * 0.05, a: Math.random() * 6.28, sp: S * 0.42 }], pad: 0, lastMulti: oMultA, lastDet: oDetA };
+                  orbitDeflectionStateRef.current[layer.id] = oS;
+              }
+              oS.pad += dtO * 1.1;
+              const r0 = S * 0.14, dr = S * 0.045;
+              const arenaR = r0 + oRings * dr + S * 0.06;
+              if (oMultA > oS.lastMulti) {
+                  oS.lastMulti = oMultA;
+                  const add: any[] = [];
+                  for (const b of oS.balls.slice(0, 4)) for (const off of [-0.4, 0.4]) add.push({ x: b.x, y: b.y, a: b.a + off, sp: b.sp });
+                  oS.balls.push(...add);
+                  if (oS.balls.length > 14) oS.balls = oS.balls.slice(-14);
+              }
+              if (oDetA > oS.lastDet) {
+                  oS.lastDet = oDetA;
+                  for (let i = 0; i < oS.bricks.length; i++) if (oS.bricks[i] === 1 && Math.random() < 0.6) oS.bricks[i] = 0;
+              }
+              ctx.fillStyle = oBg;
+              if (oVisc > 0.02) { ctx.globalAlpha = 1 - oVisc * 0.82; ctx.fillRect(0, 0, targetW, targetH); ctx.globalAlpha = 1; }
+              else ctx.fillRect(0, 0, targetW, targetH);
+              // bricks
+              for (let r = 0; r < oRings; r++) {
+                  const ir = r0 + r * dr, orr = ir + dr * 0.86;
+                  for (let s = 0; s < segPerRing; s++) {
+                      const hp = oS.bricks[r * segPerRing + s];
+                      if (hp <= 0) continue;
+                      const a0 = (s / segPerRing) * 6.283 + oS.pad * 0.05 * (r % 2 ? 1 : -1);
+                      const a1 = a0 + 6.283 / segPerRing * 0.9;
+                      ctx.beginPath();
+                      ctx.arc(cx, cy, ir, a0, a1); ctx.arc(cx, cy, orr, a1, a0, true); ctx.closePath();
+                      ctx.fillStyle = hp === 2 ? oBrk : oPad; ctx.globalAlpha = hp === 2 ? 0.95 : 0.6;
+                      ctx.fill();
+                  }
+              }
+              ctx.globalAlpha = 1;
+              // paddles (2 orbiting arcs)
+              ctx.strokeStyle = oPad; ctx.lineWidth = S * 0.02; ctx.lineCap = 'round';
+              for (let pi = 0; pi < 2; pi++) {
+                  const pa = oS.pad + pi * Math.PI;
+                  ctx.beginPath(); ctx.arc(cx, cy, arenaR, pa - 0.28, pa + 0.28); ctx.stroke();
+              }
+              // balls
+              for (const b of oS.balls) {
+                  b.x += Math.cos(b.a) * b.sp * dtO;
+                  b.y += Math.sin(b.a) * b.sp * dtO;
+                  const dx = b.x - cx, dy = b.y - cy, dist = Math.hypot(dx, dy) || 1;
+                  // brick collision
+                  if (dist > r0 - dr && dist < r0 + oRings * dr) {
+                      const rr = Math.floor((dist - r0) / dr);
+                      let ang = Math.atan2(dy, dx) - oS.pad * 0.05 * (rr % 2 ? 1 : -1);
+                      ang = ((ang % 6.283) + 6.283) % 6.283;
+                      const ss = Math.floor(ang / (6.283 / segPerRing));
+                      const bi = rr * segPerRing + ss;
+                      if (rr >= 0 && rr < oRings && oS.bricks[bi] > 0) {
+                          oS.bricks[bi]--;
+                          b.a = Math.atan2(dy, dx) + Math.PI + (Math.random() - 0.5) * 0.3;
+                          b.sp = Math.min(S * 1.1, b.sp * oAccel);
+                      }
+                  }
+                  // paddle / wall bounce
+                  if (dist > arenaR) {
+                      const nrm = Math.atan2(dy, dx);
+                      let hitPad = false;
+                      for (let pi = 0; pi < 2; pi++) { let da = ((nrm - (oS.pad + pi * Math.PI)) + Math.PI * 3) % (Math.PI * 2) - Math.PI; if (Math.abs(da) < 0.30) { hitPad = true; b.a = nrm + Math.PI + da * oCurve * 2.4; break; } }
+                      if (!hitPad) b.a = nrm + Math.PI + (Math.random() - 0.5) * 0.2;
+                      b.x = cx + Math.cos(nrm) * (arenaR - 2); b.y = cy + Math.sin(nrm) * (arenaR - 2);
+                      b.sp = Math.min(S * 1.1, b.sp * (hitPad ? oAccel : 1));
+                  }
+                  ctx.fillStyle = oBall; ctx.shadowColor = oBall; ctx.shadowBlur = S * 0.02;
+                  ctx.beginPath(); ctx.arc(b.x, b.y, S * 0.012, 0, 6.283); ctx.fill();
+              }
+              ctx.shadowBlur = 0;
+              // regrow bricks slowly
+              if (Math.random() < 0.02) { const i = (Math.random() * oS.bricks.length) | 0; if (oS.bricks[i] === 0) oS.bricks[i] = 1; }
+              element = canvas;
+          } else if (def.uuid === 'centipede-garden-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const S = Math.min(targetW, targetH);
+              const gs = modifiedSettings;
+              const gBg = resolvedGenerativeColors['background'] || '#071206';
+              const gWorm = resolvedGenerativeColors['worm'] || '#39ff88';
+              const gObs = resolvedGenerativeColors['obstacles'] || '#b15cff';
+              const gAcc = resolvedGenerativeColors['accent'] || '#e6ff5c';
+              const gSeg = Math.max(4, Math.min(40, Math.round(gs.segment_count ?? 16)));
+              const gObsD = Math.max(0, Math.min(1, gs.obstacle_density ?? 0.4));
+              const gTurn = Math.max(0, Math.min(1, gs.turn_radius ?? 0.3));
+              const gSpore = Math.max(0, gs.spore_growth_rate ?? 1);
+              const gSplitA = Number(gs.segment_split ?? 0), gBloomA = Number(gs.spore_bloom ?? 0);
+              const dtC = Math.min(0.05, (deltaTime || 16.7) / 1000);
+              const gc = 22, gr = Math.max(10, Math.round(22 * targetH / Math.max(1, targetW)));
+              const cellS = targetW / gc;
+              let cS = centipedeStateRef.current[layer.id];
+              const spawnWorm = (headC: number, dir: number) => {
+                  const seg: number[][] = [];
+                  for (let i = 0; i < gSeg; i++) seg.push([headC - dir * i * 0.0, -2 - i]);
+                  return { seg, dir, down: 0, cd: 0, speed: 3.2 + Math.random() * 1.5 };
+              };
+              if (!cS || cS.gc !== gc) {
+                  const obs: any[] = [];
+                  const nObs = Math.round(gc * gr * 0.16 * gObsD * 2.2);
+                  for (let i = 0; i < nObs; i++) obs.push({ c: (Math.random() * gc) | 0, r: 2 + ((Math.random() * (gr - 4)) | 0), hp: 3, sz: 1, variant: (Math.random() * 3) | 0, grow: 1 });
+                  cS = { gc, gr, worms: [spawnWorm((gc / 2) | 0, 1), spawnWorm(3, 1)], obs, bloomUntil: 0, lastSplit: gSplitA, lastBloom: gBloomA };
+                  centipedeStateRef.current[layer.id] = cS;
+              }
+              if (gBloomA > cS.lastBloom) { cS.bloomUntil = nowSec + 3; cS.lastBloom = gBloomA; }
+              if (gSplitA > cS.lastSplit) {
+                  cS.lastSplit = gSplitA;
+                  const w = cS.worms[(Math.random() * cS.worms.length) | 0];
+                  if (w && w.seg.length > 6) {
+                      const half = w.seg.splice(w.seg.length >> 1);
+                      cS.worms.push({ seg: half.reverse(), dir: -w.dir, down: 0, cd: 0, speed: w.speed });
+                  }
+              }
+              const bloom = nowSec < cS.bloomUntil;
+              const obsAt = (c: number, r: number) => cS.obs.find((o: any) => o.hp > 0 && Math.round(o.c) === c && Math.round(o.r) === r);
+              for (const w of cS.worms) {
+                  w.cd -= dtC * w.speed * (bloom ? 0.7 : 1);
+                  if (w.cd <= 0) {
+                      w.cd = 1;
+                      const head = w.seg[0];
+                      let nc = head[0] + w.dir, nr = head[1];
+                      const blocked = nc < 0 || nc >= gc || obsAt(Math.round(nc), Math.round(nr));
+                      if (blocked) { w.dir = -w.dir; nr = head[1] + 1; nc = head[0] + w.dir; if (nc < 0) nc = 0; if (nc >= gc) nc = gc - 1; if (obsAt(Math.round(nc), Math.round(nr))) { const o = obsAt(Math.round(nc), Math.round(nr)); if (o) o.hp--; } }
+                      if (nr > gr + 2) { nr = -2; nc = (Math.random() * gc) | 0; }
+                      w.seg.unshift([nc, nr]);
+                      w.seg.pop();
+                  }
+              }
+              // obstacle regrow / respawn
+              cS.obs = cS.obs.filter((o: any) => o.hp > 0 || (o.dead = (o.dead || 0) + dtC) < 8 / Math.max(0.2, gSpore));
+              for (const o of cS.obs) {
+                  if (o.hp <= 0 && (o.dead || 0) > 3 / Math.max(0.2, gSpore)) { o.hp = 3; o.variant = (Math.random() * 3) | 0; o.dead = 0; }
+                  const target = (bloom ? 2 : 1);
+                  o.grow += (target - o.grow) * Math.min(1, dtC * 4);
+              }
+              const wantObs = Math.round(gc * gr * 0.14 * gObsD * 2.4);
+              if (cS.obs.filter((o: any) => o.hp > 0).length < wantObs && Math.random() < gSpore * dtC * 3) {
+                  cS.obs.push({ c: (Math.random() * gc) | 0, r: 2 + ((Math.random() * (gr - 4)) | 0), hp: 3, sz: 1, variant: (Math.random() * 3) | 0, grow: 0.2 });
+              }
+
+              ctx.fillStyle = gBg; ctx.fillRect(0, 0, targetW, targetH);
+              // obstacles
+              for (const o of cS.obs) {
+                  if (o.hp <= 0) continue;
+                  const x = (o.c + 0.5) * cellS, y = (o.r + 0.5) * cellS, rad = cellS * 0.42 * o.grow;
+                  ctx.fillStyle = o.variant === 0 ? gObs : (o.variant === 1 ? gAcc : gWorm);
+                  ctx.globalAlpha = 0.35 + 0.2 * o.hp;
+                  ctx.beginPath(); ctx.arc(x, y, rad, 0, 6.283); ctx.fill();
+                  ctx.globalAlpha = 1;
+                  ctx.fillStyle = gBg;
+                  ctx.beginPath(); ctx.arc(x, y, rad * 0.45, 0, 6.283); ctx.fill();
+              }
+              // worms
+              for (const w of cS.worms) {
+                  for (let i = w.seg.length - 1; i >= 0; i--) {
+                      const s = w.seg[i];
+                      const x = (s[0] + 0.5) * cellS, y = (s[1] + 0.5) * cellS;
+                      ctx.fillStyle = i === 0 ? gAcc : gWorm;
+                      ctx.shadowColor = gWorm; ctx.shadowBlur = i === 0 ? S * 0.02 : S * 0.008;
+                      ctx.beginPath(); ctx.arc(x, y, cellS * (i === 0 ? 0.5 : 0.42), 0, 6.283); ctx.fill();
+                  }
+              }
+              ctx.shadowBlur = 0;
               element = canvas;
           } else if (def.uuid === '3d-polygon-neon-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
@@ -4724,7 +5682,8 @@ export default function App() {
                  faces.push([1, curr, next]);
               }
               
-              const scale = Math.min(targetW, targetH) * 0.28 * sz;
+              const scale = Math.min(targetW, targetH) * 0.24 * Math.max(0.1, Math.min(2.4, sz));
+              const focal = scale * 3.4;
               const rotX = t * 0.5;
               const rotY = t * 0.7;
               
@@ -4743,7 +5702,7 @@ export default function App() {
               
               // Project to screen
               const projPts = rotatedPts.map(p => {
-                 const f = 450 / (450 + p.z * scale);
+                 const f = focal / (focal + p.z * scale);
                  return {
                      x: targetW / 2 + p.x * scale * f,
                      y: targetH / 2 + p.y * scale * f,
@@ -4843,24 +5802,29 @@ export default function App() {
                  }
               }
               
-              // Draw front wireframe edges
-              ctx.strokeStyle = polyWire;
-              ctx.lineWidth = 2.4;
-              if (shd > 0.02) {
-                 ctx.shadowColor = polyGlow;
-                 ctx.shadowBlur = shd * 10;
-              } else {
-                 ctx.shadowBlur = 0;
-              }
-              
-              for (const edge of edges) {
-                 ctx.beginPath();
-                 ctx.moveTo(projPts[edge[0]].x, projPts[edge[0]].y);
-                 ctx.lineTo(projPts[edge[1]].x, projPts[edge[1]].y);
-                 ctx.stroke();
-              }
+              // Draw front wireframe edges — neon: wide soft bloom + core line
+              ctx.lineCap = 'round';
+              ctx.lineJoin = 'round';
+              const drawEdges = (w: number, style: string, blur: number, blurCol: string, alpha: number) => {
+                 ctx.strokeStyle = style;
+                 ctx.lineWidth = w;
+                 ctx.globalAlpha = alpha;
+                 ctx.shadowColor = blur > 0 ? blurCol : 'transparent';
+                 ctx.shadowBlur = blur;
+                 for (const edge of edges) {
+                    ctx.beginPath();
+                    ctx.moveTo(projPts[edge[0]].x, projPts[edge[0]].y);
+                    ctx.lineTo(projPts[edge[1]].x, projPts[edge[1]].y);
+                    ctx.stroke();
+                 }
+              };
+              const glowAmt = Math.max(0, shd);
+              drawEdges(Math.max(6, scale * 0.03), polyGlow, 24 + glowAmt * 30, polyGlow, 0.22 + glowAmt * 0.15); // outer bloom
+              drawEdges(2.6, polyWire, 10 + glowAmt * 16, polyGlow, 1);                                            // core line
+              drawEdges(1.2, '#ffffff', 0, 'transparent', 0.6);                                                    // hot centre
               ctx.shadowBlur = 0;
-              
+              ctx.globalAlpha = 1;
+
               element = canvas;
           } else if (def.uuid === 'stacked-balls-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
@@ -4879,46 +5843,91 @@ export default function App() {
               }
               
               const { count, max_size, speed, movement, chaos } = modifiedSettings;
-              const num = Math.floor(count ?? 40);
-              const maxS = max_size ?? 100;
-              const spd = speed ?? 1.0;
-              const mov = movement ?? 30.0;
-              const cha = chaos ?? 1.0;
-              
-              const t = nowSec * spd;
-              
-              const balls = [];
-              for(let i=0; i<num; i++) {
-                 const seed = i * 13.37;
-                 const size = maxS * (0.2 + 0.8 * (Math.sin(seed*91.1)*0.5+0.5));
-                 const baseOx = (Math.sin(seed*11.2) * 0.4) * targetW;
-                 const baseOy = (Math.cos(seed*31.4) * 0.4) * targetH;
-                 
-                 // drift
-                 const ox = baseOx + Math.sin(t*cha + seed) * mov;
-                 const oy = baseOy + Math.cos(t*0.8*cha + seed) * mov;
-                 
-                 balls.push({ x: targetW/2 + ox, y: targetH/2 + oy, r: size, z: Math.sin(seed*44.4) });
+              const target = Math.max(0, Math.min(120, Math.floor(count ?? 40)));
+              const maxS = Math.max(6, (max_size ?? 100)) * (Math.min(targetW, targetH) / 780);
+              const spd = Math.max(0.1, speed ?? 1.0);
+              const spreadX = Math.max(0.05, Math.min(1, (chaos ?? 1) * 0.55));
+              const wobble = (movement ?? 30) * 0.02;
+              const sbShadeRgb = hexToRgb(sbShade);
+              const sbLightRgb = hexToRgb(sbSparkle);
+
+              if (!stackedBallsStateRef.current[layer.id]) {
+                  stackedBallsStateRef.current[layer.id] = { balls: [], lastSpawn: nowSec };
+                  // pre-build a settled pile so it looks right immediately
+                  const seed = Math.min(target, 60);
+                  let rowY = targetH - 6;
+                  let px = 40;
+                  for (let i = 0; i < seed; i++) {
+                      const r = maxS * (0.35 + 0.65 * ((i * 97) % 100) / 100);
+                      if (px + r * 2 > targetW - 20) { px = 40; rowY -= maxS * 1.3; }
+                      stackedBallsStateRef.current[layer.id].balls.push({
+                          x: px + r, y: rowY - r, vx: 0, vy: 0, r,
+                          tone: 0.25 + ((i * 53) % 100) / 133,
+                      });
+                      px += r * 2 + 6;
+                  }
               }
-              
-              balls.sort((a,b) => a.z - b.z);
-              
-              for(const b of balls) {
-                 ctx.fillStyle = sbShade;
-                 ctx.beginPath();
-                 ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
-                 ctx.fill();
-                 
-                 // sparkle cross
-                 ctx.strokeStyle = sbSparkle;
-                 ctx.lineWidth = 1.5;
-                 const sx = b.x + b.r * 0.3;
-                 const sy = b.y - b.r * 0.4;
-                 ctx.beginPath();
-                 ctx.moveTo(sx - 4, sy); ctx.lineTo(sx + 4, sy);
-                 ctx.moveTo(sx, sy - 4); ctx.lineTo(sx, sy + 4);
-                 ctx.stroke();
+              const sbSt = stackedBallsStateRef.current[layer.id];
+              const dt = Math.min(0.04, Math.max(0.001, deltaTime / 1000)) * spd;
+              const floorY = targetH - 6;
+              const g = 2600;
+
+              // spawn from the top until we reach target
+              if (sbSt.balls.length < target && nowSec - sbSt.lastSpawn > 0.12 / spd) {
+                  sbSt.lastSpawn = nowSec;
+                  const r = maxS * (0.35 + 0.65 * Math.random());
+                  sbSt.balls.push({
+                      x: targetW / 2 + (Math.random() - 0.5) * targetW * spreadX,
+                      y: -r - Math.random() * 60,
+                      vx: (Math.random() - 0.5) * 40, vy: 0,
+                      r, tone: 0.25 + Math.random() * 0.75,
+                  });
               }
+              if (sbSt.balls.length > target) sbSt.balls.splice(0, sbSt.balls.length - target);
+
+              // integrate + collide
+              const B = sbSt.balls;
+              for (const b of B) {
+                  b.vy += g * dt;
+                  b.vx += Math.sin(nowSec * 3 + b.r) * wobble * 40;
+                  b.x += b.vx * dt; b.y += b.vy * dt;
+                  b.vx *= 0.985;
+                  if (b.x < b.r) { b.x = b.r; b.vx = Math.abs(b.vx) * 0.4; }
+                  if (b.x > targetW - b.r) { b.x = targetW - b.r; b.vx = -Math.abs(b.vx) * 0.4; }
+                  if (b.y > floorY - b.r) { b.y = floorY - b.r; b.vy *= -0.18; if (Math.abs(b.vy) < 40) b.vy = 0; b.vx *= 0.7; }
+              }
+              for (let iter = 0; iter < 3; iter++) {
+                  for (let i = 0; i < B.length; i++) for (let j = i + 1; j < B.length; j++) {
+                      const a = B[i], c = B[j];
+                      let dx = c.x - a.x, dy = c.y - a.y;
+                      let d = Math.hypot(dx, dy) || 0.001;
+                      const overlap = a.r + c.r - d;
+                      if (overlap > 0) {
+                          dx /= d; dy /= d;
+                          const push = overlap * 0.5;
+                          a.x -= dx * push; a.y -= dy * push;
+                          c.x += dx * push; c.y += dy * push;
+                          const rv = (c.vx - a.vx) * dx + (c.vy - a.vy) * dy;
+                          if (rv < 0) { a.vx += dx * rv * 0.5; a.vy += dy * rv * 0.5; c.vx -= dx * rv * 0.5; c.vy -= dy * rv * 0.5; }
+                      }
+                  }
+              }
+
+              // draw with volumetric shading (painter's order: higher balls last)
+              [...B].sort((p, q) => p.y - q.y).forEach(b => {
+                  const lr = Math.round(sbShadeRgb.r + (sbLightRgb.r - sbShadeRgb.r) * b.tone);
+                  const lg = Math.round(sbShadeRgb.g + (sbLightRgb.g - sbShadeRgb.g) * b.tone);
+                  const lb = Math.round(sbShadeRgb.b + (sbLightRgb.b - sbShadeRgb.b) * b.tone);
+                  const grad = ctx.createRadialGradient(b.x - b.r * 0.35, b.y - b.r * 0.4, b.r * 0.1, b.x, b.y, b.r);
+                  grad.addColorStop(0, `rgb(${Math.min(255, lr + 60)}, ${Math.min(255, lg + 60)}, ${Math.min(255, lb + 60)})`);
+                  grad.addColorStop(0.55, `rgb(${lr}, ${lg}, ${lb})`);
+                  grad.addColorStop(1, `rgb(${Math.round(lr * 0.45)}, ${Math.round(lg * 0.45)}, ${Math.round(lb * 0.45)})`);
+                  ctx.fillStyle = grad;
+                  ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+                  // specular dot
+                  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+                  ctx.beginPath(); ctx.arc(b.x - b.r * 0.35, b.y - b.r * 0.4, b.r * 0.12, 0, Math.PI * 2); ctx.fill();
+              });
               element = canvas;
           } else if (def.uuid === '3d-debris-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
@@ -5109,113 +6118,162 @@ export default function App() {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
               const canvas = sphereCanvasRef.current[layer.id];
               if (canvas.width !== targetW || canvas.height !== targetH) {
-                  canvas.width = targetW;
-                  canvas.height = targetH;
+                  canvas.width = targetW; canvas.height = targetH;
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              const umbBg = resolvedGenerativeColors['background'] || '#000000';
-              const umbFg = resolvedGenerativeColors['umbrella'] || resolvedGenerativeColors['foreground'] || '#ffffff';
-              if (!isTransparentColor(umbBg)) {
-                  ctx.fillStyle = umbBg;
-                  ctx.fillRect(0, 0, targetW, targetH);
-              }
-              
+
+              const umbBg = resolvedGenerativeColors['background'] || '#05060a';
+              const umbRain = resolvedGenerativeColors['umbrella'] || resolvedGenerativeColors['foreground'] || '#8fd0ff';
+              const umbCanopy = resolvedGenerativeColors['canopy'] || '#ff2d55';
+              const umbFigure = resolvedGenerativeColors['figure'] || '#e8e8f0';
+              const umbBgOpaque = !isTransparentColor(umbBg);
+              if (umbBgOpaque) { ctx.fillStyle = umbBg; ctx.fillRect(0, 0, targetW, targetH); }
+
               const { speed, font_size, rain_density, text_content, umbrella_size, umbrella_x, umbrella_y } = modifiedSettings;
-              const fSize = font_size || 16.0;
-              const spd = speed || 1.0;
-              const dens = rain_density || 1.0;
+              const fSize = Math.max(9, (font_size || 16) * (Math.min(targetW, targetH) / 620));
+              const spd = speed ?? 1.0;
+              const dens = Math.max(0.1, Math.min(2.0, rain_density ?? 1.0));
               const uSize = umbrella_size || 1.0;
               const uX = umbrella_x ?? 0.0;
               const uY = umbrella_y ?? 0.0;
-              
               const textStr = (typeof text_content === 'string' && text_content.trim() !== '') ? text_content : '01';
-              const chars = Array.from(textStr);
-              if (chars.length === 0) chars.push(' ');
-              
-              const cx = (targetW / 2) + (uX / 100.0) * (targetW / 2);
-              const cy = (targetH / 2) + (uY / 100.0) * (targetH / 2);
-              const r = Math.min(targetW, targetH) * 0.2 * uSize; // umbrella radius
-              
-              ctx.fillStyle = umbFg;
-              ctx.font = `bold ${fSize}px monospace`;
-              ctx.textBaseline = 'middle';
-              
+              const chars = Array.from(textStr.replace(/\s+/g, ''));
+              if (chars.length === 0) chars.push('0');
+
+              const cx = (targetW / 2) + (uX / 100.0) * (targetW * 0.42);
+              const cy = (targetH * 0.42) + (uY / 100.0) * (targetH * 0.34);
+              const groundY = targetH * 0.9;
+              const R = Math.min(targetW, targetH) * 0.24 * uSize;
+              const domeH = R * 0.6;
               const t = nowSec * spd;
-              const lineSpacing = fSize * (3.0 - Math.min(2.9, dens));
-              
-              let x = 0;
-              let colIdx = 0;
-              
-              while (x < targetW + lineSpacing) {
-                  // offset column phase based on column index
-                  const phase = Math.sin(colIdx * 13.37) * 1000;
-                  const speedMultiplier = 1.0 + Math.abs(Math.sin(colIdx * 9.1)) * 1.5;
-                  
-                  const colSpeed = 50.0 * speedMultiplier;
-                  let colYShift = (t * colSpeed + phase) % fSize;
-                  if (colYShift < 0) colYShift += fSize;
-                  let colYCharOffset = Math.floor((t * colSpeed + phase) / fSize);
-                  
-                  let startY = -fSize * 2 + colYShift;
-                  let rowIdx = -colYCharOffset;
-                  
-                  let py = startY;
-                  while (py < targetH + fSize * 2) {
-                      const px = x;
-                      
-                      const dx = px - cx;
-                      const dy = py - cy;
-                      const dist = Math.hypot(dx, dy);
-                      
-                      let drawX = px;
-                      let drawY = py;
-                      let skip = false;
-                      
-                      // Canopy collision (top half bouncing)
-                      if (dy < 0 && dist < r + fSize) {
-                           const pushStrength = (r + fSize) - dist;
-                           // push outward along normal
-                           const nx = dx / dist;
-                           const ny = dy / dist;
-                           drawX = px + nx * pushStrength;
-                           drawY = py + ny * pushStrength;
+
+              // y of the canopy surface at a given x (Infinity where there is no canopy)
+              const canopyEdgeY = (px: number) => {
+                  const q = (px - cx) / R;
+                  if (Math.abs(q) > 1.0) return Infinity;
+                  return cy - domeH * (1.0 - q * q);
+              };
+
+              // --- rain of glyphs ---
+              ctx.font = `600 ${fSize}px "DM Mono", "SF Mono", ui-monospace, monospace`;
+              ctx.textBaseline = 'middle';
+              ctx.textAlign = 'center';
+              const colGap = fSize * (1.9 - Math.min(1.4, dens));
+              const rowGap = fSize * 1.15;
+              const cols = Math.ceil(targetW / colGap) + 1;
+              const rowsN = Math.ceil(targetH / rowGap) + 3;
+              const wrap = rowsN * rowGap;
+
+              for (let c = 0; c < cols; c++) {
+                  const colX = c * colGap + colGap * 0.5;
+                  let rr = (Math.sin(c * 13.37) * 43758.5453) % 1;
+                  if (rr < 0) rr += 1;
+                  const colSpeed = fSize * (6 + rr * 8) * (0.5 + spd);
+                  const off = t * colSpeed + rr * 4000;
+                  const domeAt = canopyEdgeY(colX);
+                  const underCanopy = Math.abs(colX - cx) < R;
+
+                  for (let rIdx = 0; rIdx < rowsN; rIdx++) {
+                      let px = colX;
+                      let py = ((rIdx * rowGap + off) % wrap) - rowGap * 2;
+                      if (py > groundY || py < -rowGap) continue;
+
+                      // fully sheltered under the canopy
+                      if (underCanopy && py > domeAt + fSize * 0.3) continue;
+
+                      // deflect glyphs that land on the dome toward the nearest rim
+                      if (underCanopy && py > domeAt - fSize && py <= domeAt + fSize * 0.3) {
+                          const side = colX >= cx ? 1 : -1;
+                          px = colX + side * (R - Math.abs(colX - cx)) * 0.8;
+                          py = canopyEdgeY(px) + fSize * 0.3;
                       }
-                      
-                      // Dry zone shadow (under umbrella)
-                      if (drawY >= cy) {
-                          // if it is directly under the umbrella
-                          if (Math.abs(drawX - cx) < r - fSize*0.5 && py > cy - r) {
-                              skip = true;
-                          }
-                      }
-                      
-                      if (!skip) {
-                          let baseTextIndex = colIdx * 137 + rowIdx;
-                          while (baseTextIndex < 0) baseTextIndex += chars.length * 10000;
-                          const char = chars[baseTextIndex % chars.length];
-                          ctx.fillText(char, drawX, drawY);
-                      }
-                      
-                      py += fSize;
-                      rowIdx++;
+
+                      const gi = ((c * 31 + rIdx * 7 + Math.floor(off / rowGap)) % chars.length + chars.length) % chars.length;
+                      ctx.globalAlpha = Math.max(0.12, Math.min(0.9, py / targetH + 0.15));
+                      ctx.fillStyle = umbRain;
+                      ctx.fillText(chars[gi], px, py);
                   }
-                  x += lineSpacing;
-                  colIdx++;
               }
-              
-              // Draw Umbrella
-              ctx.strokeStyle = umbFg;
-              ctx.lineWidth = 4 * uSize;
+              ctx.globalAlpha = 1;
+
+              // --- ground line + splashes ---
+              ctx.strokeStyle = umbRain;
+              ctx.lineCap = 'round';
+              ctx.globalAlpha = 0.45;
+              ctx.lineWidth = Math.max(1, fSize * 0.08);
+              ctx.beginPath(); ctx.moveTo(0, groundY); ctx.lineTo(targetW, groundY); ctx.stroke();
+              ctx.globalAlpha = 0.3;
+              for (let s = 0; s < 26; s++) {
+                  const sx = (s * 97.3 + t * 30) % targetW;
+                  if (sx > cx - R && sx < cx + R) continue;
+                  const sw = fSize * (0.35 + (Math.sin(s * 4.2) + 1) * 0.55);
+                  ctx.beginPath();
+                  ctx.moveTo(sx - sw, groundY - 1);
+                  ctx.quadraticCurveTo(sx, groundY - fSize * 0.7, sx + sw, groundY - 1);
+                  ctx.stroke();
+              }
+              ctx.globalAlpha = 1;
+
+              // --- figure silhouette under the umbrella ---
+              const figH = R * 1.4;
+              ctx.fillStyle = umbFigure;
               ctx.beginPath();
-              ctx.arc(cx, cy, r, Math.PI, 0); // canopy
-              ctx.moveTo(cx - r, cy);
-              ctx.lineTo(cx + r, cy); // canopy bottom
-              ctx.moveTo(cx, cy);
-              ctx.lineTo(cx, cy + r * 1.2); // handle stick
-              ctx.arc(cx - r*0.15, cy + r * 1.2, r*0.15, 0, Math.PI); // handle hook
+              ctx.arc(cx, groundY - figH + R * 0.12, R * 0.12, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.beginPath();
+              ctx.moveTo(cx - R * 0.085, groundY - figH + R * 0.24);
+              ctx.lineTo(cx + R * 0.085, groundY - figH + R * 0.24);
+              ctx.lineTo(cx + R * 0.16, groundY - R * 0.02);
+              ctx.lineTo(cx - R * 0.16, groundY - R * 0.02);
+              ctx.closePath();
+              ctx.fill();
+
+              // --- pole ---
+              ctx.strokeStyle = umbFigure;
+              ctx.lineWidth = Math.max(2, R * 0.035);
+              ctx.beginPath();
+              ctx.moveTo(cx, cy - domeH * 0.1);
+              ctx.lineTo(cx, groundY - figH + R * 0.44);
               ctx.stroke();
-              
+
+              // --- umbrella canopy: smooth dome + scalloped rim + ribs ---
+              const ribs = 6;
+              const apexY = cy - domeH;
+              ctx.beginPath();
+              ctx.moveTo(cx - R, cy);
+              ctx.quadraticCurveTo(cx - R * 0.5, apexY - domeH * 0.12, cx, apexY);
+              ctx.quadraticCurveTo(cx + R * 0.5, apexY - domeH * 0.12, cx + R, cy);
+              for (let i = 0; i < ribs; i++) {
+                  const x2 = cx + R - (2 * R) * ((i + 1) / ribs);
+                  const xm = cx + R - (2 * R) * ((i + 0.5) / ribs);
+                  ctx.quadraticCurveTo(xm, cy + fSize * 1.15, x2, cy);
+              }
+              ctx.closePath();
+              ctx.fillStyle = umbCanopy;
+              ctx.fill();
+
+              ctx.strokeStyle = umbBgOpaque ? umbBg : 'rgba(0,0,0,0.5)';
+              ctx.globalAlpha = 0.5;
+              ctx.lineWidth = Math.max(1, R * 0.015);
+              for (let i = 0; i <= ribs; i++) {
+                  const xr = cx - R + (2 * R) * (i / ribs);
+                  ctx.beginPath();
+                  ctx.moveTo(cx, apexY + domeH * 0.06);
+                  ctx.lineTo(xr, cy + fSize * 0.15);
+                  ctx.stroke();
+              }
+              ctx.globalAlpha = 1;
+
+              // ferrule tip
+              ctx.fillStyle = umbFigure;
+              ctx.beginPath();
+              ctx.moveTo(cx, apexY - fSize * 0.9);
+              ctx.lineTo(cx - R * 0.03, apexY);
+              ctx.lineTo(cx + R * 0.03, apexY);
+              ctx.closePath();
+              ctx.fill();
+
               element = canvas;
             } else if (def.uuid === 'text-water-drop-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
@@ -5391,7 +6449,330 @@ export default function App() {
               ctx.fill();
               
               ctx.restore();
-              
+
+              element = canvas;
+          } else if (def.uuid === 'kinetic-type-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const ktBg = resolvedGenerativeColors['background'] || '#000000';
+              const ktWord = resolvedGenerativeColors['words'] || resolvedGenerativeColors['primary'] || '#ffffff';
+              const ktAccent = resolvedGenerativeColors['accent'] || resolvedGenerativeColors['secondary'] || '#eb556b';
+
+              const s = modifiedSettings;
+              const count = Math.max(2, Math.min(40, Math.round(s.word_count ?? 12)));
+              const fontSize = Math.max(12, Math.min(400, s.size ?? 120));
+              const kSpeed = Math.max(0, s.speed ?? 32);
+              const gravity = (s.gravity ?? 0);
+              const spin = Math.max(0, s.spin ?? 18);
+              const gather = Math.max(0, Math.min(1, s.gather ?? 0));
+              const restitution = Math.max(0.2, Math.min(1, s.bounce ?? 0.92));
+              const weight = Math.max(0, Math.min(1, s.weight ?? 0));
+              const trail = Math.max(0, Math.min(1, s.trail ?? 0));
+              const impactCount = Number(s.impact ?? 0);
+
+              const wordsSrc = ((typeof s.text === 'string' && s.text.trim()) ? s.text : 'TYPE MOTION FLOW PULSE FORM SHIFT')
+                  .toUpperCase().split(/\s+/).filter(Boolean);
+              if (wordsSrc.length === 0) wordsSrc.push('PULSE');
+
+              if (!kineticTypeStateRef.current[layer.id]) kineticTypeStateRef.current[layer.id] = { words: [], lastImpact: 0, lastCount: 0 };
+              const st = kineticTypeStateRef.current[layer.id];
+
+              if (st.words.length !== count) {
+                  const old = st.words;
+                  st.words = [];
+                  for (let i = 0; i < count; i++) {
+                      if (old[i]) { st.words.push(old[i]); continue; }
+                      const ang = Math.random() * Math.PI * 2;
+                      const v = (kSpeed + 8) * (3 + Math.random() * 4);
+                      st.words.push({
+                          x: Math.random() * targetW, y: Math.random() * targetH,
+                          vx: Math.cos(ang) * v, vy: Math.sin(ang) * v,
+                          a: (Math.random() - 0.5) * 0.7, va: (Math.random() - 0.5) * 0.02,
+                          scale: 0.65 + ((i * 37) % 5) * 0.16,
+                          wi: i % wordsSrc.length,
+                      });
+                  }
+                  st.lastCount = count;
+              }
+
+              if (impactCount > st.lastImpact) {
+                  for (const w of st.words) {
+                      const ang = Math.random() * Math.PI * 2;
+                      const k = (kSpeed + 6) * (8 + Math.random() * 12) + 140;
+                      w.vx += Math.cos(ang) * k; w.vy += Math.sin(ang) * k;
+                      w.va += (Math.random() - 0.5) * (spin * 0.06 + 0.4);
+                  }
+                  st.lastImpact = impactCount;
+              }
+
+              // background / trails
+              if (trail > 0.02 && !isTransparentColor(ktBg)) {
+                  const rgb = hexToRgb(ktBg);
+                  ctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${(1 - trail * 0.94).toFixed(3)})`;
+                  ctx.fillRect(0, 0, targetW, targetH);
+              } else {
+                  ctx.clearRect(0, 0, targetW, targetH);
+                  if (!isTransparentColor(ktBg)) { ctx.fillStyle = ktBg; ctx.fillRect(0, 0, targetW, targetH); }
+              }
+
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const cx = targetW / 2, cy = targetH / 2;
+              const rBase = Math.min(targetW, targetH) * 0.34;
+              const gRot = nowSec * 0.22;
+
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.lineJoin = 'round';
+              ctx.miterLimit = 2;
+
+              const accentIdx = Math.floor(nowSec * 0.55) % Math.max(1, st.words.length);
+
+              for (let i = 0; i < st.words.length; i++) {
+                  const w = st.words[i];
+                  w.vy += gravity * dt * 9;
+                  w.vx *= 0.994; w.vy *= 0.994;
+                  w.x += w.vx * dt; w.y += w.vy * dt;
+                  w.a += (w.va + spin * 0.0009) * dt * 60;
+
+                  const pad = fontSize * w.scale * 0.55 + 8;
+                  if (w.x < pad) { w.x = pad; w.vx = Math.abs(w.vx) * restitution; w.va += (Math.random() - 0.5) * 0.2; }
+                  if (w.x > targetW - pad) { w.x = targetW - pad; w.vx = -Math.abs(w.vx) * restitution; w.va += (Math.random() - 0.5) * 0.2; }
+                  if (w.y < pad) { w.y = pad; w.vy = Math.abs(w.vy) * restitution; }
+                  if (w.y > targetH - pad) { w.y = targetH - pad; w.vy = -Math.abs(w.vy) * restitution; }
+
+                  if (gather > 0.001) {
+                      const theta = (i / st.words.length) * Math.PI * 2 + gRot;
+                      const rr = rBase * (0.5 + 0.5 * Math.abs(Math.cos(2.5 * theta)));
+                      const tx = cx + Math.cos(theta) * rr;
+                      const ty = cy + Math.sin(theta) * rr;
+                      const ta = theta + Math.PI / 2;
+                      w.x += (tx - w.x) * gather * 0.16;
+                      w.y += (ty - w.y) * gather * 0.16;
+                      let da = ((ta - w.a + Math.PI) % (Math.PI * 2)) - Math.PI;
+                      w.a += da * gather * 0.14;
+                      w.vx *= (1 - gather * 0.14); w.vy *= (1 - gather * 0.14);
+                  }
+
+                  const fs = fontSize * w.scale;
+                  ctx.save();
+                  ctx.translate(w.x, w.y);
+                  ctx.rotate(w.a);
+                  ctx.font = `900 ${fs}px "Arial Black", "Helvetica Neue", Impact, sans-serif`;
+                  const word = wordsSrc[w.wi % wordsSrc.length];
+                  const col = (i === accentIdx) ? ktAccent : ktWord;
+                  if (weight > 0.02) {
+                      ctx.globalAlpha = 0.3 + weight * 0.7;
+                      ctx.fillStyle = col;
+                      ctx.fillText(word, 0, 0);
+                      ctx.globalAlpha = 1;
+                  }
+                  ctx.strokeStyle = col;
+                  ctx.lineWidth = Math.max(1.5, fs * 0.05);
+                  ctx.strokeText(word, 0, 0);
+                  ctx.restore();
+              }
+
+              element = canvas;
+          } else if (def.uuid === 'circle-bloom-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const cbBg = resolvedGenerativeColors['background'] || '#000000';
+              const cbFg = resolvedGenerativeColors['circles'] || resolvedGenerativeColors['primary'] || '#ffffff';
+              const cbAccent = resolvedGenerativeColors['accent'] || resolvedGenerativeColors['secondary'] || '#eb556b';
+              const cbRgb = hexToRgb(cbFg);
+              const cbaRgb = hexToRgb(cbAccent);
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cbBg)) { ctx.fillStyle = cbBg; ctx.fillRect(0, 0, targetW, targetH); }
+
+              const s = modifiedSettings;
+              const maxCount = Math.max(0, Math.min(120, Math.round(s.max_count ?? 18)));
+              const maxSize = Math.max(4, Math.min(1200, s.max_size ?? 150));
+              const grSpeed = Math.max(0.05, s.speed ?? 1.6);
+              const spawnDelay = Math.max(0, s.delay ?? 0.35);
+              const fadeAmt = Math.max(0, Math.min(1, s.fade ?? 0.4));
+              const cbOutline = Math.max(0, Math.min(1, s.outline ?? 0));
+              const bloomAction = Number(s.bloom ?? 0);
+
+              const growTime = maxSize / (grSpeed * 110);            // sec to reach full size
+              const holdTime = 0.4 + fadeAmt * 3.5;                  // sec of fade-out after grown
+              const lifeTotal = growTime + holdTime;
+
+              const spawnAt = (accent: boolean, bornAgo: number) => {
+                  const m = 0.08;
+                  circleBloomStateRef.current[layer.id].circles.push({
+                      x: (m + Math.random() * (1 - 2 * m)) * targetW,
+                      y: (m + Math.random() * (1 - 2 * m)) * targetH,
+                      birth: nowSec - bornAgo,
+                      accent,
+                      rs: 0.75 + Math.random() * 0.5,               // per-circle size variation
+                  });
+              };
+
+              if (!circleBloomStateRef.current[layer.id]) {
+                  circleBloomStateRef.current[layer.id] = { circles: [], lastSpawn: nowSec, lastAction: 0 };
+                  const seed = Math.min(maxCount, 22);
+                  for (let i = 0; i < seed; i++) spawnAt(i % 5 === 0, (i / Math.max(1, seed)) * (growTime + holdTime) * 0.75);
+              }
+              const cbSt = circleBloomStateRef.current[layer.id];
+              const spawnOne = (accent: boolean) => spawnAt(accent, 0);
+
+              cbSt.circles = cbSt.circles.filter((c: any) => (nowSec - c.birth) < lifeTotal * c.rs + growTime);
+
+              if (bloomAction > cbSt.lastAction) {
+                  const n = Math.min(6, bloomAction - cbSt.lastAction);
+                  for (let i = 0; i < n; i++) spawnOne(Math.random() < 0.25);
+                  cbSt.lastAction = bloomAction;
+              }
+
+              if (maxCount > 0 && cbSt.circles.length < maxCount && nowSec - cbSt.lastSpawn >= spawnDelay) {
+                  cbSt.lastSpawn = nowSec;
+                  spawnOne(cbSt.circles.length % 5 === 0);
+              }
+              if (maxCount === 0) cbSt.circles = [];
+
+              for (const c of cbSt.circles) {
+                  const age = nowSec - c.birth;
+                  const cMax = maxSize * c.rs;
+                  const g = Math.min(1, age / Math.max(0.001, growTime));
+                  const r = (1 - Math.pow(1 - g, 3)) * cMax;         // ease-out grow
+                  let alpha = 1;
+                  if (age > growTime) {
+                      const fp = (age - growTime) / Math.max(0.001, holdTime * c.rs);
+                      alpha = Math.max(0, 1 - fp);
+                  }
+                  if (r < 0.5 || alpha <= 0.01) continue;
+                  const rgb = c.accent ? cbaRgb : cbRgb;
+                  if (cbOutline > 0.5) {
+                      ctx.strokeStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha.toFixed(3)})`;
+                      ctx.lineWidth = Math.max(1.5, cMax * 0.02);
+                      ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.stroke();
+                  } else {
+                      ctx.fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${(alpha * (cbOutline > 0.02 ? 1 - cbOutline * 0.5 : 1)).toFixed(3)})`;
+                      ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.fill();
+                  }
+              }
+              element = canvas;
+          } else if (def.uuid === 'hex-grid-canvas-1' || def.uuid === 'square-grid-canvas-1') {
+              const isHex = def.uuid === 'hex-grid-canvas-1';
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const gBg = resolvedGenerativeColors['background'] || '#000000';
+              const gGrid = resolvedGenerativeColors['grid'] || resolvedGenerativeColors['secondary'] || '#444444';
+              const gLit = resolvedGenerativeColors['lit'] || resolvedGenerativeColors['primary'] || '#eb556b';
+              const gGridRgb = hexToRgb(gGrid);
+              const gLitRgb = hexToRgb(gLit);
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(gBg)) { ctx.fillStyle = gBg; ctx.fillRect(0, 0, targetW, targetH); }
+
+              const s = modifiedSettings;
+              const gap = Math.max(0, Math.min(0.45, s.gap ?? 0.07));
+              const shuffleRate = Math.max(0, s.shuffle ?? 0.8);
+              const flipAction = Number(s.flip ?? 0);
+
+              // --- grid geometry ---
+              let cols: number, rows: number, cellPos: { cx: number, cy: number }[] = [], cellR = 0;
+              if (isHex) {
+                  cols = Math.max(3, Math.min(40, Math.round(s.density ?? 12)));
+                  const size = targetW / (cols * 1.5 + 0.5);        // flat-top hex "radius"
+                  cellR = size;
+                  const hStep = size * 1.5;
+                  const vStep = size * Math.sqrt(3);
+                  rows = Math.ceil(targetH / vStep) + 2;
+                  for (let r = -1; r < rows; r++) {
+                      for (let c = 0; c < cols + 1; c++) {
+                          const cx = c * hStep + size;
+                          const cy = r * vStep + (c % 2 ? vStep / 2 : 0) + size;
+                          cellPos.push({ cx, cy });
+                      }
+                  }
+              } else {
+                  cols = Math.max(2, Math.min(60, Math.round(s.columns ?? 16)));
+                  const cell = targetW / cols;
+                  cellR = cell / 2;
+                  rows = Math.ceil(targetH / cell) + 1;
+                  for (let r = 0; r < rows; r++)
+                      for (let c = 0; c < cols; c++)
+                          cellPos.push({ cx: c * cell + cell / 2, cy: r * cell + cell / 2 });
+              }
+              const total = cellPos.length;
+              const litCount = Math.max(0, Math.min(total, Math.round(s.lit_count ?? 30)));
+
+              if (!gridLitStateRef.current[layer.id]) gridLitStateRef.current[layer.id] = { lit: [], lastShuffle: -999, lastAction: 0, total: 0 };
+              const gSt = gridLitStateRef.current[layer.id];
+
+              const reshuffle = () => {
+                  const idx = Array.from({ length: total }, (_, i) => i);
+                  for (let i = total - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; const t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
+                  gSt.lit = idx.slice(0, litCount);
+                  gSt.total = total;
+                  gSt.lastShuffle = nowSec;
+              };
+              const shufflePeriod = shuffleRate > 0.01 ? Math.max(0.15, 3.5 / shuffleRate) : 1e9;
+              if (gSt.total !== total || gSt.lit.length !== litCount || (nowSec - gSt.lastShuffle) > shufflePeriod) reshuffle();
+              if (flipAction > gSt.lastAction) { reshuffle(); gSt.lastAction = flipAction; }
+              const litSet = new Set(gSt.lit);
+
+              const glow = Math.max(0, Math.min(1, s.glow ?? 0.5));
+              const gOutline = Math.max(0, Math.min(1, s.outline ?? 0.3));
+              const checker = Math.max(0, Math.min(1, s.checker ?? 0.15));
+              const round = Math.max(0, Math.min(0.5, s.round ?? 0));
+              const inset = cellR * (1 - gap);
+              const pulse = 0.72 + 0.28 * Math.sin(nowSec * 2.2);
+
+              for (let i = 0; i < total; i++) {
+                  const { cx, cy } = cellPos[i];
+                  const lit = litSet.has(i);
+                  ctx.beginPath();
+                  if (isHex) {
+                      for (let k = 0; k < 6; k++) {
+                          const a = (Math.PI / 3) * k;
+                          const px = cx + Math.cos(a) * inset;
+                          const py = cy + Math.sin(a) * inset;
+                          k === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+                      }
+                      ctx.closePath();
+                  } else {
+                      const half = inset;
+                      const rr = round * half * 2;
+                      const x = cx - half, y = cy - half, w = half * 2, h = half * 2;
+                      if (rr > 0.5) {
+                          ctx.moveTo(x + rr, y);
+                          ctx.arcTo(x + w, y, x + w, y + h, rr);
+                          ctx.arcTo(x + w, y + h, x, y + h, rr);
+                          ctx.arcTo(x, y + h, x, y, rr);
+                          ctx.arcTo(x, y, x + w, y, rr);
+                          ctx.closePath();
+                      } else {
+                          ctx.rect(x, y, w, h);
+                      }
+                  }
+                  if (lit) {
+                      const a = glow > 0.01 ? (0.55 + 0.45 * pulse) * (0.4 + glow * 0.6) : 0.95;
+                      ctx.fillStyle = `rgba(${gLitRgb.r}, ${gLitRgb.g}, ${gLitRgb.b}, ${Math.min(1, a).toFixed(3)})`;
+                      ctx.fill();
+                  } else {
+                      if (!isHex && checker > 0.02 && (((Math.round(cx / (cellR * 2)) + Math.round(cy / (cellR * 2))) % 2) === 0)) {
+                          ctx.fillStyle = `rgba(${gGridRgb.r}, ${gGridRgb.g}, ${gGridRgb.b}, ${(checker * 0.5).toFixed(3)})`;
+                          ctx.fill();
+                      }
+                      if (gOutline > 0.02) {
+                          ctx.strokeStyle = `rgba(${gGridRgb.r}, ${gGridRgb.g}, ${gGridRgb.b}, ${(gOutline * 0.7).toFixed(3)})`;
+                          ctx.lineWidth = 1.25;
+                          ctx.stroke();
+                      }
+                  }
+              }
               element = canvas;
           } else {
               if (webglRendererRef.current.canvas.width !== targetW || webglRendererRef.current.canvas.height !== targetH) {
@@ -7360,6 +8741,126 @@ export default function App() {
     }
   };
 
+  // ---- Reusable panel bodies (placed in sidebars / hamburger drawer) ----
+  const audioSourcesPanel = (
+    <div className="p-4 space-y-4">
+      <div className="flex gap-2">
+        <label className="flex-1 border border-white/10 p-3 rounded bg-transparent hover:border-white hover:bg-white hover:text-black transition-colors flex items-center justify-center gap-2 cursor-pointer">
+          <Upload size={14} className="opacity-50" />
+          <span className="text-[10px] uppercase tracking-widest font-bold">Load Stems</span>
+          <input type="file" multiple accept="audio/*" onChange={handleAddAudioStem} className="hidden" />
+        </label>
+        <button
+          onClick={async () => {
+            const id = 'live-mic';
+            await engine.addLiveInput(id, 'Live Mic/Line', selectedAudioDevice || undefined);
+            setAudioStems(prev => [...prev.filter(s => s.id !== id), { id, name: 'Live Mic/Line', fileUrl: 'live', isMuted: false, isSoloed: false }]);
+          }}
+          className="px-4 border border-white/10 rounded bg-transparent hover:border-white hover:bg-white hover:text-black transition-colors flex items-center justify-center"
+          title="Use Live Microphone / Audio Interface"
+        >
+          <Mic size={14} />
+        </button>
+        <button
+          onClick={toggleAudioPlay}
+          className={`px-4 rounded flex items-center justify-center transition-colors ${audioPlaying ? 'bg-red-600 text-white' : 'border border-white/20 hover:bg-white hover:text-black'}`}
+        >
+          {audioPlaying ? <Pause size={14} /> : <Play size={14} />}
+        </button>
+      </div>
+
+      <div className="space-y-1">
+        <label className="text-[8px] uppercase tracking-widest opacity-40 block">Live Input Device</label>
+        <select
+          className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[9px] outline-none font-mono"
+          value={selectedAudioDevice}
+          onChange={(e) => setSelectedAudioDevice(e.target.value)}
+        >
+          <option value="">Default Microphone</option>
+          {audioDevices.map(d => (
+            <option key={d.deviceId} value={d.deviceId}>{d.label || `Mic ${d.deviceId.slice(0, 5)}`}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="space-y-1.5 pb-3 border-b border-white/5">
+        <label className="text-[8px] uppercase tracking-widest opacity-40 block">YouTube / Browser Audio</label>
+        <div className="flex gap-1">
+          <input
+            value={ytUrl}
+            onChange={(e) => setYtUrl(e.target.value)}
+            placeholder="Paste a YouTube link…"
+            className="flex-1 bg-black/40 border border-white/10 rounded p-1.5 text-[9px] outline-none font-mono min-w-0"
+          />
+          <button
+            onClick={() => { const id = extractYouTubeId(ytUrl); setYtVideoId(id); setYtStatus(id ? '' : 'Not a valid YouTube link'); }}
+            className="px-2 border border-white/10 rounded text-[9px] uppercase tracking-widest hover:bg-white hover:text-black transition-colors shrink-0"
+          >Load</button>
+        </div>
+        {ytVideoId && (
+          <>
+            <iframe
+              key={ytVideoId}
+              className="w-full rounded border border-white/10 mt-1"
+              style={{ aspectRatio: '16 / 9' }}
+              src={`https://www.youtube.com/embed/${ytVideoId}`}
+              allow="encrypted-media; picture-in-picture; fullscreen"
+              title="YouTube source"
+            />
+            <button
+              onClick={async () => {
+                setYtStatus('Connecting… choose this tab and enable "Share tab audio".');
+                const res = await engine.addTabAudio('yt-audio', 'YouTube');
+                if (res.ok) {
+                  setAudioStems(prev => [...prev.filter(s => s.id !== 'yt-audio'), { id: 'yt-audio', name: 'YouTube', fileUrl: 'youtube', isMuted: false, isSoloed: false }]);
+                  setYtStatus('✓ Connected. Press play on the video, then it drives your triggers.');
+                } else {
+                  setYtStatus(res.error || 'Could not connect audio.');
+                }
+              }}
+              className="w-full border border-white/10 rounded p-2 mt-1 text-[9px] uppercase tracking-widest hover:bg-white hover:text-black transition-colors"
+            >Connect this audio for reactivity</button>
+            <p className="text-[8px] opacity-30 leading-tight">Audio stays muted until you press play on the video and connect it here.</p>
+          </>
+        )}
+        {ytStatus && <p className="text-[8px] opacity-40 leading-tight">{ytStatus}</p>}
+      </div>
+
+      <div className="space-y-2">
+        {audioStems.length === 0 ? (
+          <div className="text-[9px] text-center opacity-40 uppercase tracking-widest py-4 border border-white/5 border-dashed rounded">No audio sources</div>
+        ) : audioStems.map(stem => (
+          <div key={stem.id} className="flex items-center justify-between p-2 rounded bg-transparent border border-white/5 text-[10px]">
+            <span className="truncate w-20 font-mono uppercase text-[9px] opacity-80">{stem.name}</span>
+            <div className="flex items-center gap-1">
+              <button onClick={() => toggleStemMute(stem.id)} className={`px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider transition-colors ${stem.isMuted ? 'bg-red-500/20 text-red-500 font-bold' : 'bg-transparent opacity-40 hover:opacity-100'}`}>M</button>
+              <button onClick={() => toggleStemSolo(stem.id)} className={`px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider transition-colors ${stem.isSoloed ? 'bg-white/20 text-white font-bold' : 'bg-transparent opacity-40 hover:opacity-100'}`}>S</button>
+              <button onClick={() => removeAudioStem(stem.id)} className="opacity-40 hover:opacity-100 hover:text-red-400 p-1 ml-1"><X size={10} /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  const layoutPanel = (
+    <div className="space-y-4 p-4">
+      <div className="space-y-2">
+        <label className="text-[10px] uppercase tracking-widest opacity-40">Layout Mode</label>
+        <div className="grid grid-cols-3 gap-1">
+          {['stack', 'split-vertical', 'split-horizontal', 'grid-2x2', 'grid-3x3', 'grid-4x4'].map((format: any) => (
+            <button key={format} onClick={() => setCompositionLayout(format)}
+              className={`p-2 text-[9px] uppercase tracking-wider rounded border transition-all truncate ${compositionLayout === format ? 'bg-red-600 border-red-500 text-white' : 'bg-transparent border-white/5 text-white/40 hover:border-white hover:bg-white hover:text-black'}`}
+              title={format.replace('-', ' ')}>
+              {format.replace('split-', '').replace('grid-', '')}
+            </button>
+          ))}
+        </div>
+      </div>
+      <AspectRatioControl value={aspectRatioValue} onChange={setAspectRatioValue} />
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-red-600 overflow-hidden flex flex-col">
       {/* Dynamic SVG Filters for Stickiness */}
@@ -7397,12 +8898,21 @@ export default function App() {
           {showSidebar ? <X size={20} /> : <Menu size={20} />}
         </button>
         <h1 className="text-[10px] font-light tracking-[0.4em] uppercase opacity-80">Glitch Pulse</h1>
-        <div className="w-8" /> {/* Spacer */}
+        <button onClick={() => setShowSettings(true)} className="p-2 text-white/60 hover:text-white" title="Settings">
+          <Sliders size={18} />
+        </button>
       </header>
 
       {/* Main Header (Desktop/Tablet) */}
       <header className="hidden lg:flex relative z-10 px-4 py-3 justify-between items-center border-b border-white/5 gap-2">
         <div className="flex items-center flex-wrap gap-2 sm:gap-3 min-w-0">
+          <button
+            onClick={() => setShowSettings(true)}
+            className="p-1.5 rounded border border-white/10 text-white/60 hover:text-white hover:border-white/30 transition-colors shrink-0"
+            title="Settings — MIDI & audio devices, performance, canvas"
+          >
+            <Menu size={16} />
+          </button>
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-none ${isPlaying ? 'bg-red-500 animate-pulse' : 'bg-white/20'}`} />
             <span className="text-[9px] font-mono tracking-widest opacity-40 uppercase">{status}</span>
@@ -7485,12 +8995,133 @@ export default function App() {
         </div>
       </header>
 
+      {/* ===== Settings Drawer (hamburger) ===== */}
+      <AnimatePresence>
+        {showSettings && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setShowSettings(false)}
+              className="fixed inset-0 z-[60] bg-black/60"
+            />
+            <motion.aside
+              initial={{ x: '-100%' }} animate={{ x: 0 }} exit={{ x: '-100%' }}
+              transition={{ type: 'tween', duration: 0.25 }}
+              className="fixed left-0 top-0 bottom-0 z-[61] w-[92vw] max-w-[400px] bg-[#0a0a0c] border-r border-white/10 flex flex-col shadow-2xl"
+            >
+              <div className="p-4 flex items-center justify-between border-b border-white/10 shrink-0">
+                <span className="text-[11px] uppercase tracking-[0.3em] font-bold opacity-80">Settings</span>
+                <button onClick={() => setShowSettings(false)} className="p-1.5 text-white/50 hover:text-white"><X size={16} /></button>
+              </div>
+              <div className="flex-1 overflow-y-auto custom-scrollbar">
+
+
+                <Section
+                  title="MIDI Devices"
+                  icon={<Music size={16} />}
+                  isExpanded={settingsSection === 'midi-devices'}
+                  onToggle={() => setSettingsSection(settingsSection === 'midi-devices' ? null : 'midi-devices')}
+                >
+                  <div className="p-4 space-y-4">
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <label className="text-[10px] uppercase tracking-widest opacity-40">MIDI Device</label>
+                        <button onClick={requestMidiAccess} className="p-1 hover:border-white hover:bg-white hover:text-black rounded transition-colors opacity-40 hover:opacity-100" title="Refresh MIDI Devices">
+                          <RefreshCw size={10} />
+                        </button>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex gap-2">
+                          <button onClick={() => setSelectedDeviceIds(midiDevices.map(d => d.id))} className="flex-1 text-[8px] uppercase tracking-widest bg-transparent py-1 rounded border border-white/10 hover:bg-white hover:text-black transition-colors">Select All</button>
+                          <button onClick={() => setSelectedDeviceIds([])} className="flex-1 text-[8px] uppercase tracking-widest bg-transparent py-1 rounded border border-white/10 hover:bg-white hover:text-black transition-colors">None</button>
+                        </div>
+                        <div className="max-h-32 overflow-y-auto">
+                          {midiDevices.map(d => (
+                            <label key={d.id} className="flex items-center gap-2 text-xs opacity-80 cursor-pointer p-1 hover:bg-white/5 rounded">
+                              <input type="checkbox" checked={selectedDeviceIds.includes(d.id)}
+                                onChange={(e) => { if (e.target.checked) setSelectedDeviceIds(prev => [...prev, d.id]); else setSelectedDeviceIds(prev => prev.filter(id => id !== d.id)); }}
+                                className="accent-red-600" />
+                              {d.name}
+                            </label>
+                          ))}
+                        </div>
+                        {midiDevices.length === 0 && <div className="text-xs opacity-40 italic py-2">No Devices Found</div>}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <label className="text-[10px] uppercase tracking-widest opacity-40">MIDI Logs</label>
+                        <button onClick={() => setShowRoutingGuide(!showRoutingGuide)} className="text-[8px] uppercase tracking-widest text-red-500 hover:underline">
+                          {showRoutingGuide ? 'Close Guide' : 'Routing Help'}
+                        </button>
+                      </div>
+                      {showRoutingGuide && (
+                        <div className="p-3 bg-red-500/10 border border-red-500/20 rounded text-[10px] text-red-200/80 font-mono leading-relaxed space-y-2">
+                          <p className="font-bold text-red-400">Virtual MIDI Routing:</p>
+                          <ol className="list-decimal list-inside space-y-1 opacity-90">
+                            <li>Enable <span className="text-white">IAC Driver</span> (Mac) or <span className="text-white">loopMIDI</span> (Win).</li>
+                            <li>Route your app's MIDI output to that virtual port.</li>
+                            <li>Click the <span className="text-white">Refresh</span> icon above.</li>
+                          </ol>
+                        </div>
+                      )}
+                      <div className="bg-black/40 border border-white/5 rounded p-3 h-32 overflow-y-auto font-mono text-[9px] space-y-1 custom-scrollbar">
+                        {midiLogs.length === 0 && <div className="opacity-20 italic">Awaiting MIDI signal…</div>}
+                        {midiLogs.map(log => (
+                          <div key={log.id} className="flex justify-between items-center border-b border-white/5 pb-1">
+                            <span className={log.type === 'ON' ? 'text-white' : 'opacity-40'}>CH {log.channel}</span>
+                            <span className={log.type === 'ON' ? 'text-red-400' : 'opacity-40'}>NOTE {log.note}</span>
+                            <span className="opacity-40">{log.type}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </Section>
+
+
+                <Section
+                  title="Performance"
+                  icon={<Terminal size={16} />}
+                  isExpanded={settingsSection === 'performance'}
+                  onToggle={() => setSettingsSection(settingsSection === 'performance' ? null : 'performance')}
+                >
+                  <div className="p-4 space-y-3">
+                    <div className="flex justify-between items-center">
+                      <label className="text-[10px] uppercase tracking-widest opacity-40">Render Resolution</label>
+                      <span className="text-[10px] font-mono text-red-500">{Math.round(resolutionScale * 100)}%</span>
+                    </div>
+                    <input type="range" min="0.2" max="1.0" step="0.1" value={resolutionScale}
+                      onChange={(e) => setResolutionScale(parseFloat(e.target.value))}
+                      className="w-full accent-red-600 opacity-60 hover:opacity-100 transition-opacity" />
+                    <div className="flex justify-between text-[8px] uppercase opacity-30"><span>Performance</span><span>Quality</span></div>
+                  </div>
+                </Section>
+
+              </div>
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
+
       <div className="flex-1 relative z-10 flex flex-col lg:flex-row overflow-hidden">
+        {/* Left panel re-open tab (when collapsed) */}
+        {leftCollapsed && (
+          <button
+            onClick={() => setLeftCollapsed(false)}
+            className="hidden lg:flex items-center justify-center w-6 shrink-0 border-r border-white/5 bg-black/20 text-white/40 hover:text-white hover:bg-white/5 transition-colors"
+            title="Show Visuals panel"
+          >
+            <ChevronRight size={14} />
+          </button>
+        )}
         {/* Left Sidebar */}
         <aside className={`
           fixed inset-x-0 bottom-0 z-40 w-full bg-black/95  border-t border-white/10
-          lg:relative lg:inset-auto lg:z-0 lg:w-72 xl:w-80 lg:border-t-0 lg:border-r lg:bg-black/20 lg:
-          flex flex-col transition-all duration-500 ease-in-out
+          lg:relative lg:inset-auto lg:z-0 lg:border-t-0 lg:border-r lg:bg-black/20
+          ${leftCollapsed ? 'lg:hidden' : 'lg:w-72 xl:w-80'}
+          flex flex-col transition-all duration-300 ease-in-out
           ${showSidebar ? 'h-[70vh] lg:h-full translate-y-0' : 'h-0 lg:h-full translate-y-full lg:translate-y-0'}
         `}>
           <div className="flex-1 overflow-y-auto custom-scrollbar pb-20 lg:pb-0">
@@ -7500,11 +9131,14 @@ export default function App() {
                 <ChevronDown size={20} />
               </button>
             </div>
+            <div className="hidden lg:flex justify-end px-2 py-1.5 border-b border-white/5">
+              <button onClick={() => setLeftCollapsed(true)} className="p-1 text-white/30 hover:text-white transition-colors" title="Hide panel — more canvas">
+                <PanelLeftClose size={14} />
+              </button>
+            </div>
 
-            
-
-          <Section 
-            title="Visuals" 
+          <Section
+            title="Visuals"
             icon={<Layers size={16} />} 
             isExpanded={expandedSection === 'layers'} 
             onToggle={() => setExpandedSection(expandedSection === 'layers' ? null : 'layers')}
@@ -7997,64 +9631,13 @@ export default function App() {
             </div>
           </Section>
 
-          <Section 
-            title="Canvas Configuration" 
+          <Section
+            title="Layout"
             icon={<Sliders size={16} />}
-            isExpanded={expandedSection === 'composition'} 
-            onToggle={() => setExpandedSection(expandedSection === 'composition' ? null : 'composition')}
+            isExpanded={expandedSection === 'layout'}
+            onToggle={() => setExpandedSection(expandedSection === 'layout' ? null : 'layout')}
           >
-            <div className="space-y-4 pt-4 px-4 pb-4">
-              <div className="space-y-2">
-                <label className="text-[10px] uppercase tracking-widest opacity-40">Layout Mode</label>
-                <div className="grid grid-cols-3 gap-1">
-                  {['stack', 'split-vertical', 'split-horizontal', 'grid-2x2', 'grid-3x3', 'grid-4x4'].map((format: any) => (
-                    <button
-                      key={format}
-                      onClick={() => setCompositionLayout(format)}
-                      className={`p-2 text-[9px] uppercase tracking-wider rounded border transition-all truncate ${
-                        compositionLayout === format 
-                          ? 'bg-red-600 border-red-500 text-white' 
-                          : 'bg-transparent border-white/5 text-white/40 hover:border border-white hover:bg-white hover:text-black'
-                      }`}
-                      title={format.replace('-', ' ')}
-                    >
-                      {format.replace('split-', '').replace('grid-', '')}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              
-              <AspectRatioControl value={aspectRatioValue} onChange={setAspectRatioValue} />
-            </div>
-          </Section>
-
-          <Section 
-            title="Diagnostics & Performance" 
-            icon={<Terminal size={16} />} 
-            isExpanded={expandedSection === 'diagnostics'} 
-            onToggle={() => setExpandedSection(expandedSection === 'diagnostics' ? null : 'diagnostics')}
-          >
-            <div className="p-4 space-y-6">
-              {/* Performance Control */}
-              <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <label className="text-[10px] uppercase tracking-widest opacity-40">Performance</label>
-                  <span className="text-[10px] font-mono text-red-500">{Math.round(resolutionScale * 100)}% Res</span>
-                </div>
-                <div className="space-y-1">
-                  <input 
-                    type="range" min="0.2" max="1.0" step="0.1" 
-                    value={resolutionScale}
-                    onChange={(e) => setResolutionScale(parseFloat(e.target.value))}
-                    className="w-full accent-red-600 opacity-60 hover:opacity-100 transition-opacity"
-                  />
-                  <div className="flex justify-between text-[8px] uppercase opacity-30">
-                    <span>Performance</span>
-                    <span>Quality</span>
-                  </div>
-                </div>
-              </div>
-            </div>
+            {layoutPanel}
           </Section>
           </div>
         </aside>
@@ -8179,6 +9762,53 @@ export default function App() {
             </div>
           </div>
         </main>
+
+          {/* Audio Transport Bar */}
+          {audioStems.length > 0 && (
+            <div className="shrink-0 bg-[#0b0b0d] border-t border-white/10 px-3 sm:px-5 py-2 flex items-center gap-3 w-full relative z-40">
+              <button
+                onClick={toggleAudioMute}
+                title={audioMuted ? 'Unmute' : 'Mute'}
+                className={`p-1.5 shrink-0 transition-colors ${audioMuted ? 'text-red-500' : 'text-white/50 hover:text-white'}`}
+              >
+                {audioMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+              </button>
+
+              <button
+                onClick={toggleAudioPlay}
+                className="w-9 h-9 shrink-0 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-transform"
+                title={audioPlaying ? 'Pause' : 'Play'}
+              >
+                {audioPlaying ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" className="ml-0.5" />}
+              </button>
+
+              <span className="text-[10px] font-mono opacity-50 tabular-nums w-9 text-right shrink-0">{formatTime(audioTime)}</span>
+              <input
+                type="range"
+                min={0}
+                max={audioDuration || 1}
+                step={0.01}
+                value={Math.min(audioTime, audioDuration || 0)}
+                onChange={handleSeek}
+                className="flex-1 h-1 accent-red-600 cursor-pointer"
+                aria-label="Seek"
+              />
+              <span className="text-[10px] font-mono opacity-50 tabular-nums w-9 shrink-0">{formatTime(audioDuration)}</span>
+
+              <button
+                onClick={toggleAudioLoop}
+                title={audioLoop ? 'Loop on' : 'Loop off'}
+                className={`p-1.5 shrink-0 transition-colors ${audioLoop ? 'text-red-500' : 'text-white/35 hover:text-white'}`}
+              >
+                <Repeat size={16} />
+              </button>
+
+              <span className="text-[9px] uppercase tracking-widest opacity-40 truncate max-w-[110px] hidden xl:block shrink-0">
+                {audioStems.length === 1 ? audioStems[0].name : `${audioStems.length} stems`}
+              </span>
+            </div>
+          )}
+
           {/* Bottom Parameter Panel */}
           <div className="flex-1 min-h-[220px] bg-[#050505] border-t border-white/10 p-4 overflow-y-auto custom-scrollbar w-full relative z-40">
              {(() => {
@@ -8377,7 +10007,14 @@ return (
                              onClick={() => {
                                 const newState = !isTriggerActive;
                                 if (isGen) {
-                                   setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [p.name]: newState } } : l));
+                                   setLayers(prev => prev.map(l => l.id === layerTarget.id ? {
+                                     ...l,
+                                     generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [p.name]: newState },
+                                     // give a visible default modulation amount when first activating
+                                     generativeTriggerAmount: (newState && !(l.generativeTriggerAmount?.[p.name]))
+                                       ? { ...(l.generativeTriggerAmount || {}), [p.name]: 0.5 }
+                                       : (l.generativeTriggerAmount || {}),
+                                   } : l));
                                    const hasMapping = layerTarget.generativeMappings?.find((gm: any) => gm.id === p.name);
                                    if (newState && !hasMapping) {
                                       const targetM = { 
@@ -8455,21 +10092,34 @@ return (
                    );
                 };
 
+                const CollapseHead = ({ id, label }: { id: 'params' | 'colours' | 'fx'; label: string }) => (
+                  <button
+                    onClick={() => setBelowPanel(id)}
+                    className={`w-full flex items-center justify-between text-[11px] font-bold uppercase tracking-widest border-b pb-2 transition-colors ${belowPanel === id ? 'text-red-400 border-white/10' : 'text-white/35 border-white/5 hover:text-white/70'}`}
+                  >
+                    <span>{label}</span>
+                    <span className="opacity-40">{belowPanel === id ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
+                  </button>
+                );
+
                 return (
-                  <div className="space-y-6 pb-20">
+                  <div className="space-y-4 pb-20">
                     {/* Generative Parameters */}
                     {activeLayer.type === 'generative' && activeLayer.generativeId && generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.parameters.length > 0 && (
                       <div className="space-y-4">
-                        <h3 className="text-[11px] font-bold uppercase tracking-widest text-red-400 border-b border-white/5 pb-2">
-                           Parameters: Layer {layerIdx} - {generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.description || 'Script'}
-                        </h3>
+                        <CollapseHead id="params" label={`Parameters — ${generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.description || 'Script'}`} />
+                        {belowPanel === 'params' && (
                         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
                           {generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.parameters.map(p => {
                             const mapping = activeLayer.generativeMappings?.find(m => m.id === p.name) || { id: p.name, name: p.name, active: false };
                             return renderKnob(p, mapping, activeLayer, true);
                           })}
                         </div>
+                        )}
 
+                        <CollapseHead id="colours" label="Colours & Palette" />
+                        {belowPanel === 'colours' && (
+                        <>
                         {/* Generative Colours & Palette Presets Section */}
                         {(() => {
                           const genDef = generativesRef.current.find(g => g.uuid === activeLayer.generativeId);
@@ -8725,24 +10375,29 @@ return (
                             </div>
                           );
                         })()}
+                        </>
+                        )}
                       </div>
                     )}
 
                     {/* Effect Parameters */}
-                    {activeLayer.mappings.map(m => {
-                      const effectDef = ALL_EFFECTS.find(e => e.id === m.id);
-                      if (!effectDef) return null;
-                      return (
-                        <div key={m.id} className="space-y-4">
-                          <h3 className="text-[11px] font-bold uppercase tracking-widest text-red-400 border-b border-white/5 pb-2">
-                             Parameters: Layer {layerIdx} - {effectDef.name}
-                          </h3>
-                          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
-                             {effectDef.parameters.map(p => renderKnob(p, m, activeLayer, false))}
-                          </div>
-                        </div>
-                      );
-                    })}
+                    {activeLayer.mappings.length > 0 && (
+                      <div className="space-y-4">
+                        <CollapseHead id="fx" label="Effect Settings" />
+                        {belowPanel === 'fx' && activeLayer.mappings.map(m => {
+                          const effectDef = ALL_EFFECTS.find(e => e.id === m.id);
+                          if (!effectDef) return null;
+                          return (
+                            <div key={m.id} className="space-y-4">
+                              <h4 className="text-[10px] font-bold uppercase tracking-widest text-white/50 pb-1">{effectDef.name}</h4>
+                              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
+                                {effectDef.parameters.map(p => renderKnob(p, m, activeLayer, false))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
 
                     {/* Image / Video Transform */}
                     {activeLayer.type !== 'generative' && activeLayer.src && (
@@ -8935,189 +10590,41 @@ return (
         </div>
 {/* Right Sidebar: Effect Config */}
         
-        {/* Right Sidebar (Triggers & Inputs) */}
-        <aside className="w-72 lg:w-72 xl:w-80 border-l border-white/5 bg-black/20 hidden lg:flex flex-col shrink-0">
-           <div className="p-4 bg-black/40 border-b border-white/5 text-[10px] uppercase tracking-widest font-bold opacity-80 shrink-0">
-             Triggers & Routing
+        {/* Right panel re-open tab (when collapsed) */}
+        {rightCollapsed && (
+          <button
+            onClick={() => setRightCollapsed(false)}
+            className="hidden lg:flex items-center justify-center w-6 shrink-0 border-l border-white/5 bg-black/20 text-white/40 hover:text-white hover:bg-white/5 transition-colors"
+            title="Show Audio & Triggers panel"
+          >
+            <ChevronLeft size={14} />
+          </button>
+        )}
+        {/* Right Sidebar (Audio + Triggers) */}
+        <aside className={`border-l border-white/5 bg-black/20 hidden lg:flex flex-col shrink-0 transition-all duration-300 ${rightCollapsed ? 'lg:hidden' : 'w-72 xl:w-80'}`}>
+           <div className="hidden lg:flex justify-start px-2 py-1.5 border-b border-white/5">
+             <button onClick={() => setRightCollapsed(true)} className="p-1 text-white/30 hover:text-white transition-colors" title="Hide panel — more canvas">
+               <PanelRightClose size={14} />
+             </button>
            </div>
            <div className="flex-1 custom-scrollbar overflow-y-auto pb-20">
-             <Section 
-            title="Audio Input" 
-            icon={<Activity size={16} />} 
-            isExpanded={expandedSection === 'audio-input'} 
-            onToggle={() => setExpandedSection(expandedSection === 'audio-input' ? null : 'audio-input')}
-          >
-            <div className="p-4 space-y-4">
-              <div className="flex gap-2">
-                <label className="flex-1 border border-white/10 p-3 rounded-none bg-transparent hover:border border-white hover:bg-white hover:text-black transition-colors flex items-center justify-center gap-2 cursor-pointer">
-                  <Upload size={14} className="opacity-50" />
-                  <span className="text-[10px] uppercase tracking-widest font-bold">Load Stems</span>
-                  <input type="file" multiple accept="audio/*" onChange={handleAddAudioStem} className="hidden" />
-                </label>
-                <button 
-                  onClick={async () => {
-                    const id = 'live-mic';
-                    await engine.addLiveInput(id, 'Live Mic/Line', selectedAudioDevice || undefined);
-                    setAudioStems(prev => {
-                      const filtered = prev.filter(s => s.id !== id);
-                      return [...filtered, { id, name: 'Live Mic/Line', fileUrl: 'live', isMuted: false, isSoloed: false }];
-                    });
-                  }}
-                  className="px-4 border border-white/10 rounded-none bg-transparent hover:border-white hover:bg-white hover:text-black transition-colors flex items-center justify-center"
-                  title="Use Live Microphone / Audio Interface"
-                >
-                  <Mic size={14} />
-                </button>
-                <button 
-                  onClick={toggleAudioPlay}
-                  className={`px-4 rounded-none flex items-center justify-center transition-colors ${audioPlaying ? 'bg-red-600 text-white' : 'border border-white hover:bg-white hover:text-black hover:bg-white/20'}`}
-                >
-                  {audioPlaying ? <Pause size={14} /> : <Play size={14} />}
-                </button>
-              </div>
 
-              <div className="space-y-1 mb-2">
-                <div className="flex justify-between items-center">
-                  <label className="text-[8px] uppercase tracking-widest opacity-40 block">Live Input Device</label>
-                </div>
-                <select 
-                  className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[9px] outline-none font-mono"
-                  value={selectedAudioDevice}
-                  onChange={(e) => setSelectedAudioDevice(e.target.value)}
-                >
-                  <option value="">Default Microphone</option>
-                  {audioDevices.map(d => (
-                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Mic ${d.deviceId.slice(0,5)}`}</option>
-                  ))}
-                </select>
-              </div>
-              
-              <div className="space-y-2">
-                {audioDuration > 0 && (
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-[9px] font-mono opacity-50">{formatTime(audioTime)}</span>
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max={audioDuration} 
-                      step="0.1" 
-                      value={audioTime} 
-                      onChange={handleSeek}
-                      className="flex-1 accent-red-600 h-1 border border-white hover:bg-white hover:text-black rounded-none appearance-none cursor-pointer" 
-                    />
-                    <span className="text-[9px] font-mono opacity-50">{formatTime(audioDuration)}</span>
-                  </div>
-                )}
-                {audioStems.length === 0 ? (
-                   <div className="text-[9px] text-center opacity-40 uppercase tracking-widest py-4 border border-white/5 border-dashed rounded">No AUDIO STEMS</div>
-                ) : audioStems.map(stem => (
-                  <div key={stem.id} className="flex items-center justify-between p-2 rounded bg-transparent border border-white/5 text-[10px]">
-                     <span className="truncate w-16 font-mono uppercase text-[9px] opacity-80">{stem.name}</span>
-                     <div className="flex items-center gap-1">
-                        <button 
-                          onClick={() => toggleStemMute(stem.id)}
-                          className={`px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider transition-colors ${stem.isMuted ? 'bg-red-500/20 text-red-500 font-bold' : 'bg-transparent opacity-40 hover:opacity-100'}`}
-                        >M</button>
-                        <button 
-                          onClick={() => toggleStemSolo(stem.id)}
-                          className={`px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider transition-colors ${stem.isSoloed ? 'bg-white/20 text-white font-bold' : 'bg-transparent opacity-40 hover:opacity-100'}`}
-                        >S</button>
-                        <button onClick={() => removeAudioStem(stem.id)} className="opacity-40 hover:opacity-100 hover:text-red-400 p-1 ml-1"><X size={10}/></button>
-                     </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </Section>
+             <Section
+               title="Audio"
+               icon={<Activity size={16} />}
+               isExpanded={rightSection === 'audio'}
+               onToggle={() => setRightSection(rightSection === 'audio' ? null : 'audio')}
+             >
+               {audioSourcesPanel}
+             </Section>
 
-            <Section 
-            title="MIDI Input" 
-            icon={<Music size={16} />} 
-            isExpanded={expandedSection === 'midi-input'} 
-            onToggle={() => setExpandedSection(expandedSection === 'midi-input' ? null : 'midi-input')}
-          >
-            <div className="p-4 space-y-4">
-              <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <label className="text-[10px] uppercase tracking-widest opacity-40">MIDI Device</label>
-                  <button 
-                    onClick={requestMidiAccess}
-                    className="p-1 hover:border border-white hover:bg-white hover:text-black rounded transition-colors opacity-40 hover:opacity-100"
-                    title="Refresh MIDI Devices"
-                  >
-                    <RefreshCw size={10} />
-                  </button>
-                </div>
-                <div className="space-y-2">
-                  <div className="flex gap-2">
-                    <button onClick={() => setSelectedDeviceIds(midiDevices.map(d => d.id))} className="flex-1 text-[8px] uppercase tracking-widest bg-transparent py-1 rounded hover:border border-white hover:bg-white hover:text-black transition-colors">Select All</button>
-                    <button onClick={() => setSelectedDeviceIds([])} className="flex-1 text-[8px] uppercase tracking-widest bg-transparent py-1 rounded hover:border border-white hover:bg-white hover:text-black transition-colors">None</button>
-                  </div>
-                  <div className="max-h-32 overflow-y-auto">
-                    {midiDevices.map(d => (
-                      <label key={d.id} className="flex items-center gap-2 text-xs opacity-80 cursor-pointer p-1 hover:bg-transparent rounded">
-                        <input 
-                          type="checkbox" 
-                          checked={selectedDeviceIds.includes(d.id)}
-                          onChange={(e) => {
-                            if (e.target.checked) setSelectedDeviceIds(prev => [...prev, d.id]);
-                            else setSelectedDeviceIds(prev => prev.filter(id => id !== d.id));
-                          }}
-                          className="accent-red-600"
-                        />
-                        {d.name}
-                      </label>
-                    ))}
-                  </div>
-                  {midiDevices.length === 0 && <div className="text-xs opacity-40 italic py-2">No Devices Found</div>}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <div className="flex items-center gap-2">
-                    <label className="text-[10px] uppercase tracking-widest opacity-40">MIDI Logs</label>
-                  </div>
-                  <div className="flex gap-2">
-                    <button 
-                      onClick={() => setShowRoutingGuide(!showRoutingGuide)}
-                      className="text-[8px] uppercase tracking-widest text-red-500 hover:underline"
-                    >
-                      {showRoutingGuide ? 'Close Guide' : 'Routing Help'}
-                    </button>
-                  </div>
-                </div>
-
-                {showRoutingGuide && (
-                  <motion.div 
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    className="p-3 bg-red-500/10 border border-red-500/20 rounded-none text-[10px] text-red-200/80 font-mono leading-relaxed space-y-2 overflow-hidden"
-                  >
-                    <p className="font-bold text-red-400">Maschine Software Routing:</p>
-                    <ol className="list-decimal list-inside space-y-1 opacity-90">
-                      <li>Enable <span className="text-white">IAC Driver</span> (Mac) or <span className="text-white">loopMIDI</span> (Win).</li>
-                      <li>In Maschine: <span className="text-white">Channel &gt; Output &gt; MIDI</span>.</li>
-                      <li>Set <span className="text-white">Dest</span> to your Virtual Port.</li>
-                      <li>Click the <span className="text-white">Refresh</span> icon above.</li>
-                    </ol>
-                  </motion.div>
-                )}
-
-                <div className="bg-black/40 border border-white/5 rounded-none p-3 h-32 overflow-y-auto font-mono text-[9px] space-y-1 custom-scrollbar">
-                  {midiLogs.length === 0 && <div className="opacity-20 italic">Awaiting MIDI signal...</div>}
-                  {midiLogs.map(log => (
-                    <div key={log.id} className="flex justify-between items-center border-b border-white/5 pb-1">
-                      <span className={log.type === 'ON' ? 'text-white' : 'opacity-40'}>CH {log.channel}</span>
-                      <span className={log.type === 'ON' ? 'text-red-400' : 'opacity-40'}>NOTE {log.note}</span>
-                      <span className="opacity-40">{log.type}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </Section>
-             <div className="p-4 pt-4 border-t border-white/5">
+             <Section
+               title="Triggers"
+               icon={<Zap size={16} />}
+               isExpanded={rightSection === 'triggers'}
+               onToggle={() => setRightSection(rightSection === 'triggers' ? null : 'triggers')}
+             >
+             <div className="p-4 pt-2">
                 {(() => {
                   if (selectedEffectId && selectedLayerForEffect) {
                     const layerTarget = layers.find(l => l.id === selectedLayerForEffect);
@@ -9179,6 +10686,14 @@ return (
                     }
 
                     if (!mapping) return null;
+
+                    // Merge a partial patch into this mapping's audioMapping (generative param or effect param).
+                    const patchAudio = (patch: Partial<AudioMapping>) => {
+                      const upd = (m: any) => ({ ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), ...patch } });
+                      if (isGenerativeParam) setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? upd(m) : m) } : l));
+                      else setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? upd(m) : m) } : l));
+                    };
+                    const audioEngineType = mapping.audioMapping?.engine || 'level';
 
                     return (
                       <div className="space-y-4">
@@ -9242,59 +10757,97 @@ return (
                           {mapping.audioMapping?.enabled ? (
                             <div className="space-y-4 pt-2">
                                <label className="text-[10px] uppercase tracking-widest opacity-80 font-bold text-red-500">Audio Modulation</label>
+
+                               <div className="space-y-1">
+                                 <label className="text-[8px] uppercase tracking-widest opacity-40 block">Engine</label>
+                                 <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+                                   <button
+                                     onClick={() => patchAudio({ engine: 'level' })}
+                                     className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${audioEngineType === 'level' ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-white/5'}`}
+                                     title="Follows how loud the chosen frequencies are"
+                                   >Level</button>
+                                   <button
+                                     onClick={() => patchAudio({ engine: 'transient' })}
+                                     className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${audioEngineType === 'transient' ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-white/5'}`}
+                                     title="Pops on every hit / beat in the chosen frequencies"
+                                   >Hits</button>
+                                 </div>
+                               </div>
+
                                <div className="space-y-4 pt-2">
-                                <div className="grid grid-cols-2 gap-2">
+                                <div className={audioEngineType === 'level' ? 'grid grid-cols-2 gap-2' : 'grid grid-cols-1 gap-2'}>
                                   <div className="space-y-1">
                                     <label className="text-[8px] uppercase tracking-widest opacity-40 block">Target Stem</label>
-                                    <select 
+                                    <select
                                       value={mapping.audioMapping?.stemId || ''}
-                                      onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), stemId: e.target.value } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), stemId: e.target.value } } : m) } : l)))}
+                                      onChange={e => patchAudio({ stemId: e.target.value })}
                                       className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
                                     >
                                       <option value="">Master Out</option>
                                       {audioStems.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                      {mapping.audioMapping?.stemId === 'yt-audio' && !audioStems.some(s => s.id === 'yt-audio') && (
+                                        <option value="yt-audio">YouTube (connect in Audio panel)</option>
+                                      )}
                                     </select>
                                   </div>
+                                  {audioEngineType === 'level' && (
                                   <div className="space-y-1">
                                     <label className="text-[8px] uppercase tracking-widest opacity-40 block">Tracking Mode</label>
-                                    <select 
+                                    <select
                                       value={mapping.audioMapping?.mode || 'fast'}
-                                      onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), mode: e.target.value as 'fast' | 'smooth' } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), mode: e.target.value as 'fast' | 'smooth' } } : m) } : l)))}
+                                      onChange={e => patchAudio({ mode: e.target.value as 'fast' | 'smooth' })}
                                       className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
                                     >
                                       <option value="fast">Fast (Strobo)</option>
                                       <option value="smooth">Smooth (Blend)</option>
                                     </select>
                                   </div>
+                                  )}
                                 </div>
 
-                                <AudioSpectrogram 
+                                <AudioSpectrogram
                                   stemId={mapping.audioMapping?.stemId}
                                   freqRange={mapping.audioMapping?.freqRange || [20, 20000]}
                                   threshold={mapping.audioMapping?.threshold || 0.5}
-                                  onRangeChange={(r) => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), freqRange: r } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), freqRange: r } } : m) } : l)))}
-                                  onThresholdChange={(t) => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), threshold: t } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), threshold: t } } : m) } : l)))}
+                                  onRangeChange={(r) => patchAudio({ freqRange: r })}
+                                  onThresholdChange={(t) => patchAudio({ threshold: t })}
                                 />
+                                <p className="text-[8px] opacity-30 -mt-2">Drag the red box to pick which frequencies to listen to{audioEngineType === 'level' ? '; the dashed line is the trigger level.' : ' (kick ≈ 40–120 Hz, snare ≈ 1.5–3 kHz).'}</p>
 
+                                {audioEngineType === 'level' ? (
+                                <>
                                 <div className="grid grid-cols-3 gap-2">
                                   <div className="space-y-1">
                                     <label className="text-[8px] uppercase tracking-widest opacity-40 block">Smooth: {mapping.audioMapping?.smoothing?.toFixed(2) || '0.50'}</label>
-                                    <input type="range" min="0" max="0.99" step="0.01" value={mapping.audioMapping?.smoothing || 0.5} onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), smoothing: parseFloat(e.target.value) } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), smoothing: parseFloat(e.target.value) } } : m) } : l)))} className="w-full h-1"/>
+                                    <input type="range" min="0" max="0.99" step="0.01" value={mapping.audioMapping?.smoothing || 0.5} onChange={e => patchAudio({ smoothing: parseFloat(e.target.value) })} className="w-full h-1"/>
                                   </div>
                                   <div className="space-y-1">
                                     <label className="text-[8px] uppercase tracking-widest opacity-40 block">Attack: {mapping.audioMapping?.attack || 10}</label>
-                                    <input type="range" min="1" max="100" step="1" value={mapping.audioMapping?.attack || 10} onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), attack: parseInt(e.target.value) } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), attack: parseInt(e.target.value) } } : m) } : l)))} className="w-full h-1"/>
+                                    <input type="range" min="1" max="100" step="1" value={mapping.audioMapping?.attack || 10} onChange={e => patchAudio({ attack: parseInt(e.target.value) })} className="w-full h-1"/>
                                   </div>
                                   <div className="space-y-1">
                                     <label className="text-[8px] uppercase tracking-widest opacity-40 block">Release: {mapping.audioMapping?.release || 100}</label>
-                                    <input type="range" min="10" max="1000" step="10" value={mapping.audioMapping?.release || 100} onChange={e => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), release: parseInt(e.target.value) } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), release: parseInt(e.target.value) } } : m) } : l)))} className="w-full h-1"/>
+                                    <input type="range" min="10" max="1000" step="10" value={mapping.audioMapping?.release || 100} onChange={e => patchAudio({ release: parseInt(e.target.value) })} className="w-full h-1"/>
                                   </div>
                                 </div>
 
                                 <NoteSettingsConfigUI
                                   ns={mapping.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS}
-                                  onUpdateNote={(field, val) => (isGenerativeParam ? setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), noteSettings: { ...(mapping.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } } } : m) } : l)) : setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? { ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), noteSettings: { ...(mapping.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } } } : m) } : l)))}
+                                  onUpdateNote={(field, val) => patchAudio({ noteSettings: { ...(mapping.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } })}
                                 />
+                                </>
+                                ) : (
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div className="space-y-1">
+                                    <label className="text-[8px] uppercase tracking-widest opacity-40 block">Sensitivity: {((mapping.audioMapping?.sensitivity ?? 0.6) * 100).toFixed(0)}%</label>
+                                    <input type="range" min="0" max="1" step="0.01" value={mapping.audioMapping?.sensitivity ?? 0.6} onChange={e => patchAudio({ sensitivity: parseFloat(e.target.value) })} className="w-full h-1"/>
+                                  </div>
+                                  <div className="space-y-1">
+                                    <label className="text-[8px] uppercase tracking-widest opacity-40 block">Decay: {mapping.audioMapping?.decayMs ?? 220}ms</label>
+                                    <input type="range" min="40" max="1200" step="10" value={mapping.audioMapping?.decayMs ?? 220} onChange={e => patchAudio({ decayMs: parseInt(e.target.value) })} className="w-full h-1"/>
+                                  </div>
+                                </div>
+                                )}
                                </div>
                             </div>
                           ) : (
@@ -9346,6 +10899,9 @@ return (
                   } else if (activeLayerId) {
                     const layerTarget = layers.find(l => l.id === activeLayerId);
                     if (!layerTarget) return null;
+                    const patchLayerAudio = (patch: Partial<AudioMapping>) =>
+                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), ...patch } } : l));
+                    const layerAudioEngine = layerTarget.audioMapping?.engine || 'level';
                     return (
                       <div className="space-y-4">
                         <h3 className="text-[10px] font-bold uppercase tracking-widest text-red-400 border-b border-white/5 pb-2 mb-2">Layer Triggers</h3>
@@ -9425,58 +10981,93 @@ return (
                           ) : layerTarget.audioMapping?.enabled ? (
                             <div className="space-y-4">
                                <label className="text-[10px] uppercase tracking-widest opacity-80 font-bold text-red-500">Audio Visibility Trigger</label>
-                               <div className="grid grid-cols-2 gap-2">
+
+                               <div className="space-y-1">
+                                 <label className="text-[8px] uppercase tracking-widest opacity-40 block">Engine</label>
+                                 <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+                                   <button
+                                     onClick={() => patchLayerAudio({ engine: 'level' })}
+                                     className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layerAudioEngine === 'level' ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-white/5'}`}
+                                     title="Follows how loud the chosen frequencies are"
+                                   >Level</button>
+                                   <button
+                                     onClick={() => patchLayerAudio({ engine: 'transient' })}
+                                     className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layerAudioEngine === 'transient' ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-white/5'}`}
+                                     title="Pops on every hit / beat in the chosen frequencies"
+                                   >Hits</button>
+                                 </div>
+                               </div>
+
+                               <div className={layerAudioEngine === 'level' ? 'grid grid-cols-2 gap-2' : 'grid grid-cols-1 gap-2'}>
                                 <div className="space-y-1">
                                   <label className="text-[8px] uppercase tracking-widest opacity-40 block mb-1">Target Stem</label>
-                                  <select 
+                                  <select
                                     value={layerTarget.audioMapping?.stemId || ''}
-                                    onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), stemId: e.target.value } } : l))}
+                                    onChange={e => patchLayerAudio({ stemId: e.target.value })}
                                     className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
                                   >
                                     <option value="">Master Out</option>
                                     {audioStems.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                                   </select>
                                 </div>
+                                {layerAudioEngine === 'level' && (
                                 <div className="space-y-1">
                                   <label className="text-[8px] uppercase tracking-widest opacity-40 block mb-1">Tracking Mode</label>
-                                  <select 
+                                  <select
                                     value={layerTarget.audioMapping?.mode || 'fast'}
-                                    onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...l.audioMapping!, mode: e.target.value as 'fast'|'smooth' } } : l))}
+                                    onChange={e => patchLayerAudio({ mode: e.target.value as 'fast'|'smooth' })}
                                     className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
                                   >
                                     <option value="fast">Fast (Strobo)</option>
                                     <option value="smooth">Smooth (Blend)</option>
                                   </select>
                                 </div>
+                                )}
                                </div>
 
-                               <AudioSpectrogram 
+                               <AudioSpectrogram
                                   stemId={layerTarget.audioMapping?.stemId}
                                   freqRange={layerTarget.audioMapping?.freqRange || [20, 20000]}
                                   threshold={layerTarget.audioMapping?.threshold || 0.5}
-                                  onRangeChange={(r) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), freqRange: r } } : l))}
-                                  onThresholdChange={(t) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), threshold: t } } : l))}
+                                  onRangeChange={(r) => patchLayerAudio({ freqRange: r })}
+                                  onThresholdChange={(t) => patchLayerAudio({ threshold: t })}
                                />
+                               <p className="text-[8px] opacity-30 -mt-2">Drag the red box to pick which frequencies to listen to{layerAudioEngine === 'level' ? '; the dashed line is the trigger level.' : ' (kick ≈ 40–120 Hz, snare ≈ 1.5–3 kHz).'}</p>
 
+                               {layerAudioEngine === 'level' ? (
+                               <>
                                <div className="grid grid-cols-3 gap-2">
                                 <div className="space-y-1">
                                   <label className="text-[8px] uppercase tracking-widest opacity-40 block">Smooth: {layerTarget.audioMapping?.smoothing?.toFixed(2) || '0.50'}</label>
-                                  <input type="range" min="0" max="0.99" step="0.01" value={layerTarget.audioMapping?.smoothing || 0.5} onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), smoothing: parseFloat(e.target.value) } } : l))} className="w-full h-1"/>
+                                  <input type="range" min="0" max="0.99" step="0.01" value={layerTarget.audioMapping?.smoothing || 0.5} onChange={e => patchLayerAudio({ smoothing: parseFloat(e.target.value) })} className="w-full h-1"/>
                                 </div>
                                 <div className="space-y-1">
                                   <label className="text-[8px] uppercase tracking-widest opacity-40 block">Attack (ms): {layerTarget.audioMapping?.attack || 10}</label>
-                                  <input type="range" min="1" max="100" step="1" value={layerTarget.audioMapping?.attack || 10} onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), attack: parseInt(e.target.value) } } : l))} className="w-full h-1"/>
+                                  <input type="range" min="1" max="100" step="1" value={layerTarget.audioMapping?.attack || 10} onChange={e => patchLayerAudio({ attack: parseInt(e.target.value) })} className="w-full h-1"/>
                                 </div>
                                 <div className="space-y-1">
                                   <label className="text-[8px] uppercase tracking-widest opacity-40 block">Release (ms): {layerTarget.audioMapping?.release || 100}</label>
-                                  <input type="range" min="10" max="1000" step="10" value={layerTarget.audioMapping?.release || 100} onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), release: parseInt(e.target.value) } } : l))} className="w-full h-1"/>
+                                  <input type="range" min="10" max="1000" step="10" value={layerTarget.audioMapping?.release || 100} onChange={e => patchLayerAudio({ release: parseInt(e.target.value) })} className="w-full h-1"/>
                                 </div>
                                </div>
 
                                <NoteSettingsConfigUI
                                   ns={layerTarget.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS}
-                                  onUpdateNote={(field, val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), noteSettings: { ...(l.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } } } : l))}
+                                  onUpdateNote={(field, val) => patchLayerAudio({ noteSettings: { ...(layerTarget.audioMapping?.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } })}
                                />
+                               </>
+                               ) : (
+                               <div className="grid grid-cols-2 gap-2">
+                                <div className="space-y-1">
+                                  <label className="text-[8px] uppercase tracking-widest opacity-40 block">Sensitivity: {((layerTarget.audioMapping?.sensitivity ?? 0.6) * 100).toFixed(0)}%</label>
+                                  <input type="range" min="0" max="1" step="0.01" value={layerTarget.audioMapping?.sensitivity ?? 0.6} onChange={e => patchLayerAudio({ sensitivity: parseFloat(e.target.value) })} className="w-full h-1"/>
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[8px] uppercase tracking-widest opacity-40 block">Decay: {layerTarget.audioMapping?.decayMs ?? 220}ms</label>
+                                  <input type="range" min="40" max="1200" step="10" value={layerTarget.audioMapping?.decayMs ?? 220} onChange={e => patchLayerAudio({ decayMs: parseInt(e.target.value) })} className="w-full h-1"/>
+                                </div>
+                               </div>
+                               )}
                             </div>
                           ) : (
                             <MidiConfigUI 
@@ -9498,6 +11089,8 @@ return (
                   return null;
                 })()}
              </div>
+             </Section>
+
            </div>
         </aside>
 
@@ -9611,7 +11204,7 @@ return (
                        <div className="space-y-2 pt-4 border-t border-white/5">
                           <label className="text-[10px] uppercase tracking-widest opacity-40">Select Script</label>
                           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 overflow-y-auto max-h-[60vh] custom-scrollbar pb-10">
-                             {generativesRef.current.map(g => {
+                             {generativesRef.current.map((g, gi, genArr) => {
                                const isActive = layers.find(l => l.id === assetBrowserLayerTarget)?.generativeId === g.uuid;
                                const getIconForGenerative = (uuid: string) => {
                                    if (uuid === 'dragon-text-mask-canvas-1') return '🐉';
@@ -9619,21 +11212,36 @@ return (
                                    if (uuid === 'text-water-drop-canvas-1') return '💧';
                                    if (uuid === 'text-boat-sea-canvas-1') return '⛵';
                                    if (uuid === 'brutalist-grid-1') return '🔲';
-                                   if (uuid === 'ferrofluid-1') return '🌑';
+                                   if (uuid === 'ferrofluid-1') return '🪸';
+                                   if (uuid === 'reaction-diffusion-canvas-1') return '🧫';
+                                   if (uuid === 'stickiness-canvas-gen-1') return '🫧';
+                                   if (uuid === 'vein-labyrinth-canvas-1') return '🌿';
+                                   if (uuid === 'voronoi-cells-canvas-1') return '🕸️';
+                                   if (uuid === 'contour-lines-canvas-1') return '🗺️';
+                                   if (uuid === 'neon-labyrinth-canvas-1') return '👾';
+                                   if (uuid === 'pixel-swarm-canvas-1') return '🛸';
+                                   if (uuid === 'tetromino-cascade-canvas-1') return '🧱';
+                                   if (uuid === 'hillscape-canvas-1') return '🍄';
+                                   if (uuid === 'orbit-deflection-canvas-1') return '🎯';
+                                   if (uuid === 'centipede-garden-canvas-1') return '🐛';
                                    if (uuid === 'bubble-spheres-1') return '🫧';
                                    if (uuid === 'dancing-cubes-canvas-1') return '🎲';
                                    return '✨';
                                };
+                               const showCat = gi === 0 || genArr[gi - 1].category !== g.category;
                                return (
-                                 <div 
-                                   key={g.uuid}
+                                 <React.Fragment key={g.uuid}>
+                                 {showCat && (
+                                   <h4 className="col-span-full text-[10px] uppercase tracking-[0.3em] font-bold text-red-400/80 border-b border-white/10 pb-2 mt-2 first:mt-0">{g.category}</h4>
+                                 )}
+                                 <div
                                    className={`group p-4 rounded-none border transition-all flex flex-col justify-between ${isActive ? 'bg-red-600/5 border-red-500/20 opacity-50' : 'bg-transparent border-white/10 hover:border-white'}`}
                                  >
                                    <div>
                                      <div className="w-full aspect-square mb-4 border border-white/10 bg-black/60 flex flex-col items-center justify-center opacity-85 group-hover:opacity-100 transition-opacity relative overflow-hidden rounded-sm">
-                                        <img 
-                                          src={`/previews/${g.uuid}.png`} 
-                                          alt={g.description} 
+                                        <img
+                                          src={`/previews/${g.uuid}.png`}
+                                          alt={g.description}
                                           className="absolute inset-0 w-full h-full object-cover"
                                           onError={(e) => {
                                               e.currentTarget.style.display = 'none';
@@ -9701,6 +11309,7 @@ return (
                                      {isActive ? 'Active on Layer' : 'Load Script'}
                                    </button>
                                  </div>
+                                 </React.Fragment>
                                );
                              })}
                           </div>
@@ -9855,15 +11464,20 @@ return (
               </div>
 
               <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 custom-scrollbar">
-                {generativesRef.current.map(g => {
+                {generativesRef.current.map((g, gi, genArr) => {
                   const isActive = activeLayerId && layers.find(l => l.id === activeLayerId)?.generativeId === g.uuid;
+                  const showCat = gi === 0 || genArr[gi - 1].category !== g.category;
                   return (
-                    <div 
-                      key={g.uuid}
+                    <React.Fragment key={g.uuid}>
+                    {showCat && (
+                      <h4 className="col-span-full text-[10px] uppercase tracking-[0.3em] font-bold text-red-400/80 border-b border-white/10 pb-2 mt-2 first:mt-0">{g.category}</h4>
+                    )}
+                    <div
                       className={`group p-4 rounded-none border transition-all flex flex-col justify-between ${isActive ? 'bg-red-600/5 border-red-500/20 opacity-50' : 'bg-transparent border-white/10 hover:border-white'}`}
                     >
                       <div>
-                        <div className="w-full h-24 mb-4 border border-white/5 bg-black/50 flex flex-col items-center justify-center opacity-70 group-hover:opacity-100 transition-opacity">
+                        <div className="w-full aspect-square mb-4 border border-white/5 bg-black/50 flex flex-col items-center justify-center opacity-70 group-hover:opacity-100 transition-opacity relative overflow-hidden">
+                            <img src={`/previews/${g.uuid}.png`} alt={g.description} className="absolute inset-0 w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
                             <span className="text-[10px] tracking-widest text-white/30 uppercase">Preview</span>
                         </div>
                         <div className="flex items-center justify-between mb-2">
@@ -9938,6 +11552,7 @@ return (
                         {isActive ? 'Active on Layer' : 'Load Script'}
                       </button>
                     </div>
+                    </React.Fragment>
                   );
                 })}
               </div>

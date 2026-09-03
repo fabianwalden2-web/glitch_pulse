@@ -13,3 +13,7 @@ spectro_log.txt
 
 # Electron
 dist-electron/
+
+# Personal scratch media (not app assets)
+Funky drums.wav
+example song/

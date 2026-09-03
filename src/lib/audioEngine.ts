@@ -1,3 +1,6 @@
+import { audioGraph } from './audio/AudioGraph';
+import { audio as audioModule } from './audio';
+
 export type FrequencyBand = 'bass' | 'mid' | 'high' | 'all';
 
 export interface AudioStemNode {
@@ -24,17 +27,26 @@ export class AudioEngine {
 
   init() {
     if (!this.ctx) {
-      this.ctx = new AudioContext();
+      // Share the single AudioContext owned by the new audio module so both the
+      // legacy per-stem analysers and the decoupled AnalysisEngine hear the same graph.
+      this.ctx = audioGraph.context;
       this.freqDataArray = new Uint8Array(this.fftSize / 2);
+      // fire-and-forget: boot the worklet + analysis engine
+      void audioModule.init();
     }
     if (this.ctx.state === 'suspended') {
       this.ctx.resume();
     }
   }
 
+  hasStem(id: string): boolean {
+    return this.stems.has(id);
+  }
+
   async addStem(id: string, name: string, fileUrl: string): Promise<void> {
     this.init();
-    
+    if (this.stems.has(id)) return; // already loaded
+
     const audio = new Audio(fileUrl);
     audio.crossOrigin = "anonymous";
     audio.loop = true; // Stems usually loop or play once, let's keep them looping for test
@@ -56,7 +68,7 @@ export class AudioEngine {
       gainNode = this.ctx.createGain();
       
       analyserNode.fftSize = this.fftSize;
-      analyserNode.smoothingTimeConstant = 0.5;
+      analyserNode.smoothingTimeConstant = 0.2;
       
       // Default analyser maxDecibels is -30dB, which means a mastered modern track (-6dB to 0dB) 
       // will constantly hit the 255 limit (clip), making it impossible to set a threshold *above* it.
@@ -69,6 +81,9 @@ export class AudioEngine {
       sourceNode.connect(analyserNode);
       analyserNode.connect(gainNode);
       gainNode.connect(this.ctx.destination);
+
+      // Also feed the decoupled analysis bus (pre-gain, so mute doesn't kill analysis).
+      try { sourceNode.connect(audioGraph.analysisBus); } catch { /* noop */ }
     }
 
     this.stems.set(id, {
@@ -103,7 +118,7 @@ export class AudioEngine {
       const analyserNode = this.ctx!.createAnalyser();
       
       analyserNode.fftSize = this.fftSize;
-      analyserNode.smoothingTimeConstant = 0.5;
+      analyserNode.smoothingTimeConstant = 0.2;
       analyserNode.minDecibels = -100;
       analyserNode.maxDecibels = -10;
       
@@ -113,6 +128,9 @@ export class AudioEngine {
       sourceNode.connect(micGainNode);
       micGainNode.connect(analyserNode);
       // NOTE: We do not connect analyserNode to destination or gainNode to avoid speaker feedback loops
+
+      // Feed the decoupled analysis bus too (analysis only, never to destination).
+      try { micGainNode.connect(audioGraph.analysisBus); } catch { /* noop */ }
       
       // Stop old stream if replacing
       const existing = this.stems.get(id);
@@ -133,6 +151,73 @@ export class AudioEngine {
       });
     } catch (e) {
       console.error("Microphone access denied or failed", e);
+    }
+  }
+
+  /**
+   * Capture audio from a browser tab / another app / system output (e.g. a
+   * YouTube video) and register it as a stem. In Electron this is granted
+   * automatically as system loopback; in a browser the user picks the tab and
+   * ticks "Share tab audio".
+   */
+  async addTabAudio(id: string = "tab-audio", name: string = "Browser / YouTube"): Promise<{ ok: boolean; error?: string }> {
+    this.init();
+    if (this.ctx && this.ctx.state === 'suspended') { try { await this.ctx.resume(); } catch { /* noop */ } }
+    try {
+      const md = navigator.mediaDevices as any;
+      if (!md?.getDisplayMedia) return { ok: false, error: "Screen/tab capture isn't supported here." };
+      const stream: MediaStream = await md.getDisplayMedia({
+        video: true, // the API requires a video track to be requested
+        audio: { echoCancellation: false, autoGainControl: false, noiseSuppression: false },
+        // Chrome hints: default the picker to THIS tab (where the YouTube iframe plays)
+        // and allow the audio checkbox to be pre-selected.
+        preferCurrentTab: true,
+        selfBrowserSurface: 'include',
+        systemAudio: 'include',
+      });
+      stream.getVideoTracks().forEach(t => t.stop());
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        stream.getTracks().forEach(t => t.stop());
+        return { ok: false, error: 'No audio was shared. Re-open the picker, choose this tab, and tick "Share tab audio".' };
+      }
+
+      const sourceNode = this.ctx!.createMediaStreamSource(stream);
+      const analyserNode = this.ctx!.createAnalyser();
+      analyserNode.fftSize = this.fftSize;
+      analyserNode.smoothingTimeConstant = 0.2;
+      analyserNode.minDecibels = -100;
+      analyserNode.maxDecibels = -10;
+
+      const gainNode = this.ctx!.createGain();
+      gainNode.gain.value = 1.0;
+      sourceNode.connect(gainNode);
+      gainNode.connect(analyserNode);
+      // analysis only — the tab already plays its own audio, so do not route to destination.
+      try { gainNode.connect(audioGraph.analysisBus); } catch { /* noop */ }
+
+      const existing = this.stems.get(id);
+      if (existing?.stream) existing.stream.getTracks().forEach(t => t.stop());
+
+      // if the user stops sharing from the browser UI, drop the stem
+      audioTracks[0].addEventListener('ended', () => this.removeStem(id));
+
+      this.stems.set(id, {
+        id,
+        name,
+        sourceNode,
+        analyserNode,
+        gainNode: null,
+        isMuted: false,
+        isSoloed: false,
+        prevDataArray: new Uint8Array(this.fftSize / 2),
+        stream,
+      });
+      return { ok: true };
+    } catch (e: any) {
+      console.error("Tab audio capture failed", e);
+      const msg = e?.name === 'NotAllowedError' ? 'Capture was cancelled or blocked.' : (e?.message || String(e));
+      return { ok: false, error: msg };
     }
   }
 
@@ -174,6 +259,38 @@ export class AudioEngine {
       }
     });
     this.isPlaying = false;
+  }
+
+  /** Resume playback from the current position (does not reset to 0). */
+  resumeAll() {
+    this.init();
+    this.stems.forEach(stem => {
+      if (stem.audioElement) {
+        stem.audioElement.play().catch(e => console.error("Audio playback failed:", e));
+      }
+    });
+    this.isPlaying = true;
+  }
+
+  /** Pause playback, keeping the current position. */
+  pauseAll() {
+    this.stems.forEach(stem => {
+      if (stem.audioElement) stem.audioElement.pause();
+    });
+    this.isPlaying = false;
+  }
+
+  private _masterMuted = false;
+  setMasterMuted(muted: boolean) {
+    this._masterMuted = muted;
+    this._updateGainNodes();
+  }
+  isMasterMuted() { return this._masterMuted; }
+
+  setLoop(loop: boolean) {
+    this.stems.forEach(stem => {
+      if (stem.audioElement) stem.audioElement.loop = loop;
+    });
   }
 
   seek(timeInSeconds: number) {
@@ -226,7 +343,9 @@ export class AudioEngine {
 
       this.stems.forEach(stem => {
           if (!stem.gainNode) return;
-          if (stem.isMuted) {
+          if (this._masterMuted) {
+              stem.gainNode.gain.value = 0;
+          } else if (stem.isMuted) {
               stem.gainNode.gain.value = 0;
           } else if (anySolo && !stem.isSoloed) {
               stem.gainNode.gain.value = 0;
@@ -296,3 +415,4 @@ export class AudioEngine {
 
 // Singleton global export
 export const engine = new AudioEngine();
+if (typeof window !== 'undefined') (window as any).__engine = engine;

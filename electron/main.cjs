@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, session, desktopCapturer } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
@@ -99,6 +99,19 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // Allow getDisplayMedia() from the renderer (used to capture YouTube / browser
+  // audio for music reactivity). Grant the primary screen video + system-audio
+  // loopback automatically so non-technical users get one-click capture.
+  try {
+    session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+      desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
+        callback({ video: sources[0], audio: 'loopback' });
+      }).catch(() => callback({}));
+    }, { useSystemPicker: false });
+  } catch (e) {
+    console.warn('setDisplayMediaRequestHandler unavailable:', e && e.message);
+  }
+
   createWindow();
 
   // IPC Handlers for Save/Load Project

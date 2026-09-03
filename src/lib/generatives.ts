@@ -80,6 +80,16 @@ export const BUILTIN_PALETTES: ColorPalettePreset[] = [
     id: 'obsidian_gold',
     name: 'Obsidian Gold',
     colors: ['#121212', '#d4af37', '#aa7c11', '#f3e5ab', '#5b4511']
+  },
+  {
+    id: 'coral_reef',
+    name: 'Coral Reef',
+    colors: ['#e0560f', '#0a0a0a', '#ffae5c', '#c23b06', '#2a1206']
+  },
+  {
+    id: 'risograph_paper',
+    name: 'Risograph Paper',
+    colors: ['#f4f0e4', '#171717', '#8a8578', '#d8d2c0', '#3a372e']
   }
 ];
 
@@ -87,6 +97,7 @@ export interface GenerativeDefinition {
   uuid: string;
   description: string;
   color: string;
+  category: string;
   movement: boolean;
   parameters: GenerativeParameter[];
   elements?: GenerativeElement[];
@@ -170,20 +181,22 @@ export const GENERATIVES_DATA = [
   },
   {
     header: `/*{
-  "description": "Vein Labyrinth",
+  "description": "Ramification",
   "color": "white",
   "movement": true,
   "defaultPaletteId": "monochrome_duo_white",
+  "category": "Lines & Terrain",
   "parameters": [
-    { "name": "growth", "min": 1.0, "max": 45.0, "default": 25.0, "type": "number" },
-    { "name": "branch_chance", "min": 0.0, "max": 1.0, "default": 0.45, "type": "number" },
+    { "name": "growth", "min": 1.0, "max": 45.0, "default": 30.0, "type": "number" },
+    { "name": "branch_chance", "min": 0.0, "max": 1.0, "default": 0.5, "type": "number" },
     { "name": "split_mode", "min": 0.5, "max": 5.0, "default": 2.5, "type": "number" },
-    { "name": "segment_size", "min": 10.0, "max": 45.0, "default": 20.0, "type": "number" },
-    { "name": "grid_mesh", "min": 0.0, "max": 1.0, "default": 0.35, "type": "number" }
+    { "name": "segment_size", "min": 10.0, "max": 45.0, "default": 24.0, "type": "number" },
+    { "name": "grid_mesh", "min": 0.0, "max": 1.0, "default": 0.3, "type": "number" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
-    { "id": "veins", "name": "Vein Network", "defaultColor": "#000000" }
+    { "id": "veins", "name": "Vein Network", "defaultColor": "#0a0a0a" },
+    { "id": "accent", "name": "Vessel Glow", "defaultColor": "#c81e3c" }
   ],
   "uuid": "vein-labyrinth-canvas-1"
 }*/`,
@@ -192,21 +205,22 @@ export const GENERATIVES_DATA = [
   {
     header: `/*{
   "description": "Neon 3D Polygon",
-  "color": "white",
+  "category": "Geometric",
+  "color": "black",
   "movement": true,
-  "defaultPaletteId": "crimson_slate",
+  "defaultPaletteId": "cyberpunk_neon",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "shadows", "min": 0.0, "max": 2.0, "default": 1.0, "type": "number" },
+    { "name": "shadows", "min": 0.0, "max": 2.0, "default": 1.3, "type": "number" },
     { "name": "sides", "min": 4.0, "max": 12.0, "default": 6.0, "type": "number" },
     { "name": "symmetry", "min": 0.0, "max": 1.0, "default": 1.0, "type": "number" },
     { "name": "size", "min": 0.1, "max": 3.0, "default": 1.0, "type": "number" }
   ],
   "elements": [
-    { "id": "background", "name": "Void Background", "defaultColor": "#ffffff" },
-    { "id": "wireframe", "name": "Polygon Edges", "defaultColor": "#eb556b" },
-    { "id": "faces", "name": "Crystal Faces", "defaultColor": "#7599a4" },
-    { "id": "glow", "name": "Core Glow", "defaultColor": "#f5a6b5" }
+    { "id": "background", "name": "Void Background", "defaultColor": "#07070f" },
+    { "id": "wireframe", "name": "Polygon Edges", "defaultColor": "#00f0ff" },
+    { "id": "faces", "name": "Crystal Faces", "defaultColor": "#7000ff" },
+    { "id": "glow", "name": "Core Glow", "defaultColor": "#ff007f" }
   ],
   "uuid": "3d-polygon-neon-1"
 }*/`,
@@ -215,21 +229,22 @@ export const GENERATIVES_DATA = [
   {
     header: `/*{
   "description": "3D Ferrofluid",
+  "category": "Psychedelic",
   "color": "black",
   "movement": true,
-  "defaultPaletteId": "acid_matrix",
+  "defaultPaletteId": "tokyo_synth",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "blobbiness", "min": 0.1, "max": 2.0, "default": 0.8, "type": "number" },
+    { "name": "blobbiness", "min": 0.2, "max": 2.0, "default": 1.1, "type": "number" },
     { "name": "droplets", "min": 1.0, "max": 10.0, "default": 5.0, "type": "number" },
-    { "name": "size", "min": 0.5, "max": 3.0, "default": 1.0, "type": "number" },
-    { "name": "gravity", "min": 0.5, "max": 5.0, "default": 1.5, "type": "number" }
+    { "name": "spikes", "min": 0.0, "max": 1.0, "default": 0.55, "type": "number" },
+    { "name": "size", "min": 0.5, "max": 2.5, "default": 1.0, "type": "number" }
   ],
   "elements": [
-    { "id": "background", "name": "Background", "defaultColor": "#0d1117" },
-    { "id": "spikes", "name": "Magnetic Spikes", "defaultColor": "#39d353" },
-    { "id": "specular", "name": "Specular Light", "defaultColor": "#00ff66" },
-    { "id": "rim", "name": "Rim Light", "defaultColor": "#2ea043" }
+    { "id": "background", "name": "Background", "defaultColor": "#1a1b26" },
+    { "id": "spikes", "name": "Fluid Body", "defaultColor": "#24263b" },
+    { "id": "specular", "name": "Specular Light", "defaultColor": "#7dcfff" },
+    { "id": "rim", "name": "Rim Light", "defaultColor": "#bb9af7" }
   ],
   "uuid": "ferrofluid-3d-1"
 }*/`,
@@ -243,6 +258,8 @@ uniform vec2 resolution;
 uniform float speed;
 uniform float blobbiness;
 uniform float droplets;
+uniform float spikes;
+uniform float size;
 
 uniform vec3 u_color_0;
 uniform vec3 u_color_1;
@@ -260,40 +277,35 @@ float sdSphere(vec3 p, float s) {
     return length(p) - s;
 }
 
-float map(vec3 p) {
+float map(vec3 pIn) {
+    float sc = clamp(size, 0.5, 2.5);
+    vec3 p = pIn / sc;
     float t = time * speed;
-    
-    // Main central blob
-    float d = sdSphere(p - vec3(0.0, sin(t*1.3)*0.2, 0.0), 1.0 + sin(t*2.0)*0.1);
-    
-    // Add droplets
-    int numDrops = int(droplets);
-    for(int i=1; i<=10; i++) {
-        if(i > numDrops) break;
+
+    // Main central body
+    float d = sdSphere(p - vec3(0.0, sin(t * 1.3) * 0.12, 0.0), 1.15 + sin(t * 2.0) * 0.07);
+
+    // Droplets orbiting CLOSE + pulsing so they fuse and stretch off the body
+    int numDrops = int(clamp(droplets, 1.0, 10.0));
+    for (int i = 1; i <= 10; i++) {
+        if (i > numDrops) break;
         float fi = float(i);
+        float orb = 0.78 + 0.55 * (0.5 + 0.5 * sin(t * 1.15 + fi * 2.0));
         vec3 pos = vec3(
-            sin(t * 0.8 + fi * 2.1) * 1.5,
-            cos(t * 1.1 + fi * 1.7) * 1.5,
-            sin(t * 0.9 + fi * 3.3) * 1.5
-        );
-        float size = 0.2 + 0.2 * sin(fi * 7.2);
-        float drop = sdSphere(p - pos, size);
-        d = smin(d, drop, blobbiness);
+            sin(t * 0.7 + fi * 2.1),
+            cos(t * 0.9 + fi * 1.7) * 0.85,
+            sin(t * 0.8 + fi * 3.3)
+        ) * orb;
+        float sz = 0.34 + 0.16 * sin(fi * 7.2);
+        d = smin(d, sdSphere(p - pos, sz), max(0.15, blobbiness));
     }
-    
-    // A few micro droplets
-    for(int i=1; i<=5; i++) {
-        float fi = float(i);
-        vec3 pos = vec3(
-            sin(t * 1.5 + fi * 8.1) * 2.5,
-            cos(t * 1.8 + fi * 6.7) * 2.5,
-            sin(t * 1.3 + fi * 9.3) * 2.5
-        );
-        float drop = sdSphere(p - pos, 0.08);
-        d = smin(d, drop, blobbiness * 0.5);
-    }
-    
-    return d;
+
+    // Magnetic spikes: pull the surface out along p in a bristly high-freq pattern
+    vec3 pn = normalize(p + 1e-4);
+    float sp = sin(pn.x * 9.0 + t * 3.0) * sin(pn.y * 9.0 - t * 2.0) * sin(pn.z * 9.0 + t * 1.5);
+    d -= clamp(spikes, 0.0, 1.0) * 0.24 * max(0.0, sp) * exp(-abs(d) * 3.0);
+
+    return d * sc;
 }
 
 vec3 calcNormal(vec3 p) {
@@ -323,7 +335,7 @@ void main() {
         t += d;
     }
     
-    vec3 bg = (length(u_color_0) > 0.001) ? u_color_0 : vec3(0.05, 0.07, 0.09);
+    vec3 bg = (length(u_color_0) > 0.001) ? u_color_0 : vec3(0.03, 0.03, 0.05);
     vec3 col = bg;
     
     if(t < maxD) {
@@ -341,14 +353,18 @@ void main() {
         float spe = pow(clamp(dot(ref, lig), 0.0, 1.0), 32.0);
         float fre = pow(clamp(1.0 + dot(n, rd), 0.0, 1.0), 2.0);
         
-        vec3 mat = (length(u_color_1) > 0.001) ? u_color_1 : vec3(0.22, 0.83, 0.33);
-        vec3 specCol = (length(u_color_2) > 0.001) ? u_color_2 : vec3(0.0, 1.0, 0.4);
-        vec3 rimCol = (length(u_color_3) > 0.001) ? u_color_3 : vec3(0.18, 0.63, 0.26);
-        
-        col = mat * (0.3 + 0.7 * dif);
-        col += rimCol * fre;
-        col += specCol * spe * 1.5;
-        col += mat * dif2 * 0.2;
+        vec3 mat = (length(u_color_1) > 0.001) ? u_color_1 : vec3(0.07, 0.06, 0.11);
+        vec3 specCol = (length(u_color_2) > 0.001) ? u_color_2 : vec3(1.0, 0.85, 0.63);
+        vec3 rimCol = (length(u_color_3) > 0.001) ? u_color_3 : vec3(0.60, 0.48, 1.0);
+
+        // faux chrome environment reflection so the black body still has form
+        vec3 env = mix(mat * 1.4, rimCol * 0.9, clamp(0.5 + 0.5 * ref.y, 0.0, 1.0));
+
+        col = mat * (0.30 + 0.85 * dif);
+        col += env * 0.35;
+        col += rimCol * fre * 1.7;
+        col += specCol * spe * 2.4;
+        col += mat * dif2 * 0.4;
     }
     
     gl_FragColor = vec4(col, 1.0);
@@ -358,20 +374,21 @@ void main() {
   {
     header: `/*{
   "description": "Stacked Balls",
-  "color": "white",
+  "category": "Psychedelic",
+  "color": "black",
   "movement": true,
   "defaultPaletteId": "crimson_slate",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "count", "min": 10.0, "max": 100.0, "default": 40.0, "type": "number" },
-    { "name": "max_size", "min": 20.0, "max": 200.0, "default": 100.0, "type": "number" },
-    { "name": "movement", "min": 0.0, "max": 100.0, "default": 30.0, "type": "number" },
+    { "name": "count", "min": 0.0, "max": 100.0, "default": 46.0, "type": "number" },
+    { "name": "max_size", "min": 20.0, "max": 220.0, "default": 110.0, "type": "number" },
+    { "name": "movement", "min": 0.0, "max": 100.0, "default": 12.0, "type": "number" },
     { "name": "chaos", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" }
   ],
   "elements": [
-    { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
+    { "id": "background", "name": "Background", "defaultColor": "#0d1117" },
     { "id": "spheres_shade", "name": "Sphere Shading", "defaultColor": "#eb556b" },
-    { "id": "contour", "name": "Outlines & Sparkles", "defaultColor": "#7599a4" }
+    { "id": "contour", "name": "Sphere Highlight", "defaultColor": "#f5a6b5" }
   ],
   "uuid": "stacked-balls-canvas-1"
 }*/`,
@@ -423,15 +440,16 @@ void main() {
   {
     header: `/*{
   "description": "Multicolor Terrain",
+  "category": "Lines & Terrain",
   "color": "black",
   "movement": true,
   "defaultPaletteId": "acid_matrix",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 0.8, "type": "number" },
-    { "name": "amplitude", "min": 30.0, "max": 300.0, "default": 140.0, "type": "number" },
-    { "name": "density", "min": 0.5, "max": 2.5, "default": 1.2, "type": "number" },
-    { "name": "ruggedness", "min": 0.5, "max": 3.0, "default": 1.8, "type": "number" },
-    { "name": "thickness", "min": 0.5, "max": 5.0, "default": 1.5, "type": "number" }
+    { "name": "amplitude", "min": 30.0, "max": 420.0, "default": 240.0, "type": "number" },
+    { "name": "density", "min": 0.5, "max": 2.5, "default": 1.3, "type": "number" },
+    { "name": "ruggedness", "min": 0.5, "max": 3.0, "default": 1.6, "type": "number" },
+    { "name": "thickness", "min": 0.5, "max": 5.0, "default": 1.6, "type": "number" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#0d1117" },
@@ -518,6 +536,7 @@ void main() {
   "color": "black",
   "movement": true,
   "defaultPaletteId": "monochrome_duo",
+  "category": "Text",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "font_size", "min": 10.0, "max": 60.0, "default": 16.0, "type": "number" },
@@ -528,8 +547,10 @@ void main() {
     { "name": "text_content", "default": "01", "type": "string" }
   ],
   "elements": [
-    { "id": "background", "name": "Background", "defaultColor": "#000000" },
-    { "id": "umbrella", "name": "Umbrella & Rain Text", "defaultColor": "#ffffff" }
+    { "id": "background", "name": "Background", "defaultColor": "#05060a" },
+    { "id": "umbrella", "name": "Rain Text", "defaultColor": "#8fd0ff" },
+    { "id": "canopy", "name": "Umbrella Canopy", "defaultColor": "#ff2d55" },
+    { "id": "figure", "name": "Figure & Pole", "defaultColor": "#e8e8f0" }
   ],
   "uuid": "text-umbrella-canvas-1"
 }*/`,
@@ -585,20 +606,23 @@ void main() {
   "color": "black",
   "movement": true,
   "defaultPaletteId": "monochrome_duo",
+  "category": "Text",
   "parameters": [
-    { "name": "speed", "min": 0.0, "max": 10.0, "default": 1.0, "type": "number" },
-    { "name": "font_size", "min": 10.0, "max": 100.0, "default": 24.0, "type": "number" },
-    { "name": "dragon_size", "min": 0.1, "max": 3.0, "default": 1.0, "type": "number" },
-    { "name": "chaos", "min": 0.0, "max": 10.0, "default": 1.0, "type": "number" },
-    { "name": "thickness", "min": 0.1, "max": 3.0, "default": 1.0, "type": "number" },
+    { "name": "speed", "min": 0.0, "max": 10.0, "default": 1.4, "type": "number" },
+    { "name": "font_size", "min": 8.0, "max": 60.0, "default": 20.0, "type": "number" },
+    { "name": "glyph_size", "min": 0.2, "max": 1.6, "default": 1.05, "type": "number" },
+    { "name": "invert", "min": 0.0, "max": 1.0, "default": 0.0, "type": "boolean" },
+    { "name": "line_gap", "min": 0.7, "max": 2.0, "default": 1.06, "type": "number" },
     { "name": "dir_x", "min": -5.0, "max": 5.0, "default": 0.0, "type": "number" },
     { "name": "dir_y", "min": -5.0, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "displacement", "min": 0.0, "max": 150.0, "default": 50.0, "type": "number" },
-    { "name": "text_content", "default": "学而不思则罔，思而不学则殆。 | 温故而知新，可以为师矣。 | 三人行，必有我师焉。择其善者而从之，其不善者而改之。 | 己所不欲，勿施于人。 | 君子坦荡荡，小人长戚戚。 | 君子和而不同，小人同而不和。 | 知之为知之，不知为不知，是知也。 | 逝者如斯夫，不舍昼夜。", "type": "string" }
+    { "name": "edge_glow", "min": 0.0, "max": 1.0, "default": 0.35, "type": "number" },
+    { "name": "glyph", "default": "字", "type": "string" },
+    { "name": "text_content", "default": "学而不思则罔，思而不学则殆。 温故而知新，可以为师矣。 三人行，必有我师焉。 己所不欲，勿施于人。 君子坦荡荡，小人长戚戚。 君子和而不同，小人同而不和。 知之为知之，不知为不知，是知也。 逝者如斯夫，不舍昼夜。 ", "type": "string" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#000000" },
-    { "id": "dragon", "name": "Dragon Typography", "defaultColor": "#ffffff" }
+    { "id": "dragon", "name": "Text", "defaultColor": "#ffffff" },
+    { "id": "accent", "name": "Glyph Edge", "defaultColor": "#ff2d55" }
   ],
   "uuid": "dragon-text-mask-canvas-1"
 }*/`,
@@ -749,21 +773,21 @@ void main() {
   {
     header: `/*{
   "description": "Ferrofluid",
-  "color": "white",
+  "category": "Psychedelic",
+  "color": "black",
   "movement": true,
-  "defaultPaletteId": "bauhaus_primary",
+  "defaultPaletteId": "coral_reef",
   "parameters": [
-    { "name": "blob_size", "min": 1.0, "max": 50.0, "default": 21.0 },
-    { "name": "blobs", "min": 1.0, "max": 10.0, "default": 1.0 },
-    { "name": "density", "min": 1.0, "max": 100.0, "default": 52.0 },
-    { "name": "speed", "min": 0.0, "max": 100.0, "default": 38.0 },
-    { "name": "opacity", "min": 0.0, "max": 1.0, "default": 1.0 }
+    { "name": "scale",      "min": 2.0,  "max": 14.0, "default": 6.0 },
+    { "name": "warp",       "min": 0.0,  "max": 2.0,  "default": 1.15 },
+    { "name": "line_width", "min": 0.02, "max": 0.35, "default": 0.11 },
+    { "name": "spots",      "min": 0.0,  "max": 1.0,  "default": 0.6 },
+    { "name": "speed",      "min": 0.0,  "max": 3.0,  "default": 0.35 }
   ],
   "elements": [
-    { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
-    { "id": "fluid", "name": "Liquid Ferrofluid", "defaultColor": "#e63946" },
-    { "id": "specular", "name": "Specular Highlight", "defaultColor": "#457b9d" },
-    { "id": "ambient", "name": "Ambient Base", "defaultColor": "#1d3557" }
+    { "id": "background", "name": "Base", "defaultColor": "#e0560f" },
+    { "id": "ink", "name": "Pattern", "defaultColor": "#0a0a0a" },
+    { "id": "accent", "name": "Highlight", "defaultColor": "#ffae5c" }
   ],
   "uuid": "ferrofluid-1"
 }*/`,
@@ -774,76 +798,67 @@ precision highp float;
 
 uniform float time;
 uniform vec2 resolution;
-uniform float blob_size;
-uniform float blobs;
-uniform float density;
+uniform float scale;
+uniform float warp;
+uniform float line_width;
+uniform float spots;
 uniform float speed;
-uniform float opacity;
 
 uniform vec3 u_color_0;
 uniform vec3 u_color_1;
 uniform vec3 u_color_2;
-uniform vec3 u_color_3;
 
 varying vec2 texCoord;
 
+// Fake reaction-diffusion (Gray-Scott "coral" regime): domain-warped fbm thresholded
+// into winding worms, plus scattered spots in the gaps. Single-pass, no feedback.
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float noise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    vec2 u = f*f*(3.0-2.0*f);
-    return mix(mix(hash(i + vec2(0.0,0.0)), hash(i + vec2(1.0,0.0)), u.x),
-               mix(hash(i + vec2(0.0,1.0)), hash(i + vec2(1.0,1.0)), u.x), u.y);
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
+               mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
 }
 float fbm(vec2 p) {
-    float f = 0.0;
-    float amp = 0.5;
-    for(int i=0; i<4; i++) {
-        f += amp * noise(p);
-        p *= 2.0;
-        amp *= 0.5;
-    }
-    return f;
+    float v = 0.0, a = 0.5;
+    for (int i = 0; i < 4; i++) { v += a * noise(p); p = p * 2.03 + vec2(1.7, 9.2); a *= 0.5; }
+    return v;
 }
 
 void main() {
-    vec2 uv = texCoord * 2.0 - 1.0;
+    vec2 uv = texCoord;
     uv.x *= resolution.x / resolution.y;
-    
-    float t = time * speed * 0.01;
-    
-    vec2 p = uv * (density * 0.1);
-    
-    vec2 q = vec2(fbm(p + vec2(0.0, t)), fbm(p + vec2(5.2, 1.3 - t)));
-    vec2 r = vec2(fbm(p + 4.0*q + vec2(1.7, 9.2)), fbm(p + 4.0*q + vec2(8.3, 2.8)));
-    
-    float n = fbm(p + 4.0*r);
-    
-    float ridges = abs(sin(n * blobs * 3.1415 + t));
-    ridges = smoothstep(0.0, blob_size * 0.01, ridges);
-    ridges = 1.0 - ridges;
-    
-    vec3 lightDir = normalize(vec3(1.0, 1.0, 0.5));
-    float eps = 0.01;
-    float nx = fbm(p + vec2(eps, 0.0) + 4.0*r) - n;
-    float ny = fbm(p + vec2(0.0, eps) + 4.0*r) - n;
-    vec3 normal = normalize(vec3(-nx, -ny, eps * 10.0));
-    
-    float diffuse = max(dot(normal, lightDir), 0.0);
-    float spec = pow(max(dot(reflect(-lightDir, normal), vec3(0.0, 0.0, 1.0)), 0.0), 16.0);
-    
-    vec3 cBg = (length(u_color_0) > 0.001) ? u_color_0 : vec3(1.0, 1.0, 1.0);
-    vec3 cFluid = (length(u_color_1) > 0.001) ? u_color_1 : vec3(0.9, 0.22, 0.27);
-    vec3 cSpec = (length(u_color_2) > 0.001) ? u_color_2 : vec3(0.27, 0.48, 0.62);
-    vec3 cAmb = (length(u_color_3) > 0.001) ? u_color_3 : vec3(0.11, 0.21, 0.34);
+    float t = time * speed * 0.12;
 
-    vec3 diffuseColor = cFluid * diffuse + cAmb * (1.0 - diffuse) * 0.4;
-    vec3 specularColor = cSpec * spec * 1.5;
-    vec3 fluidColor = (diffuseColor + specularColor) * ridges * 1.5;
-    
-    vec3 color = mix(cBg, fluidColor, ridges);
-    
-    gl_FragColor = vec4(color, opacity);
+    vec2 p = uv * scale;
+    vec2 q = vec2(fbm(p * 0.8 + vec2(0.0, t)), fbm(p * 0.8 + vec2(5.2, 1.3) - t));
+    vec2 wv = vec2(fbm(p * 0.75 + 1.4 * q + 1.7), fbm(p * 0.75 + 1.4 * q + 8.3));
+
+    // ridge field: a linear ramp (regular spacing) + warp (wiggle + splits/merges)
+    float rf = (p.x * 0.6 + p.y * 0.18) + (0.8 + warp * 1.5) * (wv.x - wv.y);
+    float line = abs(fract(rf) - 0.5) * 2.0;              // 0 on a ridge, 1 in the trough
+    float lw = clamp(line_width, 0.02, 0.35) * 1.7;
+    float worm = smoothstep(lw + 0.05, lw, line);
+
+    // round spots scattered through the troughs, denser where a low-freq field peaks
+    float dotF = fbm(p * 2.2 + wv * 1.2 + 31.0);
+    float dens = mix(0.7, 1.25, smoothstep(0.32, 0.62, fbm(p * 0.3 + 7.0)));
+    float sThr = mix(0.62, 0.44, clamp(spots, 0.0, 1.0));
+    float spot = smoothstep(sThr, sThr + 0.06, dotF) * dens * (1.0 - worm) * step(0.02, spots);
+
+    float ink = clamp(max(worm, spot), 0.0, 1.0);
+
+    vec3 cBase = (length(u_color_0) > 0.001) ? u_color_0 : vec3(0.88, 0.34, 0.06);
+    vec3 cInk  = (length(u_color_1) > 0.001) ? u_color_1 : vec3(0.04, 0.04, 0.04);
+    vec3 cHi   = (length(u_color_2) > 0.001) ? u_color_2 : vec3(1.0, 0.68, 0.36);
+
+    vec2 c2 = texCoord - 0.5;
+    float vig = 1.0 - dot(c2, c2) * 0.75;
+    float shade = fbm(p * 0.25 + 12.0);
+    vec3 fieldCol = mix(cBase * 0.9, mix(cBase, cHi, 0.35), shade) * vig;
+
+    vec3 col = mix(fieldCol, cInk, ink);
+    gl_FragColor = vec4(col, 1.0);
 }
 `
   },
@@ -1030,18 +1045,18 @@ void main() {
   "color": "black",
   "movement": true,
   "defaultPaletteId": "monochrome_duo",
+  "category": "Psychedelic",
   "parameters": [
-    { "name": "count",      "min": 2,   "max": 12,  "default": 3 },
-    { "name": "ball_size",  "min": 10,  "max": 150, "default": 15 },
-    { "name": "radius",     "min": 0.1, "max": 2.0, "default": 1.0 },
-    { "name": "chaos",      "min": 0.0, "max": 1.0, "default": 0.3 },
-    { "name": "speed",      "min": 0.1, "max": 3.0, "default": 0.6 },
-    { "name": "diffusion",  "min": 0.1, "max": 0.95,"default": 0.85 }
+    { "name": "count",      "min": 2,   "max": 12,  "default": 6 },
+    { "name": "ball_size",  "min": 2,   "max": 40,  "default": 16 },
+    { "name": "radius",     "min": 0.2, "max": 2.0, "default": 1.0 },
+    { "name": "chaos",      "min": 0.0, "max": 1.0, "default": 0.35 },
+    { "name": "speed",      "min": 0.1, "max": 3.0, "default": 0.5 },
+    { "name": "diffusion",  "min": 0.0, "max": 1.0, "default": 0.25 }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#000000" },
-    { "id": "metaballs", "name": "Liquid Blobs", "defaultColor": "#ffffff" },
-    { "id": "filaments", "name": "Sticky Tendrils", "defaultColor": "#ffffff" }
+    { "id": "blobs", "name": "Bubbles", "defaultColor": "#ffffff" }
   ],
   "uuid": "stickiness-canvas-gen-1"
 }*/`,
@@ -1064,50 +1079,48 @@ uniform vec3 u_color_1;
 
 varying vec2 texCoord;
 
-float df(vec2 v, float r) {
-    float d = length(v);
-    return r / max(d, 0.0001);
+// Flat 2D bubbles on a slow ring, each breathing in and out of the centre at its
+// own phase so neighbours keep kissing (sticky necks) and pulling apart. Pure
+// metaball threshold + contour ring -> clean graphic 2D look, no 3D shading.
+void field(vec2 uv, out float f) {
+    f = 0.0;
+    float N = clamp(floor(count), 2.0, 12.0);
+    float A = radius * 0.95;                                   // drift amplitude
+    float R = (0.05 + ball_size * 0.006) * (0.8 + 0.5 * (4.0 / N)); // small bubble radius
+    float t = time * speed;
+    for (int i = 0; i < 12; i++) {
+        if (float(i) >= N) break;
+        float fi = float(i);
+        // unique slow Lissajous drift per bubble -> they wander past each other,
+        // forming and breaking liquid necks (surface tension) as they pass
+        vec2 c = vec2(sin(t * (0.35 + 0.11 * fi) + fi * 1.7) * A * 0.82,
+                      cos(t * (0.31 + 0.13 * fi) + fi * 3.3) * A * 0.60);
+        c += vec2(sin(t * (1.3 + fi) + fi), cos(t * (1.1 + fi) - fi)) * A * 0.10 * chaos;
+        vec2 d = uv - c;
+        f += R * R / (dot(d, d) + 1e-4);
+    }
 }
 
 void main(void) {
     vec2 uv = texCoord * 2.0 - 1.0;
     uv.x *= resolution.x / resolution.y;
 
-    float r = ball_size * 0.002; 
-    float glow = 0.6 + (1.0 - diffusion) * 40.0;
-    
-    float col = 0.0;
-    float totalBalls = floor(count);
+    float f;
+    field(uv, f);
 
-    for (int i = 0; i < 50; i++) {
-        if (float(i) >= totalBalls) break;
+    float aa = mix(0.012, 0.09, clamp(diffusion, 0.0, 1.0));
+    float m = smoothstep(1.0 - aa, 1.0 + aa, f);            // 1 inside the goo
+    float edge = smoothstep(0.13, 0.0, abs(f - 1.0));       // band hugging the surface
 
-        float fi = float(i);
-        float t = time * speed;
-        float id = fi / totalBalls; 
+    vec3 cBg   = (length(u_color_0) > 0.001) ? u_color_0 : vec3(0.0);
+    vec3 cBlob = (length(u_color_1) > 0.001) ? u_color_1 : vec3(1.0);
 
-        vec2 regularPos = vec2(
-            cos(t + id * 6.28),
-            sin(t + id * 6.28)
-        ) * radius;
-
-        vec2 chaoticPos = vec2(
-            sin(t * 2.5 + id * 13.0) * cos(t * 1.5), 
-            cos(t * 3.2 + id * 7.0) * sin(t * 0.9)
-        ) * radius;
-
-        vec2 finalPos = mix(regularPos, chaoticPos, chaos);
-        col += df(uv - finalPos, r);
-    }
-
-    float t_thresh = 0.1;
-    col = smoothstep(0.0, 1.0, (col - t_thresh) / t_thresh);
-    col = pow(col, glow);
-
-    vec3 cBg = (length(u_color_0) > 0.001) ? u_color_0 : vec3(0.0, 0.0, 0.0);
-    vec3 cFg = (length(u_color_1) > 0.001) ? u_color_1 : vec3(1.0, 1.0, 1.0);
-    vec3 colRGB = mix(cBg, cFg, clamp(col, 0.0, 1.0));
-    gl_FragColor = vec4(colRGB, 1.0);
+    vec3 col = mix(cBg, cBlob, m);
+    col = mix(col, cBlob * 0.42, edge);                     // darker contour on every bubble
+    // faint sheen just inside the surface -> soap-bubble read
+    float sheen = smoothstep(0.0, 0.05, f - 1.0) * (1.0 - smoothstep(0.05, 0.30, f - 1.0));
+    col += cBlob * sheen * 0.22 * m;
+    gl_FragColor = vec4(col, 1.0);
 }`
   },
   {
@@ -1151,8 +1164,377 @@ void main(void) {
   "uuid": "topography-canvas-gen-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Kinetic Type",
+  "category": "Text",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo",
+  "parameters": [
+    { "name": "word_count", "min": 2.0,  "max": 40.0,  "default": 12.0, "type": "number" },
+    { "name": "size",       "min": 20.0, "max": 260.0, "default": 120.0, "type": "number" },
+    { "name": "speed",      "min": 0.0,  "max": 100.0, "default": 32.0, "type": "number" },
+    { "name": "gravity",    "min": -100.0, "max": 100.0, "default": 0.0, "type": "number" },
+    { "name": "spin",       "min": 0.0,  "max": 100.0, "default": 18.0, "type": "number" },
+    { "name": "gather",     "min": 0.0,  "max": 1.0,   "default": 0.0, "type": "number" },
+    { "name": "bounce",     "min": 0.2,  "max": 1.0,   "default": 0.92, "type": "number" },
+    { "name": "weight",     "min": 0.0,  "max": 1.0,   "default": 0.0, "type": "number" },
+    { "name": "trail",      "min": 0.0,  "max": 1.0,   "default": 0.0, "type": "number" },
+    { "name": "text",       "default": "TYPE MOTION FLOW PULSE FORM SHIFT", "type": "string" },
+    { "name": "impact",     "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "words", "name": "Words", "defaultColor": "#ffffff" },
+    { "id": "accent", "name": "Accent Word", "defaultColor": "#eb556b" }
+  ],
+  "uuid": "kinetic-type-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Circle Bloom",
+  "category": "Geometric",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo",
+  "parameters": [
+    { "name": "max_count", "min": 0.0,  "max": 60.0,  "default": 26.0, "type": "number" },
+    { "name": "max_size",  "min": 8.0,  "max": 600.0, "default": 130.0, "type": "number" },
+    { "name": "speed",     "min": 0.1,  "max": 8.0,   "default": 1.4, "type": "number" },
+    { "name": "delay",     "min": 0.0,  "max": 3.0,   "default": 0.3, "type": "number" },
+    { "name": "fade",      "min": 0.0,  "max": 1.0,   "default": 0.55, "type": "number" },
+    { "name": "outline",   "min": 0.0,  "max": 1.0,   "default": 0.0, "type": "number" },
+    { "name": "bloom",     "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "circles", "name": "Circles", "defaultColor": "#ffffff" },
+    { "id": "accent", "name": "Accent Circle", "defaultColor": "#eb556b" }
+  ],
+  "uuid": "circle-bloom-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Hex Grid",
+  "category": "Geometric",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "cyberpunk_neon",
+  "parameters": [
+    { "name": "density",   "min": 4.0,  "max": 30.0,  "default": 12.0, "type": "number" },
+    { "name": "lit_count", "min": 0.0,  "max": 200.0, "default": 26.0, "type": "number" },
+    { "name": "shuffle",   "min": 0.0,  "max": 5.0,   "default": 0.9, "type": "number" },
+    { "name": "gap",       "min": 0.0,  "max": 0.4,   "default": 0.08, "type": "number" },
+    { "name": "glow",      "min": 0.0,  "max": 1.0,   "default": 0.5, "type": "number" },
+    { "name": "outline",   "min": 0.0,  "max": 1.0,   "default": 0.3, "type": "number" },
+    { "name": "flip",      "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#0a0a12" },
+    { "id": "grid", "name": "Grid Cells", "defaultColor": "#2a1a3a" },
+    { "id": "lit", "name": "Lit Cells", "defaultColor": "#00f0ff" }
+  ],
+  "uuid": "hex-grid-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Mosaic Grid",
+  "category": "Geometric",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "tokyo_synth",
+  "parameters": [
+    { "name": "columns",   "min": 2.0,  "max": 40.0,  "default": 16.0, "type": "number" },
+    { "name": "lit_count", "min": 0.0,  "max": 400.0, "default": 42.0, "type": "number" },
+    { "name": "shuffle",   "min": 0.0,  "max": 5.0,   "default": 0.6, "type": "number" },
+    { "name": "gap",       "min": 0.0,  "max": 0.3,   "default": 0.05, "type": "number" },
+    { "name": "checker",   "min": 0.0,  "max": 1.0,   "default": 0.0, "type": "number" },
+    { "name": "round",     "min": 0.0,  "max": 0.5,   "default": 0.0, "type": "number" },
+    { "name": "flip",      "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#1a1b26" },
+    { "id": "grid", "name": "Grid Cells", "defaultColor": "#2e2f45" },
+    { "id": "lit", "name": "Lit Cells", "defaultColor": "#f7768e" }
+  ],
+  "uuid": "square-grid-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Reaction Diffusion",
+  "category": "Psychedelic",
+  "color": "white",
+  "movement": true,
+  "defaultPaletteId": "risograph_paper",
+  "parameters": [
+    { "name": "sim_speed",  "min": 1.0,   "max": 30.0,  "default": 14.0,   "type": "number" },
+    { "name": "feed",       "min": 0.02,  "max": 0.08,  "default": 0.0545, "type": "number" },
+    { "name": "kill",       "min": 0.045, "max": 0.07,  "default": 0.062,  "type": "number" },
+    { "name": "breathe",    "min": 0.0,   "max": 0.02,  "default": 0.006,  "type": "number" },
+    { "name": "resolution", "min": 70.0,  "max": 200.0, "default": 120.0,  "type": "number" },
+    { "name": "threshold",  "min": 0.05,  "max": 0.5,   "default": 0.22,   "type": "number" },
+    { "name": "reseed",     "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Paper", "defaultColor": "#f2efe6" },
+    { "id": "ink", "name": "Ink", "defaultColor": "#141414" }
+  ],
+  "uuid": "reaction-diffusion-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Voronoi Cells",
+  "category": "Lines & Terrain",
+  "color": "white",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo_white",
+  "parameters": [
+    { "name": "seeds",       "min": 8.0,  "max": 80.0, "default": 34.0, "type": "number" },
+    { "name": "drift",       "min": 0.0,  "max": 3.0,  "default": 1.0,  "type": "number" },
+    { "name": "line_weight", "min": 0.5,  "max": 3.0,  "default": 1.0,  "type": "number" },
+    { "name": "highlight",   "min": 0.0,  "max": 1.0,  "default": 1.0,  "type": "number" },
+    { "name": "reseed",      "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Page", "defaultColor": "#ffffff" },
+    { "id": "lines", "name": "Cell Edges", "defaultColor": "#000000" },
+    { "id": "highlight", "name": "Centre Cell", "defaultColor": "#ff3b00" }
+  ],
+  "uuid": "voronoi-cells-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Contour Isolines",
+  "category": "Lines & Terrain",
+  "color": "white",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo_white",
+  "parameters": [
+    { "name": "levels",      "min": 5.0,  "max": 26.0, "default": 14.0, "type": "number" },
+    { "name": "zoom",        "min": 0.4,  "max": 3.0,  "default": 1.0,  "type": "number" },
+    { "name": "crawl",       "min": 0.0,  "max": 3.0,  "default": 1.0,  "type": "number" },
+    { "name": "line_weight", "min": 0.4,  "max": 2.5,  "default": 1.0,  "type": "number" },
+    { "name": "label",       "default": "SURVEY / FIELD NOTES / SECTOR 07 / SHEET 1 OF 1", "type": "string" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Paper", "defaultColor": "#ede9e2" },
+    { "id": "lines", "name": "Contours", "defaultColor": "#1a1a1a" },
+    { "id": "label", "name": "Type Block", "defaultColor": "#1a1a1a" }
+  ],
+  "uuid": "contour-lines-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Neon Labyrinth",
+  "category": "Retro",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "cyberpunk_neon",
+  "parameters": [
+    { "name": "corridor_density", "min": 0.0, "max": 1.0, "default": 0.55, "type": "number" },
+    { "name": "ghost_aggression", "min": 0.0, "max": 1.0, "default": 0.5,  "type": "number" },
+    { "name": "glow_decay",       "min": 0.0, "max": 1.0, "default": 0.6,  "type": "number" },
+    { "name": "wrap_frequency",   "min": 0.0, "max": 6.0, "default": 2.0,  "type": "number" },
+    { "name": "power_surge",  "default": 0, "type": "action" },
+    { "name": "grid_reseed",  "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Void", "defaultColor": "#05060f" },
+    { "id": "walls", "name": "Maze Walls", "defaultColor": "#2b1a63" },
+    { "id": "pellets", "name": "Pellets", "defaultColor": "#ffe600" },
+    { "id": "ghosts", "name": "Entities & Trail", "defaultColor": "#ff2e88" }
+  ],
+  "uuid": "neon-labyrinth-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Pixel Swarm",
+  "category": "Retro",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "acid_matrix",
+  "parameters": [
+    { "name": "march_speed",     "min": 0.1, "max": 4.0, "default": 1.0, "type": "number" },
+    { "name": "row_spacing",     "min": 0.4, "max": 2.0, "default": 1.0, "type": "number" },
+    { "name": "barrage_rate",    "min": 0.0, "max": 3.0, "default": 1.0, "type": "number" },
+    { "name": "jitter_amplitude","min": 0.0, "max": 1.0, "default": 0.15,"type": "number" },
+    { "name": "step_down",     "default": 0, "type": "action" },
+    { "name": "scatter_strike","default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#04120a" },
+    { "id": "invaders", "name": "Invaders", "defaultColor": "#39ff88" },
+    { "id": "bullets", "name": "Barrage", "defaultColor": "#eaffea" },
+    { "id": "accent", "name": "Accent", "defaultColor": "#00b34a" }
+  ],
+  "uuid": "pixel-swarm-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Tetromino Cascade",
+  "category": "Retro",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "bauhaus_primary",
+  "parameters": [
+    { "name": "fall_velocity",     "min": 0.2, "max": 6.0, "default": 1.6, "type": "number" },
+    { "name": "grid_chaos",        "min": 0.0, "max": 1.0, "default": 0.15,"type": "number" },
+    { "name": "settle_bounciness", "min": 0.0, "max": 1.0, "default": 0.3, "type": "number" },
+    { "name": "line_density",      "min": 0.0, "max": 0.9, "default": 0.25,"type": "number" },
+    { "name": "line_clear",     "default": 0, "type": "action" },
+    { "name": "gravity_invert", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Chamber", "defaultColor": "#0c0c10" },
+    { "id": "blocks", "name": "Blocks", "defaultColor": "#e63946" },
+    { "id": "grid", "name": "Well Grid", "defaultColor": "#1d3557" },
+    { "id": "flash", "name": "Clear Flash", "defaultColor": "#f1faee" }
+  ],
+  "uuid": "tetromino-cascade-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Procedural Hillscape",
+  "category": "Retro",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "retro_amber",
+  "parameters": [
+    { "name": "terrain_roughness", "min": 0.0, "max": 1.0, "default": 0.5, "type": "number" },
+    { "name": "jump_gravity",      "min": 0.2, "max": 2.5, "default": 1.0, "type": "number" },
+    { "name": "pipe_density",      "min": 0.0, "max": 1.0, "default": 0.4, "type": "number" },
+    { "name": "cloud_parallax",    "min": 0.0, "max": 1.0, "default": 0.5, "type": "number" },
+    { "name": "coin_burst",   "default": 0, "type": "action" },
+    { "name": "scroll_rush",  "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Sky", "defaultColor": "#1a2a4a" },
+    { "id": "terrain", "name": "Terrain", "defaultColor": "#3aa856" },
+    { "id": "structures", "name": "Pipes & Blocks", "defaultColor": "#2e7d32" },
+    { "id": "coins", "name": "Coins & Sprites", "defaultColor": "#ffd23f" }
+  ],
+  "uuid": "hillscape-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Orbit Deflection",
+  "category": "Retro",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "tokyo_synth",
+  "parameters": [
+    { "name": "brick_ring_count",     "min": 1.0, "max": 8.0,  "default": 4.0, "type": "number" },
+    { "name": "ball_speed_multiplier","min": 1.0, "max": 1.15, "default": 1.03,"type": "number" },
+    { "name": "paddle_curvature",     "min": 0.0, "max": 1.0,  "default": 0.5, "type": "number" },
+    { "name": "trail_viscosity",      "min": 0.0, "max": 1.0,  "default": 0.5, "type": "number" },
+    { "name": "multi_ball",       "default": 0, "type": "action" },
+    { "name": "brick_detonation", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Arena", "defaultColor": "#12131f" },
+    { "id": "bricks", "name": "Brick Rings", "defaultColor": "#7aa2f7" },
+    { "id": "ball", "name": "Projectiles", "defaultColor": "#f7768e" },
+    { "id": "paddle", "name": "Paddles", "defaultColor": "#bb9af7" }
+  ],
+  "uuid": "orbit-deflection-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Centipede Garden",
+  "category": "Retro",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "acid_matrix",
+  "parameters": [
+    { "name": "segment_count",    "min": 4.0,  "max": 40.0, "default": 16.0, "type": "number" },
+    { "name": "obstacle_density", "min": 0.0,  "max": 1.0,  "default": 0.4,  "type": "number" },
+    { "name": "turn_radius",      "min": 0.0,  "max": 1.0,  "default": 0.3,  "type": "number" },
+    { "name": "spore_growth_rate","min": 0.0,  "max": 3.0,  "default": 1.0,  "type": "number" },
+    { "name": "segment_split", "default": 0, "type": "action" },
+    { "name": "spore_bloom",   "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Field", "defaultColor": "#071206" },
+    { "id": "worm", "name": "Crawlers", "defaultColor": "#39ff88" },
+    { "id": "obstacles", "name": "Obstacle Nodes", "defaultColor": "#b15cff" },
+    { "id": "accent", "name": "Spores", "defaultColor": "#e6ff5c" }
+  ],
+  "uuid": "centipede-garden-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   }
 ];
+
+// Curated grouping for the asset browser. Falls back to metadata.category then "Other".
+export const GENERATIVE_CATEGORIES: Record<string, string> = {
+  // Geometric
+  'dancing-cubes-canvas-1': 'Geometric',
+  'cubes-matrix-3d-1': 'Geometric',
+  'brutalist-grid-1': 'Geometric',
+  'isometric-buildings-canvas-1': 'Geometric',
+  'squares-noise-canvas-1': 'Geometric',
+  '3d-polygon-neon-1': 'Geometric',
+  '3d-debris-canvas-1': 'Geometric',
+  'random-symbols-canvas-1': 'Geometric',
+  // Psychedelic
+  'shader-clouds-1': 'Psychedelic',
+  'ferrofluid-1': 'Psychedelic',
+  'ferrofluid-3d-1': 'Psychedelic',
+  'stickiness-canvas-gen-1': 'Psychedelic',
+  'growing-circles-canvas-1': 'Psychedelic',
+  'stacked-balls-canvas-1': 'Psychedelic',
+  'reaction-diffusion-canvas-1': 'Psychedelic',
+  // Text
+  'kinetic-type-canvas-1': 'Text',
+  'text-umbrella-canvas-1': 'Text',
+  'text-water-drop-canvas-1': 'Text',
+  'text-boat-sea-canvas-1': 'Text',
+  'dragon-text-mask-canvas-1': 'Text',
+  'number-paths-canvas-1': 'Text',
+  // Lines & Terrain
+  'vein-labyrinth-canvas-1': 'Lines & Terrain',
+  'terrain-lines-canvas-1': 'Lines & Terrain',
+  'topography-canvas-gen-1': 'Lines & Terrain',
+  'waves-canvas-gen-1': 'Lines & Terrain',
+  'arcs-auto-tail-v4': 'Lines & Terrain',
+  'voronoi-cells-canvas-1': 'Lines & Terrain',
+  'contour-lines-canvas-1': 'Lines & Terrain',
+  // Retro
+  'neon-labyrinth-canvas-1': 'Retro',
+  'pixel-swarm-canvas-1': 'Retro',
+  'tetromino-cascade-canvas-1': 'Retro',
+  'hillscape-canvas-1': 'Retro',
+  'orbit-deflection-canvas-1': 'Retro',
+  'centipede-garden-canvas-1': 'Retro',
+};
+
+export const GENERATIVE_CATEGORY_ORDER = ['Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];
 
 export function parseGeneratives(): GenerativeDefinition[] {
   return GENERATIVES_DATA.map(g => {
@@ -1175,10 +1557,12 @@ export function parseGeneratives(): GenerativeDefinition[] {
       { id: "highlight", name: "Highlights & Lines", defaultColor: "#f5a6b5" }
     ];
 
+    const uuid = metadata.uuid || Math.random().toString();
     return {
-      uuid: metadata.uuid || Math.random().toString(),
+      uuid,
       description: metadata.description || 'Generative',
       color: metadata.color || 'black',
+      category: metadata.category || GENERATIVE_CATEGORIES[uuid] || 'Other',
       movement: metadata.movement || false,
       parameters: metadata.parameters || [],
       elements: metadata.elements || defaultElements,
