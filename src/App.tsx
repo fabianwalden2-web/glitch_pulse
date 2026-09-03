@@ -1785,6 +1785,9 @@ export default function App() {
   const gridLitStateRef = useRef<Record<string, { lit: number[], lastShuffle: number, lastAction: number, total: number }>>({});
   const stackedBallsStateRef = useRef<Record<string, { balls: any[], lastSpawn: number }>>({});
   const reactionDiffusionStateRef = useRef<Record<string, any>>({});
+  const cubesMatrixStateRef = useRef<Record<string, any>>({});
+  const debrisGravityStateRef = useRef<Record<string, any>>({});
+  const brutalistLuckRef = useRef<Record<string, any>>({});
   const voronoiStateRef = useRef<Record<string, any>>({});
   const contourStateRef = useRef<Record<string, any>>({});
   const neonLabyrinthStateRef = useRef<Record<string, any>>({});
@@ -4193,6 +4196,12 @@ export default function App() {
                 const centerX = targetW / 2;
                 const centerY = targetH / 2;
 
+                // Whole scene rotated 180 degrees
+                ctx.save();
+                ctx.translate(centerX, centerY);
+                ctx.rotate(Math.PI);
+                ctx.translate(-centerX, -centerY);
+
                 // 3D Cubes generation & Depth Sorting
                 interface DancingCubeItem {
                     gx: number;
@@ -4407,6 +4416,7 @@ export default function App() {
                     }
                 }
 
+                ctx.restore(); // end 180-degree scene rotation
                 element = canvas;
             } else if (def.uuid === 'cubes-matrix-3d-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
@@ -4416,29 +4426,39 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              const cmBg = resolvedGenerativeColors['background'] || '#ffffff';
-              const cmFg = resolvedGenerativeColors['cubes'] || resolvedGenerativeColors['foreground'] || '#eb556b';
-              const cmRgb = hexToRgb(cmFg);
+              const cmBg = resolvedGenerativeColors['background'] || '#2e2117';
+              const cmColA = hexToRgb(resolvedGenerativeColors['cube_a'] || resolvedGenerativeColors['cubes'] || resolvedGenerativeColors['primary'] || '#cf7d2a');
+              const cmColB = hexToRgb(resolvedGenerativeColors['cube_b'] || '#4de8e0');
+              const cmColC = hexToRgb(resolvedGenerativeColors['cube_c'] || '#df9bf3');
+              const cmPalette = [cmColA, cmColB, cmColC];
               if (!isTransparentColor(cmBg)) {
                   ctx.fillStyle = cmBg;
                   ctx.fillRect(0, 0, targetW, targetH);
               }
-              
-              const { speed, rotation, count, cube_size, spacing, size_randomization, dispersion, opacity } = modifiedSettings;
+
+              const { speed, rotation, count, cube_size, spacing, dispersion, opacity, reshuffle } = modifiedSettings;
               const spd = speed ?? 1.0;
               const rotVal = rotation ?? 0.0;
               const n = Math.max(1, Math.min(6, Math.round(count ?? 3)));
               const baseSz = cube_size ?? 64.0;
               const spc = spacing ?? 55.0;
-              const sizeRand = size_randomization ?? 0.5;
               const disp = dispersion ?? 90.0;
               const alpha = opacity ?? 0.70;
               const t = nowSec * spd;
-              
+
+              // Reshuffle action -> new per-layer seed scrambling positions, colours & directions
+              const cmAction = Number(reshuffle ?? 0);
+              if (!cubesMatrixStateRef.current[layer.id]) cubesMatrixStateRef.current[layer.id] = { shuf: 0, lastAction: cmAction };
+              const cmSt = cubesMatrixStateRef.current[layer.id];
+              if (cmAction > cmSt.lastAction) { cmSt.shuf = (cmSt.shuf + 1) * 2.399 + Math.random() * 40; cmSt.lastAction = cmAction; }
+              const shuf = cmSt.shuf;
+              const cmRand = (s: number) => { const x = Math.sin(s * 12.9898 + 78.233 + shuf * 3.71) * 43758.5453; return x - Math.floor(x); };
+
               // Standard Isometric angles (35.264 deg pitch, 45 deg yaw)
-              // Rotation parameter rotates around the vertical Y axis (default 0 = static isometric view)
+              // `rotation` is a manual yaw offset that always applies (works with speed at 0);
+              // `speed` adds a continuous auto-spin on top.
               const rotX = 0.61548; // Math.atan(1 / Math.SQRT2)
-              const rotY = (Math.PI / 4) + t * rotVal * 0.6;
+              const rotY = (Math.PI / 4) + t * 0.6 + rotVal * (Math.PI * 2 / 5);
               const rotZ = 0.0;
               
               // Light direction (from upper right front for isometric shading)
@@ -4483,9 +4503,7 @@ export default function App() {
               
               const allFaces: QuadFace[] = [];
               const half = (n - 1) / 2.0;
-              
-              const baseCol = cmRgb;
-              
+
               const localVerts = [
                   { x: -1, y: -1, z: -1 },
                   { x:  1, y: -1, z: -1 },
@@ -4510,17 +4528,19 @@ export default function App() {
                   for (let iy = 0; iy < n; iy++) {
                       for (let iz = 0; iz < n; iz++) {
                           const seed = ix * 73.1 + iy * 31.7 + iz * 19.3 + 5.7;
-                          
+                          const cubeColRgb = cmPalette[Math.floor(cmRand(seed * 1.7 + 4.2) * 3) % 3];
+
                           const stepDist = baseSz + spc;
-                          const bx = (ix - half) * stepDist;
-                          const by = (iy - half) * stepDist;
-                          const bz = (iz - half) * stepDist;
-                          
-                          const sizeJitter = Math.sin(seed * 7.1) * 0.5 + 0.5;
-                          const curRadius = (baseSz / 2) * (1.0 - sizeRand * 0.55 + sizeRand * sizeJitter * 1.1);
-                          
+                          const bx = (ix - half) * stepDist + (cmRand(seed + 11.1) - 0.5) * stepDist * 1.35 * (shuf > 0 ? 1 : 0);
+                          const by = (iy - half) * stepDist + (cmRand(seed + 22.2) - 0.5) * stepDist * 1.35 * (shuf > 0 ? 1 : 0);
+                          const bz = (iz - half) * stepDist + (cmRand(seed + 33.3) - 0.5) * stepDist * 1.35 * (shuf > 0 ? 1 : 0);
+
+                          // Fixed ~20% size variance (largest / smallest ≈ 1.1 / 0.9)
+                          const sizeJitter = cmRand(seed * 7.1 + 1.3);
+                          const curRadius = (baseSz / 2) * (0.9 + 0.2 * sizeJitter);
+
                           // Dispersion: random axis direction (+X, -X, +Y, -Y, +Z, -Z)
-                          const dirChoice = Math.floor((Math.sin(seed * 13.3) * 0.5 + 0.5) * 6);
+                          const dirChoice = Math.floor(cmRand(seed * 13.3 + 2.1) * 6);
                           const dispPulse = Math.sin(t * 1.5 + seed * 2.3) * 0.5 + 0.5;
                           const dispAmount = disp * dispPulse;
                           
@@ -4559,15 +4579,15 @@ export default function App() {
                               const dotLight = rotNorm.x * lightNorm.x + rotNorm.y * lightNorm.y + rotNorm.z * lightNorm.z;
                               const lightFactor = Math.max(0.25, Math.min(1.0, 0.65 + dotLight * 0.35));
                               
-                              const r = Math.round(baseCol.r * lightFactor);
-                              const g = Math.round(baseCol.g * lightFactor);
-                              const b = Math.round(baseCol.b * lightFactor);
-                              
+                              const r = Math.round(cubeColRgb.r * lightFactor);
+                              const g = Math.round(cubeColRgb.g * lightFactor);
+                              const b = Math.round(cubeColRgb.b * lightFactor);
+
                               const faceAlpha = isFront ? (alpha * 0.85) : (alpha * 0.35);
                               const strokeAlpha = isFront ? Math.min(1.0, alpha * 1.1) : (alpha * 0.4);
-                              
+
                               const fillColor = `rgba(${r}, ${g}, ${b}, ${faceAlpha})`;
-                              const strokeColor = `rgba(${cmRgb.r}, ${cmRgb.g}, ${cmRgb.b}, ${strokeAlpha})`;
+                              const strokeColor = `rgba(${cubeColRgb.r}, ${cubeColRgb.g}, ${cubeColRgb.b}, ${strokeAlpha})`;
                               
                               const centerZ = (p0.z + p1.z + p2.z + p3.z) / 4.0;
                               
@@ -5905,20 +5925,42 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              const debBg = resolvedGenerativeColors['background'] || '#000000';
-              const debFg = resolvedGenerativeColors['debris'] || resolvedGenerativeColors['foreground'] || '#ffffff';
+              const debBg = resolvedGenerativeColors['background'] || '#e0560f';
+              const debFg = resolvedGenerativeColors['debris'] || resolvedGenerativeColors['foreground'] || '#0a0a0a';
               const debFgRgb = hexToRgb(debFg);
+              const debFgAltRgb = hexToRgb(resolvedGenerativeColors['debris_alt'] || '#ffae5c');
               if (!isTransparentColor(debBg)) {
                   ctx.fillStyle = debBg;
                   ctx.fillRect(0, 0, targetW, targetH);
               }
-              
-              const { count, scatter, speed, size } = modifiedSettings;
+
+              const { count, scatter, speed, size, transparency, gravity } = modifiedSettings;
               const num = Math.floor(count ?? 80);
               const scat = scatter ?? 400;
               const spd = speed ?? 1.0;
               const sz = size ?? 1.0;
+              const debAlpha = 1.0 - Math.max(0, Math.min(1, transparency ?? 0)) * 0.88;
               const t = nowSec * spd;
+
+              // Gravity action: 1st press -> everything falls; next press -> reverses back into place.
+              const gravAction = Number(gravity ?? 0);
+              if (!debrisGravityStateRef.current[layer.id]) debrisGravityStateRef.current[layer.id] = { mode: 'idle', startT: 0, lastAction: gravAction };
+              const gSt = debrisGravityStateRef.current[layer.id];
+              if (gravAction > gSt.lastAction) {
+                  gSt.lastAction = gravAction;
+                  gSt.mode = gSt.mode === 'falling' ? 'rising' : 'falling';
+                  gSt.startT = nowSec;
+              }
+              let gravP = 0; // 0 = home, 1 = fully fallen
+              if (gSt.mode === 'falling') {
+                  const e = Math.min(1.6, nowSec - gSt.startT);
+                  gravP = Math.min(1, (e * e) / 1.9);        // accelerating fall
+              } else if (gSt.mode === 'rising') {
+                  const e = nowSec - gSt.startT;
+                  gravP = Math.max(0, 1 - e / 1.1);
+                  gravP = gravP * gravP * (3 - 2 * gravP);    // ease
+                  if (gravP <= 0.001) gSt.mode = 'idle';
+              }
               
               const project = (p: any, camZ: number) => {
                  const f = 600 / (600 + p.z + camZ);
@@ -5934,14 +5976,17 @@ export default function App() {
                  const rOffset = scat * (Math.sin(seed*7.7)*0.5+0.5);
                  const angle = t*0.5 + seed*11.1;
                  const yPos = (Math.sin(seed*13.3) * scat * 1.5);
-                 
+
                  const cx = Math.sin(angle) * rOffset;
-                 const cy = yPos + Math.sin(t + seed)*50;
+                 const homeCy = yPos + Math.sin(t + seed)*50;
+                 // ground level below the frame, slightly staggered per rock
+                 const groundCy = scat * 1.85 + (Math.sin(seed * 4.4) * 0.5 + 0.5) * scat * 0.25;
+                 const cy = homeCy + (groundCy - homeCy) * gravP;
                  const cz = Math.cos(angle) * rOffset;
-                 
+
                  const rotX = t * (Math.sin(seed)*2);
                  const rotY = t * (Math.cos(seed)*2);
-                 
+
                  shapes.push({ cx, cy, cz, size, type, rotX, rotY, baseColor: Math.sin(seed*5)*0.5+0.5 });
               }
               
@@ -5989,18 +6034,21 @@ export default function App() {
                         const lightDot = Math.max(0, (nx/len)*0.5 + (ny/len)*0.8 + (nz/len)*0.3);
                         
                         const factor = 0.35 + lightDot * 0.65;
-                        const r = Math.round(debFgRgb.r * factor);
-                        const g = Math.round(debFgRgb.g * factor);
-                        const b = Math.round(debFgRgb.b * factor);
-                        ctx.fillStyle = `rgb(${r},${g},${b})`;
+                        const rockCol = s.baseColor > 0.62 ? debFgAltRgb : debFgRgb;
+                        const r = Math.round(rockCol.r * factor);
+                        const g = Math.round(rockCol.g * factor);
+                        const b = Math.round(rockCol.b * factor);
+                        ctx.fillStyle = `rgba(${r},${g},${b},${debAlpha.toFixed(3)})`;
                         ctx.beginPath();
                         ctx.moveTo(p0.x, p0.y);
                         for(let i=1; i<face.length; i++) ctx.lineTo(projPts[face[i]].x, projPts[face[i]].y);
                         ctx.closePath();
                         ctx.fill();
                         ctx.strokeStyle = debBg;
+                        ctx.globalAlpha = debAlpha;
                         ctx.lineWidth = 0.5;
                         ctx.stroke();
+                        ctx.globalAlpha = 1;
                     }
                  });
               }
@@ -6567,6 +6615,7 @@ export default function App() {
               const fadeAmt = Math.max(0, Math.min(1, s.fade ?? 0.4));
               const cbOutline = Math.max(0, Math.min(1, s.outline ?? 0));
               const bloomAction = Number(s.bloom ?? 0);
+              const clearAction = Number(s.clear ?? 0);
 
               const growTime = maxSize / (grSpeed * 110);            // sec to reach full size
               const holdTime = 0.4 + fadeAmt * 3.5;                  // sec of fade-out after grown
@@ -6584,7 +6633,7 @@ export default function App() {
               };
 
               if (!circleBloomStateRef.current[layer.id]) {
-                  circleBloomStateRef.current[layer.id] = { circles: [], lastSpawn: nowSec, lastAction: 0 };
+                  circleBloomStateRef.current[layer.id] = { circles: [], lastSpawn: nowSec, lastAction: 0, lastClear: clearAction, clearUntil: 0 };
                   const seed = Math.min(maxCount, 22);
                   for (let i = 0; i < seed; i++) spawnAt(i % 5 === 0, (i / Math.max(1, seed)) * (growTime + holdTime) * 0.75);
               }
@@ -6593,13 +6642,19 @@ export default function App() {
 
               cbSt.circles = cbSt.circles.filter((c: any) => (nowSec - c.birth) < lifeTotal * c.rs + growTime);
 
+              if (clearAction > (cbSt.lastClear ?? 0)) {
+                  cbSt.circles = [];
+                  cbSt.clearUntil = nowSec + 1.2;         // brief pause before it regrows
+                  cbSt.lastClear = clearAction;
+              }
+
               if (bloomAction > cbSt.lastAction) {
                   const n = Math.min(6, bloomAction - cbSt.lastAction);
                   for (let i = 0; i < n; i++) spawnOne(Math.random() < 0.25);
                   cbSt.lastAction = bloomAction;
               }
 
-              if (maxCount > 0 && cbSt.circles.length < maxCount && nowSec - cbSt.lastSpawn >= spawnDelay) {
+              if (maxCount > 0 && nowSec >= (cbSt.clearUntil ?? 0) && cbSt.circles.length < maxCount && nowSec - cbSt.lastSpawn >= spawnDelay) {
                   cbSt.lastSpawn = nowSec;
                   spawnOne(cbSt.circles.length % 5 === 0);
               }
@@ -6647,6 +6702,7 @@ export default function App() {
               const gap = Math.max(0, Math.min(0.45, s.gap ?? 0.07));
               const shuffleRate = Math.max(0, s.shuffle ?? 0.8);
               const flipAction = Number(s.flip ?? 0);
+              const centerAction = Number(s.center ?? 0);
 
               // --- grid geometry ---
               let cols: number, rows: number, cellPos: { cx: number, cy: number }[] = [], cellR = 0;
@@ -6676,19 +6732,31 @@ export default function App() {
               const total = cellPos.length;
               const litCount = Math.max(0, Math.min(total, Math.round(s.lit_count ?? 30)));
 
-              if (!gridLitStateRef.current[layer.id]) gridLitStateRef.current[layer.id] = { lit: [], lastShuffle: -999, lastAction: 0, total: 0 };
+              if (!gridLitStateRef.current[layer.id]) gridLitStateRef.current[layer.id] = { lit: [], lastShuffle: -999, lastAction: 0, lastCenter: centerAction, total: 0, centered: false };
               const gSt = gridLitStateRef.current[layer.id];
 
               const reshuffle = () => {
-                  const idx = Array.from({ length: total }, (_, i) => i);
-                  for (let i = total - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; const t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
-                  gSt.lit = idx.slice(0, litCount);
+                  let order: number[];
+                  if (gSt.centered) {
+                      // weight cells toward the frame centre; randomness leaves organic gaps
+                      const ccx = targetW / 2, ccy = targetH / 2;
+                      const maxD = Math.hypot(targetW, targetH) / 2;
+                      order = Array.from({ length: total }, (_, i) => i).map(i => {
+                          const d = Math.hypot(cellPos[i].cx - ccx, cellPos[i].cy - ccy) / maxD;
+                          return { i, w: Math.pow(1 - Math.min(1, d), 2.4) * (0.3 + 0.7 * Math.random()) };
+                      }).sort((a, b) => b.w - a.w).map(o => o.i);
+                  } else {
+                      order = Array.from({ length: total }, (_, i) => i);
+                      for (let i = total - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; const t = order[i]; order[i] = order[j]; order[j] = t; }
+                  }
+                  gSt.lit = order.slice(0, litCount);
                   gSt.total = total;
                   gSt.lastShuffle = nowSec;
               };
               const shufflePeriod = shuffleRate > 0.01 ? Math.max(0.15, 3.5 / shuffleRate) : 1e9;
               if (gSt.total !== total || gSt.lit.length !== litCount || (nowSec - gSt.lastShuffle) > shufflePeriod) reshuffle();
-              if (flipAction > gSt.lastAction) { reshuffle(); gSt.lastAction = flipAction; }
+              if (flipAction > gSt.lastAction) { gSt.centered = false; reshuffle(); gSt.lastAction = flipAction; }
+              if (centerAction > (gSt.lastCenter ?? 0)) { gSt.centered = true; reshuffle(); gSt.lastCenter = centerAction; }
               const litSet = new Set(gSt.lit);
 
               const glow = Math.max(0, Math.min(1, s.glow ?? 0.5));
@@ -6745,6 +6813,16 @@ export default function App() {
           } else {
               if (webglRendererRef.current.canvas.width !== targetW || webglRendererRef.current.canvas.height !== targetH) {
                   webglRendererRef.current.resize(targetW, targetH);
+              }
+              // Brutalist Grid "Luck" action -> slot-machine spin envelope fed to the shader
+              if (def.uuid === 'brutalist-grid-1') {
+                  const luckCount = Number(modifiedSettings.luck ?? 0);
+                  const bl = (brutalistLuckRef.current[layer.id] ||= { last: luckCount, seed: 0, startT: -99 });
+                  if (luckCount > bl.last) { bl.last = luckCount; bl.seed += 1; bl.startT = nowSec; }
+                  const spinDur = 1.15;
+                  const e = nowSec - bl.startT;
+                  modifiedSettings.luck_spin = e < spinDur ? Math.pow(1 - e / spinDur, 1.6) : 0;
+                  modifiedSettings.luck_seed = bl.seed;
               }
               webglRendererRef.current.render(def, nowSec, modifiedSettings, resolvedGenerativeColors);
               element = webglRendererRef.current.canvas;

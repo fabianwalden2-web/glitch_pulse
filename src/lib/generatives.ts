@@ -137,20 +137,22 @@ export const GENERATIVES_DATA = [
   "description": "3D Cubes Matrix",
   "color": "white",
   "movement": true,
-  "defaultPaletteId": "crimson_slate",
+  "defaultPaletteId": "retro_amber",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "rotation", "min": 0.0, "max": 5.0, "default": 0.0, "type": "number" },
     { "name": "count", "min": 2.0, "max": 6.0, "default": 3.0, "type": "number" },
     { "name": "cube_size", "min": 20.0, "max": 160.0, "default": 64.0, "type": "number" },
     { "name": "spacing", "min": 0.0, "max": 200.0, "default": 55.0, "type": "number" },
-    { "name": "size_randomization", "min": 0.0, "max": 1.0, "default": 0.5, "type": "number" },
     { "name": "dispersion", "min": 0.0, "max": 350.0, "default": 90.0, "type": "number" },
-    { "name": "opacity", "min": 0.1, "max": 1.0, "default": 0.70, "type": "number" }
+    { "name": "opacity", "min": 0.1, "max": 1.0, "default": 0.70, "type": "number" },
+    { "name": "reshuffle", "default": 0, "type": "action" }
   ],
   "elements": [
-    { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
-    { "id": "cubes", "name": "Cubes Matrix", "defaultColor": "#eb556b" }
+    { "id": "background", "name": "Background", "defaultColor": "#2e2117" },
+    { "id": "cube_a", "name": "Cube Colour A", "defaultColor": "#cf7d2a" },
+    { "id": "cube_b", "name": "Cube Colour B", "defaultColor": "#4de8e0" },
+    { "id": "cube_c", "name": "Cube Colour C", "defaultColor": "#df9bf3" }
   ],
   "uuid": "cubes-matrix-3d-1"
 }*/`,
@@ -399,16 +401,19 @@ void main() {
   "description": "3D Debris Rocks",
   "color": "black",
   "movement": true,
-  "defaultPaletteId": "monochrome_duo",
+  "defaultPaletteId": "coral_reef",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "count", "min": 10.0, "max": 150.0, "default": 80.0, "type": "number" },
     { "name": "scatter", "min": 100.0, "max": 800.0, "default": 400.0, "type": "number" },
-    { "name": "size", "min": 0.5, "max": 3.0, "default": 1.0, "type": "number" }
+    { "name": "size", "min": 0.5, "max": 3.0, "default": 1.0, "type": "number" },
+    { "name": "transparency", "min": 0.0, "max": 1.0, "default": 0.0, "type": "number" },
+    { "name": "gravity", "default": 0, "type": "action" }
   ],
   "elements": [
-    { "id": "background", "name": "Background", "defaultColor": "#000000" },
-    { "id": "debris", "name": "Flying Debris", "defaultColor": "#ffffff" }
+    { "id": "background", "name": "Background", "defaultColor": "#e0560f" },
+    { "id": "debris", "name": "Flying Debris", "defaultColor": "#0a0a0a" },
+    { "id": "debris_alt", "name": "Debris Accent", "defaultColor": "#ffae5c" }
   ],
   "uuid": "3d-debris-canvas-1"
 }*/`,
@@ -641,7 +646,8 @@ void main() {
     { "name": "shape_type", "min": 0.0, "max": 5.0, "default": 0.0 },
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0 },
     { "name": "thickness", "min": 0.01, "max": 0.2, "default": 0.05 },
-    { "name": "aberration", "min": 0.0, "max": 0.1, "default": 0.02 }
+    { "name": "aberration", "min": 0.0, "max": 0.1, "default": 0.02 },
+    { "name": "luck", "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
@@ -664,6 +670,8 @@ uniform float shape_type;
 uniform float speed;
 uniform float thickness;
 uniform float aberration;
+uniform float luck_spin;
+uniform float luck_seed;
 
 uniform vec3 u_color_0;
 uniform vec3 u_color_1;
@@ -718,9 +726,17 @@ float getShape(vec2 p, float type, float r) {
 
 float scene(vec2 p, float seed) {
     float t = time * speed + seed * 10.0;
-    float angle = floor(t) * PI * 0.5 + smoothstep(0.0, 0.5, fract(t)) * PI * 0.5;
+    // "Luck" slot-machine spin: columns churn shapes fast, settling at slightly
+    // different rates, then land on a new luck_seed-dependent shape.
+    float col = floor(seed * 7.0);
+    float spin = luck_spin * (5.0 + mod(col, 3.0) * 3.0);
+    float churn = floor(spin * 6.0 + t * (1.0 + spin * 2.0));
+    p.y += luck_spin * sin(t * 22.0 + col * 1.7) * 0.35;
+    float angle = floor(t) * PI * 0.5 + smoothstep(0.0, 0.5, fract(t)) * PI * 0.5 + spin * PI;
     p *= rot(angle);
-    float tType = mod(shape_type + floor(seed * 100.0), 5.0);
+    float baseType = shape_type + floor(seed * 100.0)
+                   + luck_seed * 3.0 + floor(seed * (luck_seed + 1.0) * 17.0);
+    float tType = mod(baseType + churn, 5.0);
     float d = getShape(p, tType, 0.6);
     return abs(d) - thickness;
 }
@@ -1208,7 +1224,8 @@ void main(void) {
     { "name": "delay",     "min": 0.0,  "max": 3.0,   "default": 0.3, "type": "number" },
     { "name": "fade",      "min": 0.0,  "max": 1.0,   "default": 0.55, "type": "number" },
     { "name": "outline",   "min": 0.0,  "max": 1.0,   "default": 0.0, "type": "number" },
-    { "name": "bloom",     "default": 0, "type": "action" }
+    { "name": "bloom",     "default": 0, "type": "action" },
+    { "name": "clear",     "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#000000" },
@@ -1233,7 +1250,8 @@ void main(void) {
     { "name": "gap",       "min": 0.0,  "max": 0.4,   "default": 0.08, "type": "number" },
     { "name": "glow",      "min": 0.0,  "max": 1.0,   "default": 0.5, "type": "number" },
     { "name": "outline",   "min": 0.0,  "max": 1.0,   "default": 0.3, "type": "number" },
-    { "name": "flip",      "default": 0, "type": "action" }
+    { "name": "flip",      "default": 0, "type": "action" },
+    { "name": "center",    "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#0a0a12" },
@@ -1681,9 +1699,10 @@ export class WebGLGenerativeRenderer {
 
     const uniforms: Record<string, WebGLUniformLocation> = {};
     [
-      'time', 'resolution', 
+      'time', 'resolution',
       'u_color_0', 'u_color_1', 'u_color_2', 'u_color_3', 'u_color_4',
       'u_color_0_alpha', 'u_color_1_alpha', 'u_color_2_alpha', 'u_color_3_alpha', 'u_color_4_alpha',
+      'luck_spin', 'luck_seed',
       ...def.parameters.map(p => p.name)
     ].forEach(name => {
       const loc = gl.getUniformLocation(program, name);
@@ -1733,6 +1752,11 @@ export class WebGLGenerativeRenderer {
             gl.uniform1f(progData.uniforms[p.name], Number(val));
         }
       }
+    });
+
+    // runtime-only uniforms passed through settings (not user-facing params)
+    ['luck_spin', 'luck_seed'].forEach(k => {
+      if (progData.uniforms[k] && typeof settings[k] === 'number') gl.uniform1f(progData.uniforms[k], settings[k]);
     });
 
     if (def.elements) {
