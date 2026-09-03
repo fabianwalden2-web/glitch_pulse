@@ -110,6 +110,7 @@ interface RhythmMapping {
   pattern: string;
   bpm: number;
   customPattern: boolean[];
+  noteSettings?: any;
 }
 
 interface Layer {
@@ -496,6 +497,61 @@ const INITIAL_MAPPINGS: EffectMapping[] = [
     triggerBehavior: DEFAULT_TRIGGER_TYPE
   },
 ];
+
+// Stateless 0..1 magnitude for a rhythm mapping at a given wall-clock time (ms).
+// Used identically by the layer visibility trigger and every parameter/action trigger
+// so "Rhythm" mode behaves the same everywhere.
+function computeRhythmMagnitude(rm: RhythmMapping, nowMs: number): number {
+  const bpm = rm.bpm || 120;
+  const beatTime = (nowMs / 1000.0) * (bpm / 60.0);
+  const pattern = rm.pattern;
+  const ns: any = rm.noteSettings;
+  const fixedVel = ns?.useFixedVelocity ? (ns.fixedVelocity / 127) : 1.0;
+  const holdBeats = () => {
+    if (ns?.subdivision === '1/2') return 2.0;
+    if (ns?.subdivision === '1') return 4.0;
+    if (ns?.subdivision === '1/8') return 0.5;
+    if (ns?.subdivision === '1/16') return 0.25;
+    return 1.0;
+  };
+
+  if (pattern === 'Eighth-Note Triplets' || pattern === 'Quarter-Note Triplets') {
+    let fraction = pattern === 'Eighth-Note Triplets' ? (beatTime * 3.0) % 1.0 : (beatTime * 1.5) % 1.0;
+    fraction = ((fraction % 1.0) + 1.0) % 1.0;
+    if (ns?.useFixedDuration) {
+      const tripletStepLen = pattern === 'Eighth-Note Triplets' ? (1 / 3) : (2 / 3);
+      return (fraction * tripletStepLen) < holdBeats() ? fixedVel : 0.0;
+    }
+    return Math.exp(-20.0 * fraction) * fixedVel;
+  }
+
+  let activePattern = new Array(16).fill(false) as boolean[];
+  if (pattern === 'Custom') {
+    activePattern = rm.customPattern || activePattern;
+  } else {
+    switch (pattern) {
+      case '4-on-the-Floor': activePattern[0] = activePattern[4] = activePattern[8] = activePattern[12] = true; break;
+      case 'Backbeat': activePattern[4] = activePattern[12] = true; break;
+      case 'Off-Beat': activePattern[2] = activePattern[6] = activePattern[10] = activePattern[14] = true; break;
+      case 'Straight Eighths': for (let i = 0; i < 16; i += 2) activePattern[i] = true; break;
+      case 'Straight Sixteenths': activePattern.fill(true); break;
+      case 'The "One"': activePattern[0] = true; break;
+    }
+  }
+
+  const stepsElapsed = beatTime * 4;
+  const currentStepIdx = Math.floor(stepsElapsed);
+  let lastHitStepIdx = -1;
+  for (let i = 0; i < 16; i++) {
+    const checkIdx = currentStepIdx - i;
+    if (checkIdx < 0) continue;
+    if (activePattern[checkIdx % 16]) { lastHitStepIdx = checkIdx; break; }
+  }
+  if (lastHitStepIdx === -1) return 0.0;
+  const beatsSinceHit = (stepsElapsed - lastHitStepIdx) * 0.25;
+  if (ns?.useFixedDuration) return beatsSinceHit < holdBeats() ? fixedVel : 0.0;
+  return Math.exp(-20.0 * beatsSinceHit) * fixedVel;
+}
 
 // --- Color Utilities ---
 
@@ -2831,99 +2887,7 @@ export default function App() {
       let rhythmTrackerValue = 0.0;
       
       if (layer.rhythmMapping?.enabled) {
-          const bpm = layer.rhythmMapping.bpm || 120;
-          const beatTime = (now / 1000.0) * (bpm / 60.0);
-          const pattern = layer.rhythmMapping.pattern;
-          
-          let isTriplet = pattern === 'Eighth-Note Triplets' || pattern === 'Quarter-Note Triplets';
-          
-          if (isTriplet) {
-              let fraction = 0;
-              if (pattern === 'Eighth-Note Triplets') fraction = (beatTime * 3.0) % 1.0;
-              else fraction = (beatTime * 1.5) % 1.0;
-              
-              fraction = ((fraction % 1.0) + 1.0) % 1.0;
-              
-              const ns = layer.rhythmMapping.noteSettings;
-              const fixedVel = ns?.useFixedVelocity ? (ns.fixedVelocity / 127) : 1.0;
-              
-              if (ns?.useFixedDuration) {
-                  let holdBeats = 1.0;
-                  if (ns.subdivision === '1/2') holdBeats = 2.0;
-                  if (ns.subdivision === '1') holdBeats = 4.0;
-                  if (ns.subdivision === '1/8') holdBeats = 0.5;
-                  if (ns.subdivision === '1/16') holdBeats = 0.25;
-                  
-                  const tripletStepLen = pattern === 'Eighth-Note Triplets' ? (1/3) : (2/3);
-                  const beatsElapsed = fraction * tripletStepLen;
-                  rhythmTrackerValue = beatsElapsed < holdBeats ? fixedVel : 0.0;
-              } else {
-                  rhythmTrackerValue = Math.exp(-20.0 * fraction) * fixedVel;
-              }
-          } else {
-              let activePattern = new Array(16).fill(false);
-              if (pattern === 'Custom') {
-                  activePattern = layer.rhythmMapping.customPattern || activePattern;
-              } else {
-                  switch (pattern) {
-                      case '4-on-the-Floor':
-                          activePattern[0] = activePattern[4] = activePattern[8] = activePattern[12] = true;
-                          break;
-                      case 'Backbeat':
-                          activePattern[4] = activePattern[12] = true;
-                          break;
-                      case 'Off-Beat':
-                          activePattern[2] = activePattern[6] = activePattern[10] = activePattern[14] = true;
-                          break;
-                      case 'Straight Eighths':
-                          for (let i = 0; i < 16; i += 2) activePattern[i] = true;
-                          break;
-                      case 'Straight Sixteenths':
-                          activePattern.fill(true);
-                          break;
-                      case 'The "One"':
-                          activePattern[0] = true;
-                          break;
-                  }
-              }
-
-              const stepsElapsed = beatTime * 4;
-              let currentStepIdx = Math.floor(stepsElapsed);
-              let lastHitStepIdx = -1;
-              
-              for (let i = 0; i < 16; i++) {
-                  const checkIdx = currentStepIdx - i;
-                  if (checkIdx < 0) continue;
-                  const patternIdx = checkIdx % 16;
-                  if (activePattern[patternIdx]) {
-                      lastHitStepIdx = checkIdx;
-                      break;
-                  }
-              }
-
-              if (lastHitStepIdx !== -1) {
-                  const stepsSinceHit = stepsElapsed - lastHitStepIdx;
-                  const beatsSinceHit = stepsSinceHit * 0.25;
-
-                  const ns = layer.rhythmMapping.noteSettings;
-                  const fixedVel = ns?.useFixedVelocity ? (ns.fixedVelocity / 127) : 1.0;
-                  
-                  if (ns?.useFixedDuration) {
-                      let holdBeats = 1.0;
-                      if (ns.subdivision === '1/2') holdBeats = 2.0;
-                      if (ns.subdivision === '1') holdBeats = 4.0;
-                      if (ns.subdivision === '1/8') holdBeats = 0.5;
-                      if (ns.subdivision === '1/16') holdBeats = 0.25;
-                      
-                      rhythmTrackerValue = beatsSinceHit < holdBeats ? fixedVel : 0.0;
-                  } else {
-                      rhythmTrackerValue = Math.exp(-20.0 * beatsSinceHit) * fixedVel;
-                  }
-              } else {
-                  rhythmTrackerValue = 0.0;
-              }
-          }
-
+          rhythmTrackerValue = computeRhythmMagnitude(layer.rhythmMapping, now);
           rhythmVisualOpacity = rhythmTrackerValue;
           rhythmIsActive = rhythmVisualOpacity > 0.01;
       }
@@ -3021,6 +2985,8 @@ export default function App() {
                               tracker.value *= decay;
                               activeMagnitude = tracker.value;
                           }
+                      } else if (pMap?.rhythmMapping?.enabled) {
+                          activeMagnitude = computeRhythmMagnitude(pMap.rhythmMapping, now);
                       } else {
                           // Check parameter specific MIDI ADSR envelope
                           const paramKey = `gen-${layer.id}-${p.name}`;
@@ -3159,6 +3125,8 @@ export default function App() {
                       tracker.value *= (palMapping.audioMapping.smoothing ?? 0.5);
                       palMagnitude = tracker.value;
                   }
+              } else if (palMapping?.rhythmMapping?.enabled) {
+                  palMagnitude = computeRhythmMagnitude(palMapping.rhythmMapping, now);
               } else {
                   const triggerKey = `gen-${layer.id}-palette_cycle`;
                   const state = triggerStatesRef.current[triggerKey];
@@ -7218,16 +7186,37 @@ export default function App() {
           else if (layer.rhythmMapping?.enabled) unifiedEnv = rhythmVisualOpacity;
           else unifiedEnv = midiVisualOpacity;
 
+          // Per-effect trigger source: Audio (Level/Hits) or Rhythm override the layer env.
+          const effAny = effect as any;
+          let effectTriggerEnv: number | null = null;
+          if (effAny.rhythmMapping?.enabled) {
+             effectTriggerEnv = computeRhythmMagnitude(effAny.rhythmMapping, now);
+          } else if (effAny.audioMapping?.enabled) {
+             const trackerId = `${layer.id}-fx-${effect.id}-audio`;
+             if (!audioTrackersRef.current[trackerId]) audioTrackersRef.current[trackerId] = { state: 'idle', value: 0, lastUpdate: now, lastTriggerTime: 0 };
+             const tr = audioTrackersRef.current[trackerId];
+             const dtA = (now - tr.lastUpdate) / 1000.0; tr.lastUpdate = now;
+             const am = effAny.audioMapping;
+             const { intensity } = engine.getBandIntensity(am.stemId || '', am.freqRange || [20, 20000]);
+             if ((am.engine || 'level') === 'transient') {
+                effectTriggerEnv = processTransientHit(intensity, am.sensitivity ?? 0.6, am.decayMs ?? 220, am.cooldownMs ?? 50, tr, dtA, now);
+             } else {
+                if (intensity >= (am.threshold ?? 0.5) && (now - tr.lastTriggerTime > 100)) { tr.value = 1.0; tr.lastTriggerTime = now; }
+                tr.value *= (am.smoothing ?? 0.5);
+                effectTriggerEnv = tr.value;
+             }
+          }
+
           if (effectDef?.parameters) {
              for (const p of effectDef.parameters) {
                 const baseVal = modSettings[p.name] !== undefined ? modSettings[p.name] : (modSettings[p.id] !== undefined ? modSettings[p.id] : p.default);
                 if (effect.triggerActive?.[p.name] || effect.triggerActive?.[p.id]) {
                    const triggerAmt = effect.triggerAmount?.[p.name] ?? effect.triggerAmount?.[p.id] ?? 0;
                    const range = (p.max - p.min);
-                   let paramEnv = unifiedEnv;
-                   
+                   let paramEnv = effectTriggerEnv !== null ? effectTriggerEnv : unifiedEnv;
+
                    const paramKey = `effect-${layer.id}-${effect.id}-${p.name}`;
-                   const state = triggerStatesRef.current[paramKey] || triggerStatesRef.current[`effect-${layer.id}-${effect.id}`];
+                   const state = (effectTriggerEnv === null) ? (triggerStatesRef.current[paramKey] || triggerStatesRef.current[`effect-${layer.id}-${effect.id}`]) : null;
                    if (state) {
                       const ns = effect.noteSettings || DEFAULT_NOTE_SETTINGS;
                       const dt = deltaTime / 1000.0;
@@ -10698,6 +10687,12 @@ return (
                       if (isGenerativeParam) setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? upd(m) : m) } : l));
                       else setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? upd(m) : m) } : l));
                     };
+                    const patchRhythm = (patch: any) => {
+                      const upd = (m: any) => ({ ...m, rhythmMapping: { ...(m.rhythmMapping || { enabled: true, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), ...patch } });
+                      if (isGenerativeParam) setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? upd(m) : m) } : l));
+                      else setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? upd(m) : m) } : l));
+                    };
+                    const rm = mapping.rhythmMapping || { enabled: true, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false), noteSettings: DEFAULT_NOTE_SETTINGS };
                     const audioEngineType = mapping.audioMapping?.engine || 'level';
 
                     return (
@@ -10855,8 +10850,44 @@ return (
                                 )}
                                </div>
                             </div>
+                          ) : mapping.rhythmMapping?.enabled ? (
+                            <div className="space-y-4 pt-2">
+                               <label className="text-[10px] uppercase tracking-widest opacity-80 font-bold text-red-500">Rhythm Trigger</label>
+                               <div className="grid grid-cols-2 gap-4">
+                                 <div className="flex flex-col gap-1">
+                                   <label className="text-[8px] uppercase tracking-widest opacity-40">BPM</label>
+                                   <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+                                     <button onClick={() => patchRhythm({ bpm: Math.max(20, (rm.bpm || 120) - 1) })} className="px-2 hover:bg-white/20 transition-colors">-</button>
+                                     <input type="number" value={rm.bpm} onChange={e => patchRhythm({ bpm: parseInt(e.target.value) || 120 })} className="w-full bg-transparent p-1.5 text-[10px] text-center outline-none" min="20" max="300" />
+                                     <button onClick={() => patchRhythm({ bpm: Math.min(300, (rm.bpm || 120) + 1) })} className="px-2 hover:bg-white/20 transition-colors">+</button>
+                                   </div>
+                                 </div>
+                                 <div className="flex flex-col gap-1">
+                                   <label className="text-[8px] uppercase tracking-widest opacity-40">Pattern</label>
+                                   <select value={rm.pattern} onChange={e => patchRhythm({ pattern: e.target.value })} className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none">
+                                     <option value="4-on-the-Floor">4-on-the-Floor</option>
+                                     <option value="Backbeat">Backbeat</option>
+                                     <option value="Off-Beat">Off-Beat</option>
+                                     <option value="Straight Eighths">Straight Eighths</option>
+                                     <option value="Straight Sixteenths">Straight Sixteenths</option>
+                                     <option value="The &quot;One&quot;">The "One"</option>
+                                     <option value="Custom">Custom</option>
+                                   </select>
+                                 </div>
+                               </div>
+                               <StepSequencer
+                                 bpm={rm.bpm}
+                                 pattern={rm.pattern}
+                                 customPattern={rm.customPattern}
+                                 onCustomPatternChange={(newPattern: boolean[]) => patchRhythm({ customPattern: newPattern })}
+                               />
+                               <NoteSettingsConfigUI
+                                 ns={rm.noteSettings || DEFAULT_NOTE_SETTINGS}
+                                 onUpdateNote={(field, val) => patchRhythm({ noteSettings: { ...(rm.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } })}
+                               />
+                            </div>
                           ) : (
-                            <MidiConfigUI 
+                            <MidiConfigUI
                               label={`${layerTarget.name}.${mapping.name}`}
                               mapping={mapping}
                               isLearnActive={midiLearnTarget?.layerId === layerTarget.id && midiLearnTarget?.effectId === mapping.id ? midiLearnTarget : false}
