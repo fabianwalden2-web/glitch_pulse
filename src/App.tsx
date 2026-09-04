@@ -58,6 +58,7 @@ import { engine, AudioStemNode } from './lib/audioEngine';
 import { AudioSpectrogram } from './components/AudioSpectrogram';
 import { Waves } from './components/Waves';
 import { createNoise2D } from 'simplex-noise';
+import { prepareWithSegments, layoutNextLineRange, materializeLineRange, type LayoutCursor } from '@chenglou/pretext';
 import { StepSequencer } from './components/StepSequencer';
 
 // --- Types ---
@@ -1910,6 +1911,13 @@ export default function App() {
   const hillscapeStateRef = useRef<Record<string, any>>({});
   const orbitDeflectionStateRef = useRef<Record<string, any>>({});
   const centipedeStateRef = useRef<Record<string, any>>({});
+  const orbClusterStateRef = useRef<Record<string, any>>({});
+  const hatchedSummitStateRef = useRef<Record<string, any>>({});
+  const symbolPortraitStateRef = useRef<Record<string, any>>({});
+  const inkBlotStateRef = useRef<Record<string, any>>({});
+  const floatingGemStateRef = useRef<Record<string, any>>({});
+  const confettiScatterStateRef = useRef<Record<string, any>>({});
+  const dragonTextStateRef = useRef<Record<string, any>>({});
 
   // Accumulation Mode Refs
   const accumulateCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
@@ -3463,83 +3471,204 @@ export default function App() {
               const dtmBgOpaque = !isTransparentColor(dtmBg);
 
               const { speed: dtmSpeed, font_size: dtmFs, glyph_size: dtmGlyphSize, invert: dtmInvert,
-                      line_gap: dtmLineGap, dir_x: dtmDirX, dir_y: dtmDirY, edge_glow: dtmEdgeGlow,
+                      line_gap: dtmLineGap, wander: dtmWander, reach: dtmReach, edge_glow: dtmEdgeGlow,
                       glyph: dtmGlyphRaw, text_content: dtmTextRaw } = modifiedSettings;
 
+              const invertOn = (dtmInvert ?? 0) > 0.5;
+              const paperColor = (invertOn && dtmBgOpaque) ? dtmFg : dtmBg;
+              const inkColor = (invertOn && dtmBgOpaque) ? dtmBg : dtmFg;
+
               const fs = Math.max(6, (dtmFs ?? 20) * (Math.min(targetW, targetH) / 620));
-              const lineGap = fs * (dtmLineGap ?? 1.06);
+              const lineGap = fs * (dtmLineGap ?? 1.15);
               const glyphStr = (typeof dtmGlyphRaw === 'string' && dtmGlyphRaw.trim() !== '')
                   ? Array.from(dtmGlyphRaw.trim())[0]
                   : ((def.parameters.find(p => p.name === 'glyph')?.default as string) || 'A');
               const bodyStr = (typeof dtmTextRaw === 'string' && dtmTextRaw.trim() !== '')
                   ? dtmTextRaw : ((def.parameters.find(p => p.name === 'text_content')?.default as string) || 'Text ');
-              const bodyChars = Array.from(bodyStr.replace(/\s+/g, ' '));
-              if (bodyChars.length === 0) bodyChars.push(' ');
 
-              // 1. Flood the whole frame with tightly-set scrolling text
-              if (dtmBgOpaque) { ctx.fillStyle = dtmBg; ctx.fillRect(0, 0, targetW, targetH); }
+              // --- Real paragraph layout via Pretext (chenglou/pretext), wrapped around a
+              // drop-cap column exactly like the library's own "flow text around a floated
+              // image" recipe -- no manual char-grid guessing.
+              const dtmSt = (dragonTextStateRef.current[layer.id] ||= { coilStart: -99, fireStart: -99, lastCoil: 0, lastFire: 0, fireHeadX: 0, fireHeadY: 0, layout: null });
+
+              const marginX = targetW * 0.07;
+              const marginY = targetH * 0.08;
+              const maxWidth = Math.max(40, targetW - marginX * 2);
+              const fontStr = `500 ${fs.toFixed(1)}px Georgia, 'Times New Roman', serif`;
+              const dropFs = fs * 2.6 * Math.max(0.4, dtmGlyphSize ?? 1.05);
+              const dropFontStr = `900 ${dropFs.toFixed(1)}px Georgia, 'Times New Roman', serif`;
+              const cacheKey = `${bodyStr}|${glyphStr}|${fs.toFixed(1)}|${lineGap.toFixed(1)}|${maxWidth.toFixed(0)}`;
+
+              let dtmLay = dtmSt.layout;
+              if (!dtmLay || dtmLay.key !== cacheKey) {
+                  ctx.font = dropFontStr;
+                  const dropCapWidth = ctx.measureText(glyphStr).width + fs * 0.4;
+                  const dropCapLines = Math.max(1, Math.round((dropFs * 1.05) / lineGap));
+
+                  ctx.font = fontStr;
+                  const prepared = prepareWithSegments(bodyStr, fontStr);
+                  const lines: { text: string; chars: string[]; charX: number[]; indent: number }[] = [];
+                  let cursor: LayoutCursor = { segmentIndex: 0, graphemeIndex: 0 };
+                  let li = 0;
+                  while (lines.length < 500) {
+                      const w = li < dropCapLines ? Math.max(20, maxWidth - dropCapWidth) : maxWidth;
+                      const range = layoutNextLineRange(prepared, cursor, w);
+                      if (range === null) break;
+                      const lm = materializeLineRange(prepared, range);
+                      const chars = Array.from(lm.text);
+                      const charX: number[] = [0];
+                      let acc = 0;
+                      for (const ch of chars) { acc += ctx.measureText(ch).width; charX.push(acc); }
+                      lines.push({ text: lm.text, chars, charX, indent: li < dropCapLines ? dropCapWidth : 0 });
+                      cursor = range.end;
+                      li++;
+                  }
+                  dtmLay = { key: cacheKey, lines, dropCapWidth, dropCapLines };
+                  dtmSt.layout = dtmLay;
+              }
+              const dtmLines = dtmLay.lines as { text: string; chars: string[]; charX: number[]; indent: number }[];
+
+              const blockH = Math.max(lineGap, dtmLines.length * lineGap);
+              const blockCx = marginX + maxWidth / 2;
+              const blockCy = marginY + blockH / 2;
+              const halfW = maxWidth / 2, halfH = blockH / 2;
+
+              // --- Coil action: winds the dragon's glide into a tight spiral for a beat
+              const coilCount = Number(modifiedSettings.coil ?? 0);
+              if (coilCount > dtmSt.lastCoil) { dtmSt.lastCoil = coilCount; dtmSt.coilStart = nowSec; }
+              const coilDur = 1.6;
+              const coilT = nowSec - dtmSt.coilStart;
+              const coilActive = coilT >= 0 && coilT < coilDur;
+              const coilEnv = coilActive ? Math.sin(Math.PI * Math.min(1, coilT / coilDur)) : 0;
 
               const t = nowSec * (dtmSpeed ?? 1.4);
-              ctx.fillStyle = dtmFg;
-              ctx.font = `700 ${fs}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
-              ctx.textBaseline = 'middle';
-              ctx.textAlign = 'left';
+              const wanderAmt = dtmWander ?? 0.55;
+              const freqX = 0.55 + coilEnv * 2.4;
+              const freqY = 0.34 * 0.87 + coilEnv * 1.6;
+              const radX = halfW * (0.42 + wanderAmt * 0.5) * (1 - coilEnv * 0.55);
+              const radY = halfH * (0.4 + wanderAmt * 0.45) * (1 - coilEnv * 0.55);
+              const pathPoint = (tt: number) => ({
+                  x: blockCx + Math.sin(tt * freqX) * radX,
+                  y: blockCy + Math.sin(tt * freqY + 1.3) * radY,
+              });
 
-              const chW = ctx.measureText('0').width || fs * 0.6;
-              const scrollX = t * (dtmDirX ?? 0) * 40;
-              const scrollY = t * (dtmDirY ?? 1) * 40;
-              const cols = Math.ceil(targetW / chW) + 6;
-              const rows = Math.ceil(targetH / lineGap) + 4;
-              const yOff = ((scrollY % lineGap) + lineGap) % lineGap;
-              const xOff = ((scrollX % chW) + chW) % chW;
-              const rowSeed = Math.floor(scrollY / lineGap);
-              const colSeed = Math.floor(scrollX / chW);
+              const segCount = 16;
+              const bodyDelay = 0.24;
+              const spine: { x: number; y: number }[] = [];
+              for (let k = 0; k < segCount; k++) spine.push(pathPoint(t - k * bodyDelay));
+              const maxR = fs * 0.95;
 
-              for (let r = -2; r < rows; r++) {
-                  const py = r * lineGap - yOff + lineGap / 2;
-                  let idx = ((r + rowSeed) * 131 - colSeed) % bodyChars.length;
-                  if (idx < 0) idx += bodyChars.length;
-                  let line = '';
-                  for (let c = 0; c < cols; c++) line += bodyChars[(idx + c) % bodyChars.length];
-                  ctx.fillText(line, -2 * chW - xOff, py);
-              }
+              // --- Breathe Fire action: a radial shockwave from the dragon's current head
+              const fireCount = Number(modifiedSettings.breathe_fire ?? 0);
+              if (fireCount > dtmSt.lastFire) { dtmSt.lastFire = fireCount; dtmSt.fireStart = nowSec; dtmSt.fireHeadX = spine[0].x; dtmSt.fireHeadY = spine[0].y; }
+              const fireDur = 0.85;
+              const fireT = nowSec - dtmSt.fireStart;
+              const fireActive = fireT >= 0 && fireT < fireDur;
+              const fireProgress = fireActive ? fireT / fireDur : 1;
+              const fireStrength = fireActive ? (1 - fireProgress) : 0;
+              const reachPx = Math.max(4, dtmReach ?? 90);
+              const fireRadius = reachPx * 2.2 * fireProgress;
 
-              // 2. Carve the giant glyph out of the text (or keep only text inside it)
-              const gh = Math.min(targetW, targetH) * (dtmGlyphSize ?? 1.05);
-              const glyphFont = `900 ${gh}px "Arial Black", "Helvetica Neue", Impact, sans-serif`;
-              const gx = targetW / 2;
-              const gy = targetH / 2 + gh * 0.02;
+              // 1. Paper
+              if (dtmBgOpaque) { ctx.fillStyle = paperColor; ctx.fillRect(0, 0, targetW, targetH); }
+
+              // 2. The dragon, gliding beneath the text
               ctx.save();
-              ctx.font = glyphFont;
-              ctx.textAlign = 'center';
-              ctx.textBaseline = 'middle';
-              ctx.globalCompositeOperation = (dtmInvert ?? 0) > 0.5 ? 'destination-in' : 'destination-out';
-              ctx.fillStyle = '#fff';
-              ctx.fillText(glyphStr, gx, gy);
+              if ((dtmEdgeGlow ?? 0) > 0.02) {
+                  ctx.strokeStyle = dtmAccent;
+                  ctx.lineCap = 'round';
+                  ctx.globalAlpha = 0.16 * (dtmEdgeGlow ?? 0);
+                  for (let pass = 0; pass < 3; pass++) {
+                      ctx.lineWidth = maxR * 2.2 + pass * (10 + coilEnv * 6);
+                      ctx.beginPath();
+                      ctx.moveTo(spine[0].x, spine[0].y);
+                      for (let k = 1; k < spine.length; k++) ctx.lineTo(spine[k].x, spine[k].y);
+                      ctx.stroke();
+                  }
+              }
+              ctx.globalAlpha = 1;
+              ctx.strokeStyle = dtmAccent;
+              ctx.lineCap = 'round';
+              for (let k = 0; k < spine.length - 1; k++) {
+                  const r0 = Math.max(1, maxR * Math.pow(1 - k / (segCount - 1), 0.6));
+                  ctx.lineWidth = r0 * 2;
+                  ctx.beginPath();
+                  ctx.moveTo(spine[k].x, spine[k].y);
+                  ctx.lineTo(spine[k + 1].x, spine[k + 1].y);
+                  ctx.stroke();
+              }
+              const hnx = spine[0].x - spine[1].x, hny = spine[0].y - spine[1].y;
+              const hl = Math.hypot(hnx, hny) || 1;
+              const dxh = hnx / hl, dyh = hny / hl, px = -dyh, py = dxh;
+              const headLen = maxR * 2.6, headW = maxR * 1.7;
+              ctx.fillStyle = dtmAccent;
+              ctx.beginPath();
+              ctx.moveTo(spine[0].x + dxh * headLen, spine[0].y + dyh * headLen);
+              ctx.lineTo(spine[0].x + px * headW, spine[0].y + py * headW);
+              ctx.lineTo(spine[0].x - px * headW, spine[0].y - py * headW);
+              ctx.closePath();
+              ctx.fill();
               ctx.restore();
 
-              // 3. Re-lay the background behind the carved-out area
-              if (dtmBgOpaque) {
-                  ctx.globalCompositeOperation = 'destination-over';
-                  ctx.fillStyle = dtmBg;
-                  ctx.fillRect(0, 0, targetW, targetH);
-                  ctx.globalCompositeOperation = 'source-over';
-              }
-
-              // 4. Optional glowing edge tracing the glyph
+              // 3. Illuminated drop cap
+              ctx.save();
+              ctx.font = dropFontStr;
+              ctx.fillStyle = inkColor;
+              ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+              const dropBaseX = marginX, dropBaseY = marginY + dropFs * 0.82;
               if ((dtmEdgeGlow ?? 0) > 0.01) {
-                  ctx.save();
-                  ctx.font = glyphFont;
-                  ctx.textAlign = 'center';
-                  ctx.textBaseline = 'middle';
                   ctx.strokeStyle = dtmAccent;
-                  ctx.lineWidth = Math.max(1, fs * 0.12);
-                  ctx.shadowColor = dtmAccent;
-                  ctx.shadowBlur = 22 * (dtmEdgeGlow ?? 0);
-                  ctx.globalAlpha = 0.45 + 0.55 * (dtmEdgeGlow ?? 0);
-                  ctx.strokeText(glyphStr, gx, gy);
-                  ctx.restore();
+                  ctx.lineWidth = Math.max(1, dropFs * 0.025);
+                  ctx.globalAlpha = 0.4 + 0.4 * (dtmEdgeGlow ?? 0);
+                  ctx.strokeText(glyphStr, dropBaseX, dropBaseY);
+                  ctx.globalAlpha = 1;
               }
+              ctx.fillText(glyphStr, dropBaseX, dropBaseY);
+              ctx.restore();
+
+              // 4. Paragraph text, each glyph nudged away from the dragon's body / fireball
+              ctx.save();
+              ctx.font = fontStr;
+              ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+              for (let li = 0; li < dtmLines.length; li++) {
+                  const line = dtmLines[li];
+                  const baseY = marginY + fs * 0.9 + li * lineGap;
+                  for (let ci = 0; ci < line.chars.length; ci++) {
+                      const ch = line.chars[ci];
+                      if (ch === ' ') continue;
+                      const baseX = marginX + line.indent + line.charX[ci];
+
+                      let bestD = Infinity, bestX = baseX, bestY = baseY;
+                      for (const sp of spine) {
+                          const dx = baseX - sp.x, dy = baseY - sp.y;
+                          const d = dx * dx + dy * dy;
+                          if (d < bestD) { bestD = d; bestX = sp.x; bestY = sp.y; }
+                      }
+                      const dist = Math.sqrt(bestD);
+                      let offX = 0, offY = 0, alphaMul = 1;
+                      if (dist < reachPx) {
+                          const push = 1 - dist / reachPx;
+                          const nx = dist > 0.01 ? (baseX - bestX) / dist : 1, ny = dist > 0.01 ? (baseY - bestY) / dist : 0;
+                          const mag = push * push * reachPx * 0.55;
+                          offX += nx * mag; offY += ny * mag;
+                          alphaMul = 0.35 + 0.65 * (1 - push * 0.7);
+                      }
+                      if (fireActive) {
+                          const fdx = baseX - dtmSt.fireHeadX, fdy = baseY - dtmSt.fireHeadY;
+                          const fd = Math.sqrt(fdx * fdx + fdy * fdy) || 0.001;
+                          if (fd < fireRadius + reachPx) {
+                              const ring = Math.max(0, 1 - Math.abs(fd - fireRadius) / (reachPx * 1.4));
+                              const fmag = ring * fireStrength * reachPx * 1.6;
+                              offX += (fdx / fd) * fmag; offY += (fdy / fd) * fmag;
+                              alphaMul = Math.min(alphaMul, 0.4 + 0.6 * (1 - fireStrength));
+                          }
+                      }
+                      ctx.globalAlpha = alphaMul;
+                      ctx.fillStyle = inkColor;
+                      ctx.fillText(ch, baseX + offX, baseY + offY);
+                  }
+              }
+              ctx.restore();
 
               element = canvas;
             } else if (def.uuid === 'terrain-lines-canvas-1') {
@@ -6940,6 +7069,605 @@ export default function App() {
                       }
                   }
               }
+              element = canvas;
+          } else if (def.uuid === 'orb-cluster-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const ocBg = resolvedGenerativeColors['background'] || '#0a0a12';
+              const ocA = resolvedGenerativeColors['orb_a'] || '#8b6cf0';
+              const ocB = resolvedGenerativeColors['orb_b'] || '#f0a0d8';
+              const ocHi = resolvedGenerativeColors['highlight'] || '#ffffff';
+              const ocRgbA = hexToRgb(ocA), ocRgbB = hexToRgb(ocB), ocRgbHi = hexToRgb(ocHi);
+
+              const os = modifiedSettings;
+              const ocCount = Math.max(6, Math.min(140, Math.round(os.count ?? 45)));
+              const ocSize = Math.max(0.2, os.size ?? 1);
+              const ocGloss = Math.max(0, Math.min(1, os.glossiness ?? 0.7));
+              const ocAttract = Math.max(0, Math.min(1, os.attraction ?? 0.5));
+              const ocTurb = Math.max(0, os.turbulence ?? 0.4);
+              const ocPop = Number(os.pop ?? 0);
+              const ocScatter = Number(os.scatter ?? 0);
+
+              const ocCx = targetW / 2, ocCy = targetH / 2;
+              const ocSpread = Math.min(targetW, targetH) * 0.36;
+              const ocBaseR = ((Math.min(targetW, targetH) * 0.09) / Math.pow(ocCount / 45, 0.42)) * ocSize;
+
+              let ocSt = orbClusterStateRef.current[layer.id];
+              if (!ocSt || ocSt.n !== ocCount) {
+                  const orbs: any[] = [];
+                  for (let i = 0; i < ocCount; i++) {
+                      const a = Math.random() * Math.PI * 2, d = Math.random() * ocSpread;
+                      orbs.push({
+                          x: ocCx + Math.cos(a) * d, y: ocCy + Math.sin(a) * d,
+                          vx: 0, vy: 0,
+                          r: ocBaseR * (0.4 + Math.random() * 1.1),
+                          hue: Math.random(), phase: Math.random() * 1000,
+                          scale: 1, popT: -99,
+                      });
+                  }
+                  ocSt = { n: ocCount, orbs, lastPop: ocPop, lastScatter: ocScatter };
+                  orbClusterStateRef.current[layer.id] = ocSt;
+              }
+              const orbs = ocSt.orbs;
+
+              if (ocPop > ocSt.lastPop) {
+                  ocSt.lastPop = ocPop;
+                  const nPop = Math.max(1, Math.round(orbs.length * 0.15));
+                  for (let k = 0; k < nPop; k++) orbs[Math.floor(Math.random() * orbs.length)].popT = nowSec;
+              }
+              if (ocScatter > ocSt.lastScatter) {
+                  ocSt.lastScatter = ocScatter;
+                  for (const o of orbs) {
+                      const dx = o.x - ocCx, dy = o.y - ocCy;
+                      const d = Math.hypot(dx, dy) || 1;
+                      const kick = ocSpread * 1.6;
+                      o.vx += (dx / d) * kick; o.vy += (dy / d) * kick;
+                  }
+              }
+
+              for (const o of orbs) {
+                  const dx = ocCx - o.x, dy = ocCy - o.y;
+                  o.vx += dx * 0.0009 * (0.3 + ocAttract);
+                  o.vy += dy * 0.0009 * (0.3 + ocAttract);
+                  o.phase += deltaTime * (0.6 + ocTurb);
+                  o.vx += Math.sin(o.phase * 0.9) * 0.06 * ocTurb;
+                  o.vy += Math.cos(o.phase * 0.7) * 0.06 * ocTurb;
+                  o.vx *= 0.9; o.vy *= 0.9;
+                  o.x += o.vx; o.y += o.vy;
+
+                  if (o.popT > -90) {
+                      const e = nowSec - o.popT;
+                      if (e < 0.4) {
+                          o.scale = e < 0.12 ? 1 + (e / 0.12) * 0.8 : 1.8 * (1 - (e - 0.12) / 0.28);
+                      } else {
+                          const a = Math.random() * Math.PI * 2;
+                          o.x = ocCx + Math.cos(a) * ocSpread * 0.9; o.y = ocCy + Math.sin(a) * ocSpread * 0.9;
+                          o.r = ocBaseR * (0.35 + Math.random() * 0.6);
+                          o.hue = Math.random();
+                          o.scale = 1; o.popT = -99;
+                      }
+                  } else {
+                      o.scale += (1 - o.scale) * 0.1;
+                  }
+              }
+              for (let i = 0; i < orbs.length; i++) {
+                  for (let j = i + 1; j < orbs.length; j++) {
+                      const a = orbs[i], b = orbs[j];
+                      const dx = b.x - a.x, dy = b.y - a.y;
+                      const d = Math.hypot(dx, dy) || 0.001;
+                      const minD = (a.r + b.r) * 0.92;
+                      if (d < minD) {
+                          const push = ((minD - d) / d) * 0.5;
+                          const px = dx * push, py = dy * push;
+                          a.x -= px; a.y -= py; b.x += px; b.y += py;
+                      }
+                  }
+              }
+
+              ctx.fillStyle = ocBg; ctx.fillRect(0, 0, targetW, targetH);
+              const ocSorted = [...orbs].sort((a, b) => a.y - b.y);
+              for (const o of ocSorted) {
+                  const r = Math.max(0.5, o.r * o.scale);
+                  const lerp = (p: number, q: number, tt: number) => p + (q - p) * tt;
+                  const cR = Math.round(lerp(ocRgbA.r, ocRgbB.r, o.hue));
+                  const cG = Math.round(lerp(ocRgbA.g, ocRgbB.g, o.hue));
+                  const cB = Math.round(lerp(ocRgbA.b, ocRgbB.b, o.hue));
+                  const g = ctx.createRadialGradient(o.x - r * 0.35, o.y - r * 0.4, r * 0.05, o.x, o.y, r);
+                  g.addColorStop(0, `rgba(${ocRgbHi.r},${ocRgbHi.g},${ocRgbHi.b},${(0.55 + ocGloss * 0.4).toFixed(2)})`);
+                  g.addColorStop(0.35, `rgb(${cR},${cG},${cB})`);
+                  g.addColorStop(1, `rgba(${Math.round(cR * 0.45)},${Math.round(cG * 0.45)},${Math.round(cB * 0.45)},1)`);
+                  ctx.fillStyle = g;
+                  ctx.beginPath(); ctx.arc(o.x, o.y, r, 0, Math.PI * 2); ctx.fill();
+                  if (ocGloss > 0.15) {
+                      ctx.fillStyle = `rgba(255,255,255,${(ocGloss * 0.5).toFixed(2)})`;
+                      ctx.beginPath(); ctx.arc(o.x - r * 0.4, o.y - r * 0.45, r * 0.22, 0, Math.PI * 2); ctx.fill();
+                  }
+              }
+              element = canvas;
+          } else if (def.uuid === 'hatched-summit-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const hsBg = resolvedGenerativeColors['background'] || '#ede9e2';
+              const bands = ['band_1', 'band_2', 'band_3', 'band_4', 'band_5', 'band_6'].map(id => resolvedGenerativeColors[id] || hsBg);
+
+              let hsSt = hatchedSummitStateRef.current[layer.id];
+              if (!hsSt) { hsSt = { noise2D: createNoise2D(), regionNoise: createNoise2D(), seed: 0, jitter: 0, erodeFrom: 0, erodeTo: 0, erodeStart: -99, lastErode: 0, lastReplot: 0 }; hatchedSummitStateRef.current[layer.id] = hsSt; }
+
+              const hs = modifiedSettings;
+              const peaks = Math.max(1, Math.min(4, Math.round(hs.peaks ?? 2)));
+              const elevation = Math.max(10, hs.elevation ?? 150);
+              const hatchDensity = Math.max(30, Math.min(200, hs.hatch_density ?? 90));
+              const roughness = Math.max(0, Math.min(1, hs.roughness ?? 0.5));
+              const hatchAngle = ((hs.hatch_angle ?? -20) * Math.PI) / 180;
+              const erodeCount = Number(hs.erode ?? 0);
+              const replotCount = Number(hs.replot ?? 0);
+
+              if (replotCount > hsSt.lastReplot) { hsSt.lastReplot = replotCount; hsSt.jitter = Math.random() * 1000; }
+              if (erodeCount > hsSt.lastErode) { hsSt.lastErode = erodeCount; hsSt.erodeFrom = hsSt.seed; hsSt.erodeTo = hsSt.seed + 100 + Math.random() * 300; hsSt.erodeStart = nowSec; }
+              const erodeDur = 2.2;
+              const erodeE = hsSt.erodeStart > -90 ? Math.min(1, (nowSec - hsSt.erodeStart) / erodeDur) : 1;
+              const easeE = erodeE * erodeE * (3 - 2 * erodeE);
+              hsSt.seed = hsSt.erodeFrom + (hsSt.erodeTo - hsSt.erodeFrom) * easeE;
+
+              ctx.fillStyle = hsBg; ctx.fillRect(0, 0, targetW, targetH);
+
+              const hsCols = Math.max(24, Math.min(140, Math.round(hatchDensity)));
+              const hsRows = Math.max(16, Math.round(hsCols * 0.62));
+              const hsMarginX = targetW * 0.08, hsMarginY = targetH * 0.14;
+              const plotW = targetW * 0.84, plotH = targetH * 0.62;
+              const colStep = plotW / hsCols;
+              const skewX = (plotW * 0.16) / hsRows;
+              const rowStep = plotH / hsRows;
+              const ampScale = elevation * (targetH / 900);
+              const baseY = hsMarginY + plotH * 0.72;
+
+              const elevAt = (i: number, j: number) => {
+                  const fx = i / hsCols, fy = j / hsRows;
+                  let e = 0;
+                  for (let p = 0; p < peaks; p++) {
+                      const px2 = 0.18 + (p / Math.max(1, peaks - 1 || 1)) * 0.64;
+                      const dx = fx - px2, dy = fy - 0.5;
+                      e = Math.max(e, Math.exp(-((dx * dx) / 0.05 + (dy * dy) / 0.16)));
+                  }
+                  const n1 = hsSt.noise2D(fx * 3.2 + hsSt.seed, fy * 3.2 + hsSt.seed * 0.7);
+                  const n2 = hsSt.noise2D(fx * 7.1 - hsSt.seed * 0.4, fy * 7.1 + hsSt.seed * 1.3) * 0.5;
+                  return Math.max(0, e * (0.65 + 0.35 * (n1 * 0.5 + 0.5)) + (n1 + n2) * roughness * 0.18);
+              };
+              const regionAt = (i: number, j: number) => {
+                  const v = hsSt.regionNoise(i * 0.022 + hsSt.jitter, j * 0.032 + hsSt.jitter * 0.6) * 0.5 + 0.5;
+                  return Math.min(bands.length - 1, Math.floor(v * bands.length));
+              };
+
+              for (let j = 0; j < hsRows; j++) {
+                  ctx.beginPath();
+                  ctx.moveTo(hsMarginX + j * skewX, targetH + 4);
+                  for (let i = 0; i <= hsCols; i++) {
+                      const e = elevAt(i, j);
+                      const x = hsMarginX + i * colStep + j * skewX;
+                      const y = baseY - j * rowStep - e * ampScale;
+                      ctx.lineTo(x, y);
+                  }
+                  ctx.lineTo(hsMarginX + hsCols * colStep + j * skewX, targetH + 4);
+                  ctx.closePath();
+                  ctx.fillStyle = hsBg;
+                  ctx.fill();
+              }
+
+              const bandPaths: Path2D[] = bands.map(() => new Path2D());
+              for (let j = 0; j < hsRows; j++) {
+                  for (let i = 0; i < hsCols; i++) {
+                      const e = elevAt(i, j);
+                      const x = hsMarginX + i * colStep + j * skewX;
+                      const y = baseY - j * rowStep - e * ampScale;
+                      const region = regionAt(i, j);
+                      const len = rowStep * 1.05 + (Math.random() - 0.5) * roughness * rowStep * 0.4;
+                      const ang = hatchAngle + (Math.random() - 0.5) * roughness * 0.6;
+                      const path = bandPaths[region];
+                      path.moveTo(x, y);
+                      path.lineTo(x + Math.sin(ang) * len, y + Math.cos(ang) * len);
+                  }
+              }
+              ctx.lineCap = 'round';
+              for (let b = 0; b < bands.length; b++) {
+                  ctx.strokeStyle = bands[b];
+                  ctx.lineWidth = Math.max(0.6, colStep * 0.55);
+                  ctx.stroke(bandPaths[b]);
+              }
+
+              ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+              ctx.lineWidth = 1.2;
+              ctx.strokeRect(hsMarginX * 0.4, hsMarginY * 0.3, targetW - hsMarginX * 0.8, targetH - hsMarginY * 0.5);
+
+              element = canvas;
+          } else if (def.uuid === 'symbol-portrait-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const spBg = resolvedGenerativeColors['background'] || '#000000';
+              const spFg = resolvedGenerativeColors['symbols'] || '#ffffff';
+
+              let spSt = symbolPortraitStateRef.current[layer.id];
+              if (!spSt) { spSt = { noise2D: createNoise2D(), lastBlink: 0, blinkStart: -99, lastReveal: 0, revealStart: -99 }; symbolPortraitStateRef.current[layer.id] = spSt; }
+
+              const sp = modifiedSettings;
+              const resolution = Math.max(5, Math.min(28, sp.resolution ?? 12)) * (Math.min(targetW, targetH) / 700);
+              const pose = Math.max(0, Math.min(1, sp.pose ?? 0.5));
+              const density = Math.max(0, Math.min(1, sp.density ?? 0.85));
+              const shimmer = Math.max(0, sp.shimmer ?? 0.6);
+              const contrast = Math.max(0.15, sp.contrast ?? 1.2);
+              const blinkCount = Number(sp.blink ?? 0);
+              const revealCount = Number(sp.reveal ?? 0);
+
+              if (blinkCount > spSt.lastBlink) { spSt.lastBlink = blinkCount; spSt.blinkStart = nowSec; }
+              if (revealCount > spSt.lastReveal) { spSt.lastReveal = revealCount; spSt.revealStart = nowSec; }
+              const blinkDur = 0.6, blinkT = nowSec - spSt.blinkStart, blinkActive = blinkT >= 0 && blinkT < blinkDur;
+              const revealDur = 1.8, revealT = nowSec - spSt.revealStart;
+              const revealE = spSt.revealStart > -90 ? Math.max(0, Math.min(1, revealT / revealDur)) : 1;
+
+              ctx.fillStyle = spBg; ctx.fillRect(0, 0, targetW, targetH);
+
+              const spCx = targetW / 2, spCy = targetH * (0.56 - pose * 0.06);
+              const headRX = Math.min(targetW, targetH) * (0.155 + pose * 0.02);
+              const headRY = headRX * 1.28;
+              const headTiltX = (pose - 0.5) * headRX * 0.5;
+              const shoulderY = spCy + headRY * 1.15;
+              const shoulderRX = headRX * 2.5;
+              const shoulderRY = headRY * 1.6;
+
+              const field = (x: number, y: number) => {
+                  const dxH = (x - (spCx + headTiltX)) / headRX, dyH = (y - spCy) / headRY;
+                  const head = Math.exp(-((dxH * dxH + dyH * dyH) * 1.7));
+                  const dxS = (x - spCx) / shoulderRX, dyS = (y - shoulderY) / shoulderRY;
+                  const shoulder = y > spCy ? Math.exp(-((dxS * dxS) * 1.1 + Math.max(0, dyS) * Math.max(0, dyS) * 2.4)) : 0;
+                  let v = Math.max(head, shoulder * 0.85);
+                  const n = spSt.noise2D(x * 0.012 + nowSec * shimmer * 0.15, y * 0.012) * 0.5 + 0.5;
+                  v = v * (0.78 + n * 0.3);
+                  return Math.max(0, Math.min(1, Math.pow(v, contrast)));
+              };
+
+              const glyphs = ['.', '-', '/', 'o', '▲', '■'];
+              const spPaths: Path2D[] = glyphs.map(() => new Path2D());
+              const cellsX = Math.ceil(targetW / resolution);
+              const cellsY = Math.ceil(targetH / resolution);
+
+              for (let gy = 0; gy < cellsY; gy++) {
+                  const rowGate = revealE >= 1 ? true : (gy / cellsY < revealE);
+                  if (!rowGate) continue;
+                  for (let gx = 0; gx < cellsX; gx++) {
+                      const x = gx * resolution + resolution * 0.5;
+                      const y = gy * resolution + resolution * 0.5;
+                      const v = field(x, y);
+                      if (v < 0.03) continue;
+                      const keep = Math.abs(spSt.noise2D(gx * 0.31 + 91.1, gy * 0.31 - 41.7)) < density * (0.55 + v * 0.5);
+                      if (!keep) continue;
+                      let gi = v > 0.82 ? 5 : v > 0.62 ? 4 : v > 0.42 ? 3 : v > 0.24 ? 2 : v > 0.1 ? 1 : 0;
+                      if (blinkActive) {
+                          const sweepY = (blinkT / blinkDur) * targetH;
+                          if (Math.abs(y - sweepY) < resolution * 3) gi = (gi + 3) % glyphs.length;
+                      }
+                      const s = resolution * (0.32 + v * 0.34);
+                      const p = spPaths[gi];
+                      if (gi === 0) { p.moveTo(x + s * 0.12, y); p.arc(x, y, s * 0.12, 0, Math.PI * 2); }
+                      else if (gi === 1) { p.moveTo(x - s * 0.55, y); p.lineTo(x + s * 0.55, y); }
+                      else if (gi === 2) { p.moveTo(x - s * 0.4, y + s * 0.4); p.lineTo(x + s * 0.4, y - s * 0.4); }
+                      else if (gi === 3) { p.moveTo(x + s * 0.32, y); p.arc(x, y, s * 0.32, 0, Math.PI * 2); }
+                      else if (gi === 4) { p.moveTo(x, y - s * 0.42); p.lineTo(x + s * 0.4, y + s * 0.32); p.lineTo(x - s * 0.4, y + s * 0.32); p.closePath(); }
+                      else { p.rect(x - s * 0.3, y - s * 0.3, s * 0.6, s * 0.6); }
+                  }
+              }
+
+              ctx.fillStyle = spFg;
+              ctx.strokeStyle = spFg;
+              ctx.lineWidth = Math.max(1, resolution * 0.09);
+              for (let i = 0; i < glyphs.length; i++) {
+                  if (i === 1 || i === 2) ctx.stroke(spPaths[i]); else ctx.fill(spPaths[i]);
+              }
+
+              element = canvas;
+          } else if (def.uuid === 'ink-blot-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const ibBg = resolvedGenerativeColors['background'] || '#ffffff';
+              const ibInk = resolvedGenerativeColors['ink'] || '#000000';
+              const ibHiRgb = hexToRgb(resolvedGenerativeColors['highlight'] || '#ffffff');
+
+              let ibSt = inkBlotStateRef.current[layer.id];
+              if (!ibSt) {
+                  ibSt = { goo: document.createElement('canvas'), lobes: [], drops: [], lastSplat: 0, splatStart: -99, lastGravity: 0, gravityOn: false };
+                  inkBlotStateRef.current[layer.id] = ibSt;
+              }
+
+              const ib = modifiedSettings;
+              const blobCount = Math.max(2, Math.min(6, Math.round(ib.blob_count ?? 4)));
+              const ibSize = Math.max(0.3, ib.size ?? 1);
+              const viscosity = Math.max(0, Math.min(1, ib.viscosity ?? 0.4));
+              const dropletCount = Math.max(0, Math.min(24, Math.round(ib.droplet_count ?? 10)));
+              const sheen = Math.max(0, Math.min(1, ib.sheen ?? 0.5));
+              const splatCount = Number(ib.splat ?? 0);
+              const gravityCount = Number(ib.gravity ?? 0);
+
+              if (blobCount !== ibSt.lobes.length) {
+                  ibSt.lobes = Array.from({ length: blobCount }, () => ({
+                      ax: 0.15 + Math.random() * 0.15, ay: 0.15 + Math.random() * 0.15,
+                      fx: 0.3 + Math.random() * 0.5, fy: 0.3 + Math.random() * 0.5,
+                      px: Math.random() * 10, py: Math.random() * 10,
+                  }));
+              }
+              if (dropletCount !== ibSt.drops.length) {
+                  ibSt.drops = Array.from({ length: dropletCount }, () => ({
+                      x: targetW / 2 + (Math.random() - 0.5) * targetW * 0.6,
+                      y: targetH / 2 + (Math.random() - 0.5) * targetH * 0.6,
+                      vx: 0, vy: 0, r: (6 + Math.random() * 14) * (Math.min(targetW, targetH) / 700),
+                      ox: Math.random() * 10, oy: Math.random() * 10,
+                  }));
+              }
+
+              if (splatCount > ibSt.lastSplat) {
+                  ibSt.lastSplat = splatCount; ibSt.splatStart = nowSec;
+                  for (let k = 0; k < 4; k++) {
+                      const a = Math.random() * Math.PI * 2;
+                      ibSt.drops.push({ x: targetW / 2, y: targetH / 2, vx: Math.cos(a) * 6, vy: Math.sin(a) * 6, r: (5 + Math.random() * 10) * (Math.min(targetW, targetH) / 700), ox: Math.random() * 10, oy: Math.random() * 10 });
+                  }
+                  if (ibSt.drops.length > 40) ibSt.drops.splice(0, ibSt.drops.length - 40);
+              }
+              if (gravityCount > ibSt.lastGravity) { ibSt.lastGravity = gravityCount; ibSt.gravityOn = !ibSt.gravityOn; }
+
+              const ibCx = targetW / 2, ibCy = targetH / 2;
+              const ibSpread = Math.min(targetW, targetH) * 0.11 * ibSize;
+              const ibT = nowSec * 0.3;
+              const splatE = Math.max(0, 1 - (nowSec - ibSt.splatStart) / 0.5);
+
+              for (const d of ibSt.drops) {
+                  if (ibSt.gravityOn) {
+                      d.vy += 0.35;
+                      d.x += Math.sin(nowSec * 0.6 + d.ox) * 0.3;
+                      const floorY = targetH * 0.92;
+                      if (d.y > floorY) { d.y = floorY; d.vy *= -0.3; }
+                  } else {
+                      const tx = ibCx + Math.sin(ibT * d.fx + d.ox) * (ibSpread * 3.2 || 1);
+                      const ty = ibCy + Math.cos(ibT * d.fy + d.oy) * (ibSpread * 3.2 || 1);
+                      d.vx += (tx - d.x) * 0.01; d.vy += (ty - d.y) * 0.01;
+                  }
+                  d.vx *= 0.92; d.vy *= 0.92;
+                  d.x += d.vx; d.y += d.vy;
+              }
+
+              const goo: HTMLCanvasElement = ibSt.goo;
+              goo.width = targetW; goo.height = targetH;
+              const gctx = goo.getContext('2d')!;
+              gctx.clearRect(0, 0, targetW, targetH);
+              gctx.fillStyle = ibBg; gctx.fillRect(0, 0, targetW, targetH);
+              gctx.fillStyle = ibInk;
+              gctx.filter = `blur(${Math.max(2, (10 + viscosity * 26) * (Math.min(targetW, targetH) / 700))}px)`;
+              const squash = 1 - splatE * 0.35;
+              for (let i = 0; i < ibSt.lobes.length; i++) {
+                  const l = ibSt.lobes[i];
+                  const lx = ibCx + Math.sin(ibT * l.fx + l.px) * ibSpread * l.ax * 6;
+                  const ly = ibCy + Math.cos(ibT * l.fy + l.py) * ibSpread * l.ay * 6;
+                  gctx.beginPath();
+                  gctx.ellipse(lx, ly, ibSpread * (1 + splatE * 0.5), Math.max(1, ibSpread * squash), 0, 0, Math.PI * 2);
+                  gctx.fill();
+              }
+              gctx.filter = 'none';
+
+              ctx.fillStyle = ibBg; ctx.fillRect(0, 0, targetW, targetH);
+              ctx.filter = 'contrast(28)';
+              ctx.drawImage(goo, 0, 0);
+              ctx.filter = 'none';
+
+              // droplets rendered crisp, decoupled from the goo blur (a small disc
+              // blurred at the same radius as the main mass would nearly vanish)
+              ctx.fillStyle = ibInk;
+              for (const d of ibSt.drops) {
+                  ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2); ctx.fill();
+              }
+
+              if (sheen > 0.05) {
+                  const g = ctx.createRadialGradient(ibCx - ibSpread * 0.9, ibCy - ibSpread * 1.1, 2, ibCx - ibSpread * 0.5, ibCy - ibSpread * 0.6, ibSpread * 1.6);
+                  g.addColorStop(0, `rgba(${ibHiRgb.r},${ibHiRgb.g},${ibHiRgb.b},${(sheen * 0.55).toFixed(2)})`);
+                  g.addColorStop(1, `rgba(${ibHiRgb.r},${ibHiRgb.g},${ibHiRgb.b},0)`);
+                  ctx.globalCompositeOperation = 'overlay';
+                  ctx.fillStyle = g;
+                  ctx.beginPath(); ctx.arc(ibCx, ibCy, ibSpread * 2.4, 0, Math.PI * 2); ctx.fill();
+                  ctx.globalCompositeOperation = 'source-over';
+              }
+
+              element = canvas;
+          } else if (def.uuid === 'floating-gem-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const fgSky = resolvedGenerativeColors['background'] || '#1b2140';
+              const fgGem = resolvedGenerativeColors['gem'] || '#ffcf5c';
+              const fgBeam = resolvedGenerativeColors['beam'] || '#ff7a2e';
+              const fgDust = resolvedGenerativeColors['dust'] || '#ffffff';
+              const fgBeamRgb = hexToRgb(fgBeam);
+
+              let fgSt = floatingGemStateRef.current[layer.id];
+              if (!fgSt) { fgSt = { dust: Array.from({ length: 26 }, () => ({ x: Math.random(), y: Math.random(), sp: 0.3 + Math.random() * 0.7, ph: Math.random() * 10 })), lastPulse: 0, pulseStart: -99, lastShatter: 0, shatterStart: -99 }; floatingGemStateRef.current[layer.id] = fgSt; }
+
+              const fg = modifiedSettings;
+              const facets = Math.max(4, Math.min(10, Math.round(fg.facets ?? 6)));
+              const rotSpeed = Math.max(0, fg.rotation_speed ?? 0.6);
+              const bob = Math.max(0, Math.min(1, fg.bob ?? 0.5));
+              const glow = Math.max(0, Math.min(1, fg.glow ?? 0.7));
+              const beam = Math.max(0, Math.min(1, fg.beam ?? 0.6));
+              const pulseCount = Number(fg.pulse ?? 0);
+              const shatterCount = Number(fg.shatter ?? 0);
+
+              if (pulseCount > fgSt.lastPulse) { fgSt.lastPulse = pulseCount; fgSt.pulseStart = nowSec; }
+              if (shatterCount > fgSt.lastShatter) { fgSt.lastShatter = shatterCount; fgSt.shatterStart = nowSec; }
+              const pulseDur = 0.5, pulseT = nowSec - fgSt.pulseStart, pulseActive = pulseT >= 0 && pulseT < pulseDur;
+              const pulseEnv = pulseActive ? Math.sin(Math.PI * (pulseT / pulseDur)) : 0;
+              const shatterDur = 1.5, shatterT = nowSec - fgSt.shatterStart, shatterActive = shatterT >= 0 && shatterT < shatterDur;
+              const shatterProg = shatterActive ? shatterT / shatterDur : 1;
+              const shatterKick = shatterActive ? (1 - shatterProg) : 0;
+
+              ctx.fillStyle = fgSky; ctx.fillRect(0, 0, targetW, targetH);
+
+              const fgCx = targetW / 2;
+              const fgCy = targetH * 0.42 + Math.sin(nowSec * (0.6 + bob * 1.4)) * targetH * 0.05 * bob;
+              const fgScale = Math.min(targetW, targetH) * 0.22;
+
+              if (beam > 0.02) {
+                  const beamLen = targetH * (0.4 + beam * 0.4);
+                  const g = ctx.createLinearGradient(fgCx, fgCy, fgCx, fgCy + beamLen);
+                  g.addColorStop(0, `rgba(${fgBeamRgb.r},${fgBeamRgb.g},${fgBeamRgb.b},${((0.5 + pulseEnv * 0.4) * beam).toFixed(2)})`);
+                  g.addColorStop(1, `rgba(${fgBeamRgb.r},${fgBeamRgb.g},${fgBeamRgb.b},0)`);
+                  ctx.fillStyle = g;
+                  ctx.beginPath();
+                  ctx.moveTo(fgCx - fgScale * 0.5, fgCy);
+                  ctx.lineTo(fgCx + fgScale * 0.5, fgCy);
+                  ctx.lineTo(fgCx + fgScale * 1.6, fgCy + beamLen);
+                  ctx.lineTo(fgCx - fgScale * 1.6, fgCy + beamLen);
+                  ctx.closePath();
+                  ctx.fill();
+              }
+
+              for (const d of fgSt.dust) {
+                  const y = (d.y + nowSec * 0.03 * d.sp) % 1;
+                  const x = d.x + Math.sin(nowSec * 0.5 + d.ph) * 0.03;
+                  const px = fgCx + (x - 0.5) * fgScale * 3.2;
+                  const py = fgCy + y * targetH * 0.55;
+                  const a = (0.15 + 0.35 * Math.sin(nowSec * 2 + d.ph)) * (0.4 + beam * 0.6);
+                  ctx.fillStyle = fgDust;
+                  ctx.globalAlpha = Math.max(0, a);
+                  ctx.beginPath(); ctx.arc(px, py, 1.4 * (Math.min(targetW, targetH) / 700), 0, Math.PI * 2); ctx.fill();
+              }
+              ctx.globalAlpha = 1;
+
+              const angle = nowSec * rotSpeed;
+              const rgbGem = hexToRgb(fgGem);
+              const verts: { x: number; y: number; z: number }[] = [{ x: 0, y: -1.15, z: 0 }, { x: 0, y: 0.85, z: 0 }];
+              for (let i = 0; i < facets; i++) {
+                  const a = (i / facets) * Math.PI * 2 + angle;
+                  verts.push({ x: Math.cos(a), y: -0.05, z: Math.sin(a) });
+              }
+              const proj = verts.map((v, i) => {
+                  const persp = 1 / (1 + (v.z * 0.35 + 0.35));
+                  const kick = shatterActive ? shatterKick * 40 * (i % 3 === 0 ? 1 : -1) : 0;
+                  return { x: fgCx + v.x * fgScale * persp + kick, y: fgCy + v.y * fgScale * persp - kick * 0.6 };
+              });
+
+              const fgEdges: [number, number][] = [];
+              for (let i = 0; i < facets; i++) {
+                  const a = 2 + i, b = 2 + ((i + 1) % facets);
+                  fgEdges.push([0, a], [1, a], [a, b]);
+              }
+
+              ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+              if (glow > 0.02) {
+                  ctx.strokeStyle = `rgba(${rgbGem.r},${rgbGem.g},${rgbGem.b},${(0.16 * glow + pulseEnv * 0.25).toFixed(2)})`;
+                  for (let pass = 0; pass < 3; pass++) {
+                      ctx.lineWidth = 2 + pass * 6 + pulseEnv * 6;
+                      ctx.beginPath();
+                      for (const [a, b] of fgEdges) { ctx.moveTo(proj[a].x, proj[a].y); ctx.lineTo(proj[b].x, proj[b].y); }
+                      ctx.stroke();
+                  }
+              }
+              ctx.globalAlpha = 0.12;
+              for (let i = 0; i < facets; i++) {
+                  const a = 2 + i, b = 2 + ((i + 1) % facets);
+                  ctx.fillStyle = fgGem;
+                  ctx.beginPath();
+                  ctx.moveTo(proj[0].x, proj[0].y); ctx.lineTo(proj[a].x, proj[a].y); ctx.lineTo(proj[b].x, proj[b].y); ctx.closePath();
+                  ctx.fill();
+              }
+              ctx.globalAlpha = 1;
+              ctx.strokeStyle = fgGem;
+              ctx.lineWidth = Math.max(1, fgScale * 0.02);
+              ctx.beginPath();
+              for (const [a, b] of fgEdges) { ctx.moveTo(proj[a].x, proj[a].y); ctx.lineTo(proj[b].x, proj[b].y); }
+              ctx.stroke();
+
+              element = canvas;
+          } else if (def.uuid === 'confetti-scatter-canvas-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const csBg = resolvedGenerativeColors['background'] || '#ffffff';
+              const csA = resolvedGenerativeColors['shape_a'] || '#e63946';
+              const csB = resolvedGenerativeColors['shape_b'] || '#1d3557';
+
+              let csSt = confettiScatterStateRef.current[layer.id];
+              if (!csSt) { csSt = { parts: [], lastBurst: 0 }; confettiScatterStateRef.current[layer.id] = csSt; }
+
+              const cs = modifiedSettings;
+              const density = Math.max(10, Math.min(500, Math.round(cs.density ?? 160)));
+              const gravity = Math.max(0, cs.gravity ?? 0.6);
+              const spin = Math.max(0, cs.spin ?? 1.2);
+              const sizeMul = Math.max(0.1, cs.size ?? 1);
+              const turb = Math.max(0, cs.turbulence ?? 0.5);
+              const burstCount = Number(cs.burst ?? 0);
+              const freezeCount = Number(cs.freeze ?? 0);
+              const frozen = Math.floor(freezeCount) % 2 === 1;
+
+              const csKinds = ['tri', 'circle', 'dash', 'rect'] as const;
+              const spawn = (seeded: boolean) => {
+                  const s = (4 + Math.random() * 14) * sizeMul * (Math.min(targetW, targetH) / 700);
+                  return {
+                      x: Math.random() * targetW, y: seeded ? Math.random() * targetH : -Math.random() * targetH * 0.4,
+                      vx: 0, vy: 0,
+                      rot: Math.random() * Math.PI * 2, rotSpeed: (Math.random() - 0.5) * spin * 4,
+                      kind: csKinds[Math.floor(Math.random() * csKinds.length)],
+                      colorA: Math.random() < 0.5, size: s, ph: Math.random() * 10,
+                  };
+              };
+              while (csSt.parts.length < density) csSt.parts.push(spawn(true));
+              if (csSt.parts.length > density) csSt.parts.length = density;
+
+              if (burstCount > csSt.lastBurst) {
+                  csSt.lastBurst = burstCount;
+                  for (const p of csSt.parts) {
+                      const a = Math.atan2(p.y - targetH / 2, p.x - targetW / 2) + (Math.random() - 0.5) * 0.6;
+                      const v = 5 + Math.random() * 10;
+                      p.x = targetW / 2; p.y = targetH / 2;
+                      p.vx = Math.cos(a) * v; p.vy = Math.sin(a) * v;
+                  }
+              }
+
+              if (!frozen) {
+                  for (const p of csSt.parts) {
+                      p.vy += gravity * 0.12;
+                      p.vx += Math.sin(nowSec * 0.8 + p.ph) * turb * 0.08;
+                      p.vx *= 0.985; p.vy *= 0.995;
+                      p.x += p.vx; p.y += p.vy;
+                      p.rot += p.rotSpeed * deltaTime;
+                      if (p.y - p.size > targetH) { p.y = -p.size; p.x = Math.random() * targetW; p.vx = 0; p.vy = 0; }
+                      if (p.x < -20) p.x = targetW + 20;
+                      if (p.x > targetW + 20) p.x = -20;
+                  }
+              }
+
+              ctx.fillStyle = csBg; ctx.fillRect(0, 0, targetW, targetH);
+              for (const p of csSt.parts) {
+                  ctx.save();
+                  ctx.translate(p.x, p.y);
+                  ctx.rotate(p.rot);
+                  ctx.fillStyle = p.colorA ? csA : csB;
+                  const s = p.size;
+                  if (p.kind === 'tri') { ctx.beginPath(); ctx.moveTo(0, -s * 0.6); ctx.lineTo(s * 0.55, s * 0.5); ctx.lineTo(-s * 0.55, s * 0.5); ctx.closePath(); ctx.fill(); }
+                  else if (p.kind === 'circle') { ctx.beginPath(); ctx.arc(0, 0, s * 0.42, 0, Math.PI * 2); ctx.fill(); }
+                  else if (p.kind === 'dash') { ctx.fillRect(-s * 0.6, -s * 0.09, s * 1.2, s * 0.18); }
+                  else { ctx.fillRect(-s * 0.35, -s * 0.35, s * 0.7, s * 0.7); }
+                  ctx.restore();
+              }
+
               element = canvas;
           } else {
               if (webglRendererRef.current.canvas.width !== targetW || webglRendererRef.current.canvas.height !== targetH) {
@@ -11491,6 +12219,12 @@ return (
                                    if (uuid === 'hillscape-canvas-1') return '🍄';
                                    if (uuid === 'orbit-deflection-canvas-1') return '🎯';
                                    if (uuid === 'centipede-garden-canvas-1') return '🐛';
+                                   if (uuid === 'orb-cluster-canvas-1') return '🍇';
+                                   if (uuid === 'hatched-summit-canvas-1') return '🏔️';
+                                   if (uuid === 'symbol-portrait-canvas-1') return '👤';
+                                   if (uuid === 'ink-blot-canvas-1') return '🖋️';
+                                   if (uuid === 'floating-gem-canvas-1') return '💎';
+                                   if (uuid === 'confetti-scatter-canvas-1') return '🎊';
                                    if (uuid === 'bubble-spheres-1') return '🫧';
                                    if (uuid === 'dancing-cubes-canvas-1') return '🎲';
                                    return '✨';

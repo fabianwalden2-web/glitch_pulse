@@ -15,6 +15,7 @@
     "build:electron": "vite build && electron-builder"
   },
   "dependencies": {
+    "@chenglou/pretext": "^0.0.8",
     "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",

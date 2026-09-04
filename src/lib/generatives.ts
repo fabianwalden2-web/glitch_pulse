@@ -90,6 +90,21 @@ export const BUILTIN_PALETTES: ColorPalettePreset[] = [
     id: 'risograph_paper',
     name: 'Risograph Paper',
     colors: ['#f4f0e4', '#171717', '#8a8578', '#d8d2c0', '#3a372e']
+  },
+  {
+    id: 'aurora_glow',
+    name: 'Aurora Glow',
+    colors: ['#0a0a12', '#8b6cf0', '#f0a0d8', '#ffffff']
+  },
+  {
+    id: 'plotter_bands',
+    name: 'Plotter Bands',
+    colors: ['#ede9e2', '#d9557a', '#3a5ba0', '#3c7a52', '#e08a2e', '#234a30', '#a4342f']
+  },
+  {
+    id: 'ember_glow',
+    name: 'Ember Glow',
+    colors: ['#1b2140', '#ffcf5c', '#ff7a2e', '#ffffff']
   }
 ];
 
@@ -617,17 +632,19 @@ void main() {
     { "name": "font_size", "min": 8.0, "max": 60.0, "default": 20.0, "type": "number" },
     { "name": "glyph_size", "min": 0.2, "max": 1.6, "default": 1.05, "type": "number" },
     { "name": "invert", "min": 0.0, "max": 1.0, "default": 0.0, "type": "boolean" },
-    { "name": "line_gap", "min": 0.7, "max": 2.0, "default": 1.06, "type": "number" },
-    { "name": "dir_x", "min": -5.0, "max": 5.0, "default": 0.0, "type": "number" },
-    { "name": "dir_y", "min": -5.0, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "edge_glow", "min": 0.0, "max": 1.0, "default": 0.35, "type": "number" },
+    { "name": "line_gap", "min": 0.7, "max": 2.0, "default": 1.15, "type": "number" },
+    { "name": "wander", "min": 0.0, "max": 1.0, "default": 0.55, "type": "number" },
+    { "name": "reach", "min": 10.0, "max": 260.0, "default": 90.0, "type": "number" },
+    { "name": "edge_glow", "min": 0.0, "max": 1.0, "default": 0.5, "type": "number" },
     { "name": "glyph", "default": "字", "type": "string" },
-    { "name": "text_content", "default": "学而不思则罔，思而不学则殆。 温故而知新，可以为师矣。 三人行，必有我师焉。 己所不欲，勿施于人。 君子坦荡荡，小人长戚戚。 君子和而不同，小人同而不和。 知之为知之，不知为不知，是知也。 逝者如斯夫，不舍昼夜。 ", "type": "string" }
+    { "name": "text_content", "default": "学而不思则罔，思而不学则殆。 温故而知新，可以为师矣。 三人行，必有我师焉。 己所不欲，勿施于人。 君子坦荡荡，小人长戚戚。 君子和而不同，小人同而不和。 知之为知之，不知为不知，是知也。 逝者如斯夫，不舍昼夜。 ", "type": "string" },
+    { "name": "coil", "default": 0, "type": "action" },
+    { "name": "breathe_fire", "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#000000" },
     { "id": "dragon", "name": "Text", "defaultColor": "#ffffff" },
-    { "id": "accent", "name": "Glyph Edge", "defaultColor": "#ff2d55" }
+    { "id": "accent", "name": "Dragon & Glow", "defaultColor": "#ff2d55" }
   ],
   "uuid": "dragon-text-mask-canvas-1"
 }*/`,
@@ -1506,6 +1523,161 @@ void main(void) {
   "uuid": "centipede-garden-canvas-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Orb Cluster",
+  "category": "Geometric",
+  "color": "white",
+  "movement": true,
+  "defaultPaletteId": "aurora_glow",
+  "parameters": [
+    { "name": "count",       "min": 8.0,  "max": 100.0, "default": 45.0, "type": "number" },
+    { "name": "size",        "min": 0.4,  "max": 2.0,   "default": 1.0,  "type": "number" },
+    { "name": "glossiness",  "min": 0.0,  "max": 1.0,   "default": 0.7,  "type": "number" },
+    { "name": "attraction",  "min": 0.0,  "max": 1.0,   "default": 0.5,  "type": "number" },
+    { "name": "turbulence",  "min": 0.0,  "max": 2.0,   "default": 0.4,  "type": "number" },
+    { "name": "pop",     "default": 0, "type": "action" },
+    { "name": "scatter", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#0a0a12" },
+    { "id": "orb_a", "name": "Orb Colour A", "defaultColor": "#8b6cf0" },
+    { "id": "orb_b", "name": "Orb Colour B", "defaultColor": "#f0a0d8" },
+    { "id": "highlight", "name": "Specular Highlight", "defaultColor": "#ffffff" }
+  ],
+  "uuid": "orb-cluster-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Hatched Summit",
+  "category": "Lines & Terrain",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "plotter_bands",
+  "parameters": [
+    { "name": "peaks",         "min": 1.0,   "max": 4.0,   "default": 2.0,   "type": "number" },
+    { "name": "elevation",     "min": 40.0,  "max": 260.0, "default": 150.0, "type": "number" },
+    { "name": "hatch_density", "min": 40.0,  "max": 160.0, "default": 90.0,  "type": "number" },
+    { "name": "roughness",     "min": 0.0,   "max": 1.0,   "default": 0.5,   "type": "number" },
+    { "name": "hatch_angle",   "min": -60.0, "max": 60.0,  "default": -20.0, "type": "number" },
+    { "name": "erode",  "default": 0, "type": "action" },
+    { "name": "replot", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Paper", "defaultColor": "#ede9e2" },
+    { "id": "band_1", "name": "Band 1", "defaultColor": "#d9557a" },
+    { "id": "band_2", "name": "Band 2", "defaultColor": "#3a5ba0" },
+    { "id": "band_3", "name": "Band 3", "defaultColor": "#3c7a52" },
+    { "id": "band_4", "name": "Band 4", "defaultColor": "#e08a2e" },
+    { "id": "band_5", "name": "Band 5", "defaultColor": "#234a30" },
+    { "id": "band_6", "name": "Band 6", "defaultColor": "#a4342f" }
+  ],
+  "uuid": "hatched-summit-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Symbol Portrait",
+  "category": "Geometric",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo",
+  "parameters": [
+    { "name": "resolution", "min": 6.0,  "max": 24.0, "default": 12.0, "type": "number" },
+    { "name": "pose",       "min": 0.0,  "max": 1.0,  "default": 0.5,  "type": "number" },
+    { "name": "density",    "min": 0.0,  "max": 1.0,  "default": 0.85, "type": "number" },
+    { "name": "shimmer",    "min": 0.0,  "max": 2.0,  "default": 0.6,  "type": "number" },
+    { "name": "contrast",   "min": 0.3,  "max": 3.0,  "default": 1.2,  "type": "number" },
+    { "name": "blink",  "default": 0, "type": "action" },
+    { "name": "reveal", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "symbols", "name": "Symbols", "defaultColor": "#ffffff" }
+  ],
+  "uuid": "symbol-portrait-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Ink Blot",
+  "category": "Psychedelic",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo_white",
+  "parameters": [
+    { "name": "blob_count",    "min": 2.0, "max": 6.0,  "default": 4.0,  "type": "number" },
+    { "name": "size",          "min": 0.5, "max": 2.0,  "default": 1.0,  "type": "number" },
+    { "name": "viscosity",     "min": 0.0, "max": 1.0,  "default": 0.4,  "type": "number" },
+    { "name": "droplet_count", "min": 0.0, "max": 24.0, "default": 10.0, "type": "number" },
+    { "name": "sheen",         "min": 0.0, "max": 1.0,  "default": 0.5,  "type": "number" },
+    { "name": "splat",   "default": 0, "type": "action" },
+    { "name": "gravity", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
+    { "id": "ink", "name": "Ink", "defaultColor": "#000000" },
+    { "id": "highlight", "name": "Sheen", "defaultColor": "#ffffff" }
+  ],
+  "uuid": "ink-blot-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Floating Gem",
+  "category": "Geometric",
+  "color": "white",
+  "movement": true,
+  "defaultPaletteId": "ember_glow",
+  "parameters": [
+    { "name": "facets",         "min": 4.0, "max": 10.0, "default": 6.0,  "type": "number" },
+    { "name": "rotation_speed", "min": 0.0, "max": 3.0,  "default": 0.6,  "type": "number" },
+    { "name": "bob",            "min": 0.0, "max": 1.0,  "default": 0.5,  "type": "number" },
+    { "name": "glow",           "min": 0.0, "max": 1.0,  "default": 0.7,  "type": "number" },
+    { "name": "beam",           "min": 0.0, "max": 1.0,  "default": 0.6,  "type": "number" },
+    { "name": "pulse",   "default": 0, "type": "action" },
+    { "name": "shatter", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Sky", "defaultColor": "#1b2140" },
+    { "id": "gem", "name": "Gem Facets", "defaultColor": "#ffcf5c" },
+    { "id": "beam", "name": "Light Beam", "defaultColor": "#ff7a2e" },
+    { "id": "dust", "name": "Dust Motes", "defaultColor": "#ffffff" }
+  ],
+  "uuid": "floating-gem-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Confetti Scatter",
+  "category": "Geometric",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "bauhaus_primary",
+  "parameters": [
+    { "name": "density",     "min": 40.0, "max": 400.0, "default": 160.0, "type": "number" },
+    { "name": "gravity",     "min": 0.0,  "max": 3.0,   "default": 0.6,   "type": "number" },
+    { "name": "spin",        "min": 0.0,  "max": 4.0,   "default": 1.2,   "type": "number" },
+    { "name": "size",        "min": 0.4,  "max": 2.5,   "default": 1.0,   "type": "number" },
+    { "name": "turbulence",  "min": 0.0,  "max": 2.0,   "default": 0.5,   "type": "number" },
+    { "name": "burst",  "default": 0, "type": "action" },
+    { "name": "freeze", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
+    { "id": "shape_a", "name": "Shape Colour A", "defaultColor": "#e63946" },
+    { "id": "shape_b", "name": "Shape Colour B", "defaultColor": "#1d3557" }
+  ],
+  "uuid": "confetti-scatter-canvas-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   }
 ];
 
@@ -1520,6 +1692,10 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   '3d-polygon-neon-1': 'Geometric',
   '3d-debris-canvas-1': 'Geometric',
   'random-symbols-canvas-1': 'Geometric',
+  'orb-cluster-canvas-1': 'Geometric',
+  'symbol-portrait-canvas-1': 'Geometric',
+  'floating-gem-canvas-1': 'Geometric',
+  'confetti-scatter-canvas-1': 'Geometric',
   // Psychedelic
   'shader-clouds-1': 'Psychedelic',
   'ferrofluid-1': 'Psychedelic',
@@ -1528,6 +1704,7 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'growing-circles-canvas-1': 'Psychedelic',
   'stacked-balls-canvas-1': 'Psychedelic',
   'reaction-diffusion-canvas-1': 'Psychedelic',
+  'ink-blot-canvas-1': 'Psychedelic',
   // Text
   'kinetic-type-canvas-1': 'Text',
   'text-umbrella-canvas-1': 'Text',
@@ -1543,6 +1720,7 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'arcs-auto-tail-v4': 'Lines & Terrain',
   'voronoi-cells-canvas-1': 'Lines & Terrain',
   'contour-lines-canvas-1': 'Lines & Terrain',
+  'hatched-summit-canvas-1': 'Lines & Terrain',
   // Retro
   'neon-labyrinth-canvas-1': 'Retro',
   'pixel-swarm-canvas-1': 'Retro',
