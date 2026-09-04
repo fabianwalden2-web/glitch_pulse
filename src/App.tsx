@@ -16,6 +16,7 @@ import {
   Activity, 
   Layers, 
   ChevronDown,
+  ChevronUp,
   ChevronRight,
   ChevronLeft,
   PanelLeftClose,
@@ -477,6 +478,16 @@ const DEFAULT_TRIGGER_MAPPING: LayerTriggerMapping = {
   velocity: 0,
   triggerBehavior: DEFAULT_TRIGGER_TYPE
 };
+
+const RHYTHM_PATTERN_OPTIONS = [
+  { value: '4-on-the-Floor', label: '4-on-the-Floor' },
+  { value: 'Backbeat', label: 'Backbeat' },
+  { value: 'Off-Beat', label: 'Off-Beat' },
+  { value: 'Straight Eighths', label: 'Straight Eighths' },
+  { value: 'Straight Sixteenths', label: 'Straight Sixteenths' },
+  { value: 'The "One"', label: 'The "One"' },
+  { value: 'Custom', label: 'Custom' },
+];
 
 const INITIAL_MAPPINGS: EffectMapping[] = [
   { 
@@ -1301,6 +1312,109 @@ function HelpIcon({ text }: { text: string }) {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+// Compact modulation-amount stepper: number field + small up/down chevrons,
+// matching the app's minimal red/white styling instead of a bare number input.
+function TriggerAmountInput({ value, onChange }: { value: number; onChange: (val: number) => void }) {
+  const bump = (delta: number) => {
+    const next = Math.max(-100, Math.min(100, Math.round(value * 100) + delta));
+    onChange(next / 100);
+  };
+  return (
+    <div className="flex items-center gap-0.5">
+      <input
+        type="number"
+        min="-100" max="100"
+        value={Math.round(value * 100)}
+        onChange={(e) => onChange(Math.max(-100, Math.min(100, parseInt(e.target.value) || 0)) / 100)}
+        className="w-7 bg-transparent text-[10px] text-right outline-none text-red-400 font-bold [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+        title="Modulation Amount (-100 to 100)"
+      />
+      <div className="flex flex-col -space-y-1">
+        <button type="button" onClick={() => bump(5)} className="text-white/30 hover:text-red-400 leading-none transition-colors" title="Increase">
+          <ChevronUp size={9} strokeWidth={3} />
+        </button>
+        <button type="button" onClick={() => bump(-5)} className="text-white/30 hover:text-red-400 leading-none transition-colors" title="Decrease">
+          <ChevronDown size={9} strokeWidth={3} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// App-styled dropdown to replace bare native <select> elements: same trigger
+// look as other controls, with a custom popover option list (portalled so it
+// never gets clipped by a scrolling panel).
+function CustomSelect({ value, onChange, options, className, buttonClassName, placeholder }: {
+  value: string;
+  onChange: (val: string) => void;
+  options: { value: string; label: string }[];
+  className?: string;
+  buttonClassName?: string;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const update = () => {
+      const r = btnRef.current?.getBoundingClientRect();
+      if (r) setPos({ top: r.bottom + 4, left: r.left, width: r.width });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    const onDocDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (btnRef.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocDown);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+      document.removeEventListener('mousedown', onDocDown);
+    };
+  }, [open]);
+
+  const current = options.find(o => o.value === value);
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className={buttonClassName ?? `w-full flex items-center justify-between gap-2 bg-black/40 border border-white/10 hover:border-white/25 rounded px-2 py-1.5 text-[10px] uppercase tracking-widest outline-none text-left text-white transition-colors ${className ?? ''}`}
+      >
+        <span className="truncate">{current?.label ?? placeholder ?? ''}</span>
+        <ChevronDown size={11} className={`shrink-0 opacity-50 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && pos && createPortal(
+        <div
+          ref={menuRef}
+          style={{ position: 'fixed', top: pos.top, left: pos.left, width: pos.width, zIndex: 9999 }}
+          className="max-h-56 overflow-y-auto bg-[#0a0a0a] border border-white/15 rounded shadow-2xl custom-scrollbar"
+        >
+          {options.map(o => (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => { onChange(o.value); setOpen(false); }}
+              className={`w-full text-left px-2 py-1.5 text-[10px] uppercase tracking-widest transition-colors ${o.value === value ? 'bg-red-600 text-white' : 'text-white/70 hover:bg-white/10'}`}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
 
@@ -8836,16 +8950,15 @@ export default function App() {
 
       <div className="space-y-1">
         <label className="text-[8px] uppercase tracking-widest opacity-40 block">Live Input Device</label>
-        <select
-          className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[9px] outline-none font-mono"
+        <CustomSelect
+          className="font-mono normal-case"
           value={selectedAudioDevice}
-          onChange={(e) => setSelectedAudioDevice(e.target.value)}
-        >
-          <option value="">Default Microphone</option>
-          {audioDevices.map(d => (
-            <option key={d.deviceId} value={d.deviceId}>{d.label || `Mic ${d.deviceId.slice(0, 5)}`}</option>
-          ))}
-        </select>
+          onChange={setSelectedAudioDevice}
+          options={[
+            { value: '', label: 'Default Microphone' },
+            ...audioDevices.map(d => ({ value: d.deviceId, label: d.label || `Mic ${d.deviceId.slice(0, 5)}` })),
+          ]}
+        />
       </div>
 
       <div className="space-y-1.5 pb-3 border-b border-white/5">
@@ -9498,24 +9611,21 @@ export default function App() {
 
                         <div className="space-y-1">
                           <label className="text-[9px] font-mono uppercase text-gray-400 block">Use this layer as mask for:</label>
-                          <select
+                          <CustomSelect
+                            className="normal-case font-mono !text-[11px] bg-black/70 border-white/20"
                             value={layer.maskTargetId || ''}
-                            onChange={(e) => {
-                              const targetId = e.target.value || null;
+                            onChange={(v) => {
+                              const targetId = v || null;
                               setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, maskTargetId: targetId } : l));
                             }}
-                            className="w-full bg-black/70 border border-white/20 rounded px-2 py-1 text-[11px] text-white focus:outline-none focus:border-purple-500"
-                          >
-                            <option value="">None (Standard Layer)</option>
-                            {layers.filter(l => l.id !== layer.id).map(other => {
-                              const otherIdx = layers.findIndex(l => l.id === other.id) + 1;
-                              return (
-                                <option key={other.id} value={other.id}>
-                                  Layer {otherIdx}: {other.name} ({other.type})
-                                </option>
-                              );
-                            })}
-                          </select>
+                            options={[
+                              { value: '', label: 'None (Standard Layer)' },
+                              ...layers.filter(l => l.id !== layer.id).map(other => ({
+                                value: other.id,
+                                label: `Layer ${layers.findIndex(l => l.id === other.id) + 1}: ${other.name} (${other.type})`,
+                              })),
+                            ]}
+                          />
                         </div>
 
                         {layer.maskTargetId && (
@@ -9593,21 +9703,21 @@ export default function App() {
                          {/* Blend Mode */}
                          <div className="space-y-1 border-b border-white/5 pb-4 mb-2">
                            <label className="text-[8px] uppercase tracking-widest opacity-40">Blend Mode</label>
-                           <select 
+                           <CustomSelect
                               value={layer.blendMode}
-                              onChange={(e) => setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, blendMode: e.target.value as GlobalCompositeOperation } : l))}
-                              className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[9px] uppercase tracking-widest outline-none"
-                            >
-                              <option value="source-over">Normal</option>
-                              <option value="screen">Screen</option>
-                              <option value="multiply">Multiply</option>
-                              <option value="overlay">Overlay</option>
-                              <option value="color-dodge">Color Dodge</option>
-                              <option value="difference">Difference</option>
-                              <option value="exclusion">Exclusion</option>
-                              <option value="hard-light">Hard Light</option>
-                              <option value="soft-light">Soft Light</option>
-                           </select>
+                              onChange={(v) => setLayers(prev => prev.map(l => l.id === layer.id ? { ...l, blendMode: v as GlobalCompositeOperation } : l))}
+                              options={[
+                                { value: 'source-over', label: 'Normal' },
+                                { value: 'screen', label: 'Screen' },
+                                { value: 'multiply', label: 'Multiply' },
+                                { value: 'overlay', label: 'Overlay' },
+                                { value: 'color-dodge', label: 'Color Dodge' },
+                                { value: 'difference', label: 'Difference' },
+                                { value: 'exclusion', label: 'Exclusion' },
+                                { value: 'hard-light', label: 'Hard Light' },
+                                { value: 'soft-light', label: 'Soft Light' },
+                              ]}
+                           />
                          </div>
 
                          {/* Effects List */}
@@ -9929,26 +10039,31 @@ export default function App() {
 
                    
                    if (p.type === 'boolean') {
-                      const currentVal = isGen ? 
-                        (layerTarget.generativeSettings?.[p.name] ?? p.default) : 
+                      const currentVal = isGen ?
+                        (layerTarget.generativeSettings?.[p.name] ?? p.default) :
                         (m.settings?.[p.name] ?? p.default);
                       const boolVal = Number(currentVal) > 0.5;
                       return (
-                        <div key={p.name} className="flex flex-col items-center justify-center p-2 bg-transparent hover:bg-white/5 rounded transition-colors col-span-1 sm:col-span-2 relative h-[70px]">
-                           <span className="text-[9px] uppercase font-bold text-gray-400 tracking-wider font-mono absolute top-2">{p.name.replace(/_/g, ' ')}</span>
-                           <button 
-                             onClick={() => {
-                                 const newVal = boolVal ? 0.0 : 1.0;
-                                 if (isGen) {
-                                    setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeSettings: { ...(l.generativeSettings || {}), [p.name]: newVal } } : l));
-                                 } else {
-                                    setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, filterSettings: { ...(l.filterSettings || {}), [p.name]: newVal } } : l));
-                                 }
-                             }}
-                             className={`mt-4 w-10 h-5 rounded-full relative transition-colors border border-white/20 ${boolVal ? 'bg-red-600' : 'bg-black/50'}`}
-                           >
-                              <div className={`absolute top-[1px] w-4 h-4 rounded-full bg-white transition-all ${boolVal ? 'left-[22px]' : 'left-[1px]'}`} />
-                           </button>
+                        <div key={p.name} className="flex flex-col gap-1 p-2 bg-transparent hover:bg-white/5 rounded transition-colors w-full">
+                           <div className="flex-1 flex flex-col items-center justify-center mt-0.5">
+                             <button
+                               onClick={() => {
+                                   const newVal = boolVal ? 0.0 : 1.0;
+                                   if (isGen) {
+                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeSettings: { ...(l.generativeSettings || {}), [p.name]: newVal } } : l));
+                                   } else {
+                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, filterSettings: { ...(l.filterSettings || {}), [p.name]: newVal } } : l));
+                                   }
+                               }}
+                               className={`w-11 h-11 rounded-full border transition-all flex items-center justify-center shadow-lg active:scale-90 ${boolVal ? 'bg-red-600 border-red-500 text-white' : 'bg-black/60 border-white/20 text-white/40 hover:border-white/40 hover:text-white'}`}
+                               title={boolVal ? 'On — click to turn off' : 'Off — click to turn on'}
+                             >
+                                <Power size={16} />
+                             </button>
+                             <span className="text-[9px] uppercase font-bold text-gray-400 tracking-wider font-mono mt-1 text-center truncate max-w-[85px]">
+                                {p.name.replace(/_/g, ' ')}
+                             </span>
+                           </div>
                         </div>
                       )
                    }
@@ -10050,20 +10165,15 @@ return (
                         <div className="flex items-center justify-between w-full gap-2 px-2">
                            {/* Left: Counter (if active) */}
                            {isTriggerActive ? (
-                             <input 
-                               type="number"
-                               min="-100" max="100"
-                               value={Math.round(triggerAmount * 100)}
-                               onChange={(e) => {
-                                  const val = Math.max(-100, Math.min(100, parseInt(e.target.value) || 0)) / 100;
+                             <TriggerAmountInput
+                               value={triggerAmount}
+                               onChange={(val) => {
                                   if (isGen) {
                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerAmount: { ...(l.generativeTriggerAmount || {}), [p.name]: val } } : l));
                                   } else {
                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(map => map.id === m.id ? { ...map, triggerAmount: { ...(map.triggerAmount || {}), [p.name]: val } } : map) } : l));
                                   }
                                }}
-                               className="w-10 bg-transparent text-[10px] text-left outline-none text-red-400 font-bold cursor-ns-resize"
-                               title="Modulation Amount (-100 to 100)"
                              />
                            ) : <div className="w-10" />}
 
@@ -10481,16 +10591,11 @@ return (
                                 <div key={paramName} className="flex flex-col gap-1 p-2 bg-transparent hover:bg-white/5 rounded transition-colors w-full">
                                   <div className="flex items-center justify-between w-full gap-2 px-2">
                                      {isTriggerActive ? (
-                                       <input 
-                                         type="number"
-                                         min="-100" max="100"
-                                         value={Math.round(triggerAmount * 100)}
-                                         onChange={(e) => {
-                                            const val = Math.max(-100, Math.min(100, parseInt(e.target.value) || 0)) / 100;
+                                       <TriggerAmountInput
+                                         value={triggerAmount}
+                                         onChange={(val) => {
                                             setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, transformTriggerAmount: { ...(l.transformTriggerAmount || {}), [paramName]: val } } : l));
                                          }}
-                                         className="w-10 bg-transparent text-[10px] text-left outline-none text-red-400 font-bold cursor-ns-resize"
-                                         title="Modulation Amount (-100 to 100)"
                                        />
                                      ) : <div className="w-10" />}
 
@@ -10556,17 +10661,18 @@ return (
                                    {(
                                      <div className="space-y-4">
                                        <label className="text-[10px] uppercase tracking-widest opacity-40">Trigger Mode</label>
-                                       <select
+                                       <CustomSelect
                                          value={activeLayer.videoTriggerMode || 'continuous'}
-                                         onChange={(e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoTriggerMode: e.target.value as any } : l))}
-                                         className="w-full bg-black/40 border border-white/10 rounded p-2 text-[10px] uppercase tracking-widest outline-none"
-                                       >
-                                         <option value="continuous">Continuous Playback</option>
-                                         <option value="restart">Restart on Trigger</option>
-                                         <option value="advance">Frame Advance</option>
-                                         <option value="rewind">Boomerang</option>
-                                         <option value="frame-accumulator">Frame Accumulator</option>
-                                       </select>
+                                         onChange={(v) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, videoTriggerMode: v as any } : l))}
+                                         buttonClassName="w-full flex items-center justify-between gap-2 bg-black/40 border border-white/10 hover:border-white/25 rounded p-2 text-[10px] uppercase tracking-widest outline-none text-left text-white transition-colors"
+                                         options={[
+                                           { value: 'continuous', label: 'Continuous Playback' },
+                                           { value: 'restart', label: 'Restart on Trigger' },
+                                           { value: 'advance', label: 'Frame Advance' },
+                                           { value: 'rewind', label: 'Boomerang' },
+                                           { value: 'frame-accumulator', label: 'Frame Accumulator' },
+                                         ]}
+                                       />
                                        {!isLayerTriggerActive && (
                                          <p className="text-[8px] uppercase tracking-widest text-white/30 leading-relaxed">
                                            Restart / Advance / Boomerang / Accumulator react to a trigger — enable a MIDI, Audio or Rhythm trigger on this layer to drive them.
@@ -10624,18 +10730,19 @@ return (
                                             </div>
                                             <div className="space-y-2">
                                               <label className="text-[8px] uppercase opacity-30 block">Blend Mode</label>
-                                              <select
+                                              <CustomSelect
                                                 value={activeLayer.accumulateBlendMode || 'source-over'}
-                                                onChange={(e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, accumulateBlendMode: e.target.value as GlobalCompositeOperation } : l))}
-                                                className="w-full bg-black/60 border border-white/10 rounded px-2 py-1 text-[9px] uppercase text-white outline-none"
-                                              >
-                                                <option value="source-over">Normal (Source Over)</option>
-                                                <option value="screen">Screen (Lighten)</option>
-                                                <option value="lighten">Lighten</option>
-                                                <option value="overlay">Overlay</option>
-                                                <option value="difference">Difference</option>
-                                                <option value="color-dodge">Color Dodge</option>
-                                              </select>
+                                                onChange={(v) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, accumulateBlendMode: v as GlobalCompositeOperation } : l))}
+                                                buttonClassName="w-full flex items-center justify-between gap-2 bg-black/60 border border-white/10 hover:border-white/25 rounded px-2 py-1 text-[9px] uppercase outline-none text-left text-white transition-colors"
+                                                options={[
+                                                  { value: 'source-over', label: 'Normal (Source Over)' },
+                                                  { value: 'screen', label: 'Screen (Lighten)' },
+                                                  { value: 'lighten', label: 'Lighten' },
+                                                  { value: 'overlay', label: 'Overlay' },
+                                                  { value: 'difference', label: 'Difference' },
+                                                  { value: 'color-dodge', label: 'Color Dodge' },
+                                                ]}
+                                              />
                                             </div>
                                             <div className="space-y-2">
                                               <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Max Stamped Frames</span><span>{activeLayer.accumulateMaxFrames || 16}</span></div>
@@ -10854,29 +10961,28 @@ return (
                                 <div className={audioEngineType === 'level' ? 'grid grid-cols-2 gap-2' : 'grid grid-cols-1 gap-2'}>
                                   <div className="space-y-1">
                                     <label className="text-[8px] uppercase tracking-widest opacity-40 block">Target Stem</label>
-                                    <select
+                                    <CustomSelect
                                       value={mapping.audioMapping?.stemId || ''}
-                                      onChange={e => patchAudio({ stemId: e.target.value })}
-                                      className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
-                                    >
-                                      <option value="">Master Out</option>
-                                      {audioStems.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                                      {mapping.audioMapping?.stemId === 'yt-audio' && !audioStems.some(s => s.id === 'yt-audio') && (
-                                        <option value="yt-audio">YouTube (connect in Audio panel)</option>
-                                      )}
-                                    </select>
+                                      onChange={(v) => patchAudio({ stemId: v })}
+                                      options={[
+                                        { value: '', label: 'Master Out' },
+                                        ...audioStems.map(s => ({ value: s.id, label: s.name })),
+                                        ...(mapping.audioMapping?.stemId === 'yt-audio' && !audioStems.some(s => s.id === 'yt-audio')
+                                          ? [{ value: 'yt-audio', label: 'YouTube (connect in Audio panel)' }] : []),
+                                      ]}
+                                    />
                                   </div>
                                   {audioEngineType === 'level' && (
                                   <div className="space-y-1">
                                     <label className="text-[8px] uppercase tracking-widest opacity-40 block">Tracking Mode</label>
-                                    <select
+                                    <CustomSelect
                                       value={mapping.audioMapping?.mode || 'fast'}
-                                      onChange={e => patchAudio({ mode: e.target.value as 'fast' | 'smooth' })}
-                                      className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
-                                    >
-                                      <option value="fast">Fast (Strobo)</option>
-                                      <option value="smooth">Smooth (Blend)</option>
-                                    </select>
+                                      onChange={(v) => patchAudio({ mode: v as 'fast' | 'smooth' })}
+                                      options={[
+                                        { value: 'fast', label: 'Fast (Strobo)' },
+                                        { value: 'smooth', label: 'Smooth (Blend)' },
+                                      ]}
+                                    />
                                   </div>
                                   )}
                                 </div>
@@ -10940,15 +11046,7 @@ return (
                                  </div>
                                  <div className="flex flex-col gap-1">
                                    <label className="text-[8px] uppercase tracking-widest opacity-40">Pattern</label>
-                                   <select value={rm.pattern} onChange={e => patchRhythm({ pattern: e.target.value })} className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none">
-                                     <option value="4-on-the-Floor">4-on-the-Floor</option>
-                                     <option value="Backbeat">Backbeat</option>
-                                     <option value="Off-Beat">Off-Beat</option>
-                                     <option value="Straight Eighths">Straight Eighths</option>
-                                     <option value="Straight Sixteenths">Straight Sixteenths</option>
-                                     <option value="The &quot;One&quot;">The "One"</option>
-                                     <option value="Custom">Custom</option>
-                                   </select>
+                                   <CustomSelect value={rm.pattern} onChange={(v) => patchRhythm({ pattern: v })} options={RHYTHM_PATTERN_OPTIONS} />
                                  </div>
                                </div>
                                <StepSequencer
@@ -11064,19 +11162,11 @@ return (
                                   </div>
                                   <div className="flex flex-col gap-1">
                                     <label className="text-[8px] uppercase tracking-widest opacity-40">Pattern</label>
-                                    <select 
+                                    <CustomSelect
                                       value={layerTarget.rhythmMapping.pattern}
-                                      onChange={e => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, rhythmMapping: { ...l.rhythmMapping!, pattern: e.target.value } } : l))}
-                                      className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
-                                    >
-                                      <option value="4-on-the-Floor">4-on-the-Floor</option>
-                                      <option value="Backbeat">Backbeat</option>
-                                      <option value="Off-Beat">Off-Beat</option>
-                                      <option value="Straight Eighths">Straight Eighths</option>
-                                      <option value="Straight Sixteenths">Straight Sixteenths</option>
-                                      <option value="The &quot;One&quot;">The "One"</option>
-                                      <option value="Custom">Custom</option>
-                                    </select>
+                                      onChange={(v) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, rhythmMapping: { ...l.rhythmMapping!, pattern: v } } : l))}
+                                      options={RHYTHM_PATTERN_OPTIONS}
+                                    />
                                   </div>
                                 </div>
                                 <StepSequencer 
@@ -11113,26 +11203,26 @@ return (
                                <div className={layerAudioEngine === 'level' ? 'grid grid-cols-2 gap-2' : 'grid grid-cols-1 gap-2'}>
                                 <div className="space-y-1">
                                   <label className="text-[8px] uppercase tracking-widest opacity-40 block mb-1">Target Stem</label>
-                                  <select
+                                  <CustomSelect
                                     value={layerTarget.audioMapping?.stemId || ''}
-                                    onChange={e => patchLayerAudio({ stemId: e.target.value })}
-                                    className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
-                                  >
-                                    <option value="">Master Out</option>
-                                    {audioStems.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                                  </select>
+                                    onChange={(v) => patchLayerAudio({ stemId: v })}
+                                    options={[
+                                      { value: '', label: 'Master Out' },
+                                      ...audioStems.map(s => ({ value: s.id, label: s.name })),
+                                    ]}
+                                  />
                                 </div>
                                 {layerAudioEngine === 'level' && (
                                 <div className="space-y-1">
                                   <label className="text-[8px] uppercase tracking-widest opacity-40 block mb-1">Tracking Mode</label>
-                                  <select
+                                  <CustomSelect
                                     value={layerTarget.audioMapping?.mode || 'fast'}
-                                    onChange={e => patchLayerAudio({ mode: e.target.value as 'fast'|'smooth' })}
-                                    className="w-full bg-black/40 border border-white/10 rounded p-1.5 text-[10px] outline-none"
-                                  >
-                                    <option value="fast">Fast (Strobo)</option>
-                                    <option value="smooth">Smooth (Blend)</option>
-                                  </select>
+                                    onChange={(v) => patchLayerAudio({ mode: v as 'fast'|'smooth' })}
+                                    options={[
+                                      { value: 'fast', label: 'Fast (Strobo)' },
+                                      { value: 'smooth', label: 'Smooth (Blend)' },
+                                    ]}
+                                  />
                                 </div>
                                 )}
                                </div>
