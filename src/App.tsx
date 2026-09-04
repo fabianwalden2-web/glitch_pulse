@@ -3172,7 +3172,26 @@ export default function App() {
                       }
                       aState.prevActive = isFired;
                       finalVal = Number(baseVal || 0) + aState.count;
-                  } else if (p.type === 'string' || p.type === 'boolean') {
+                  } else if (p.type === 'boolean') {
+                      if (isTriggerActive) {
+                          const actionKey = `action-${layer.id}-${p.name}`;
+                          if (!actionTriggerStateRef.current[actionKey]) {
+                              actionTriggerStateRef.current[actionKey] = { lastTriggered: 0, count: 0, prevActive: false };
+                          }
+                          const aState = actionTriggerStateRef.current[actionKey];
+                          const isFired = activeMagnitude > 0.15;
+                          if (isFired && !aState.prevActive) {
+                              aState.count += 1;
+                              aState.lastTriggered = performance.now();
+                          }
+                          aState.prevActive = isFired;
+                          const baseBool = Number(baseVal) > 0.5;
+                          const flipped = aState.count % 2 === 1;
+                          finalVal = (flipped ? !baseBool : baseBool) ? 1 : 0;
+                      } else {
+                          finalVal = baseVal;
+                      }
+                  } else if (p.type === 'string') {
                       finalVal = baseVal;
                   } else {
                       const easeKey = layer.id + '-' + p.name;
@@ -10044,7 +10063,46 @@ export default function App() {
                         (m.settings?.[p.name] ?? p.default);
                       const boolVal = Number(currentVal) > 0.5;
                       return (
-                        <div key={p.name} className="flex flex-col gap-1 p-2 bg-transparent hover:bg-white/5 rounded transition-colors w-full">
+                        <div key={p.name} className="flex flex-col gap-1 p-2 bg-transparent hover:bg-white/5 rounded transition-colors w-full relative">
+                           <div className="flex items-center justify-between w-full gap-2 px-2">
+                              <span className="text-[7px] font-mono uppercase tracking-widest text-white/30">Toggle</span>
+                              <button
+                                onClick={() => {
+                                   const newState = !isTriggerActive;
+                                   const targetId = isGen ? `generative-${p.name}` : `effect-${m.id}-${p.name}`;
+                                   if (isGen) {
+                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [p.name]: newState } } : l));
+                                      const hasMapping = layerTarget.generativeMappings?.find((gm: any) => gm.id === p.name);
+                                      if (newState && !hasMapping) {
+                                         const targetM = {
+                                           ...INITIAL_MAPPINGS[0],
+                                           id: p.name,
+                                           name: p.name,
+                                           active: true,
+                                           triggerBehavior: 'momentary' as any,
+                                           noteSettings: { ...DEFAULT_NOTE_SETTINGS },
+                                           channels: Array.from({length: 16}, (_, i) => i)
+                                         };
+                                         setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: [...(l.generativeMappings || []), targetM] } : l));
+                                      }
+                                   } else {
+                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(map => map.id === m.id ? { ...map, triggerActive: { ...(map.triggerActive || {}), [p.name]: newState } } : map) } : l));
+                                   }
+                                   if (newState) {
+                                      setSelectedEffectId(targetId);
+                                      setSelectedLayerForEffect(layerTarget.id);
+                                      setSidebarTab('triggers');
+                                   } else {
+                                      setSelectedEffectId(prev => prev === targetId ? null : prev);
+                                   }
+                                }}
+                                className={`p-1.5 rounded-full transition-all flex items-center justify-center ${isTriggerActive ? 'text-red-500 bg-red-500/20' : 'text-white/20 hover:text-white hover:bg-white/10'}`}
+                                title={isTriggerActive ? "Toggle Trigger Active (Click to turn off)" : "Connect Toggle to Trigger (MIDI, Audio, Rhythm)"}
+                              >
+                                <Zap size={10} />
+                              </button>
+                           </div>
+
                            <div className="flex-1 flex flex-col items-center justify-center mt-0.5">
                              <button
                                onClick={() => {
@@ -10052,7 +10110,7 @@ export default function App() {
                                    if (isGen) {
                                       setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeSettings: { ...(l.generativeSettings || {}), [p.name]: newVal } } : l));
                                    } else {
-                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, filterSettings: { ...(l.filterSettings || {}), [p.name]: newVal } } : l));
+                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(map => map.id === m.id ? { ...map, settings: { ...map.settings, [p.name]: newVal } } : map) } : l));
                                    }
                                }}
                                className={`w-11 h-11 rounded-full border transition-all flex items-center justify-center shadow-lg active:scale-90 ${boolVal ? 'bg-red-600 border-red-500 text-white' : 'bg-black/60 border-white/20 text-white/40 hover:border-white/40 hover:text-white'}`}
@@ -10267,6 +10325,13 @@ return (
                    );
                 };
 
+                // Toggles and action buttons always render after the regular knobs,
+                // keeping their relative order among themselves.
+                const sortParamsForDisplay = (params: any[]) => {
+                   const pushToEnd = (t: string) => t === 'action' || t === 'boolean';
+                   return [...params].sort((a, b) => (pushToEnd(a.type) ? 1 : 0) - (pushToEnd(b.type) ? 1 : 0));
+                };
+
                 const CollapseHead = ({ id, label }: { id: 'params' | 'colours' | 'fx'; label: string }) => (
                   <button
                     onClick={() => setBelowPanel(id)}
@@ -10285,7 +10350,7 @@ return (
                         <CollapseHead id="params" label={`Parameters — ${generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.description || 'Script'}`} />
                         {belowPanel === 'params' && (
                         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
-                          {generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.parameters.map(p => {
+                          {sortParamsForDisplay(generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.parameters || []).map(p => {
                             const mapping = activeLayer.generativeMappings?.find(m => m.id === p.name) || { id: p.name, name: p.name, active: false };
                             return renderKnob(p, mapping, activeLayer, true);
                           })}
@@ -10566,7 +10631,7 @@ return (
                             <div key={m.id} className="space-y-4">
                               <h4 className="text-[10px] font-bold uppercase tracking-widest text-white/50 pb-1">{effectDef.name}</h4>
                               <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
-                                {effectDef.parameters.map(p => renderKnob(p, m, activeLayer, false))}
+                                {sortParamsForDisplay(effectDef.parameters).map(p => renderKnob(p, m, activeLayer, false))}
                               </div>
                             </div>
                           );
