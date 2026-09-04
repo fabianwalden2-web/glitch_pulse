@@ -622,7 +622,7 @@ void main() {
   },
   {
     header: `/*{
-  "description": "Text Mask Canvas",
+  "description": "Dragon Manuscript",
   "color": "black",
   "movement": true,
   "defaultPaletteId": "monochrome_duo",
