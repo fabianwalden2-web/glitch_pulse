@@ -50,7 +50,8 @@ import {
   Check,
   Copy,
   Sparkles,
-  Mic
+  Mic,
+  Webcam
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition, BUILTIN_PALETTES, GenerativeElement, ColorPalettePreset, GENERATIVE_CATEGORY_ORDER } from './lib/generatives';
@@ -141,6 +142,8 @@ interface Layer {
   videoAdvanceAmount?: number;
   videoFrameRate?: number;
   videoRewindSpeed?: number;
+  isLive?: boolean;
+  liveDeviceId?: string;
   generativeId?: string;
   generativeSettings?: Record<string, number>;
   generativeTriggerActive?: Record<string, boolean>;
@@ -1792,6 +1795,8 @@ export default function App() {
   const [midiDevices, setMidiDevices] = useState<MidiDevice[]>([]);
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedAudioDevice, setSelectedAudioDevice] = useState<string>('');
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+  const [webcamError, setWebcamError] = useState<Record<string, string>>({});
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
   const [midiLearnTarget, setMidiLearnTarget] = useState<{layerId: string, effectId?: string, field: 'noteStart' | 'noteEnd'} | null>(null);
   const [isMidiLearnMode, setIsMidiLearnMode] = useState(false);
@@ -1831,13 +1836,14 @@ export default function App() {
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
+  const webcamStreamsRef = useRef<Record<string, MediaStream>>({});
   const masterPlaybackStartTimeRef = useRef<number>(performance.now());
 
   const resyncAllVideos = useCallback(() => {
     const nowTime = performance.now();
     masterPlaybackStartTimeRef.current = nowTime;
     layersRef.current.forEach(layer => {
-      if (layer.type === 'video') {
+      if (layer.type === 'video' && !layer.isLive) {
         const vid = videoRefs.current[layer.id];
         if (vid) {
           const start = layer.videoStart || 0;
@@ -2074,6 +2080,11 @@ export default function App() {
         try {
           const parsed = JSON.parse(response.data);
           const processedLayers = await Promise.all(parsed.layers.map(async (l: any) => {
+            if (l.isLive) {
+              // Live camera streams can't be persisted -- reload as disconnected so the
+              // user can re-grant/re-select the camera rather than showing a fake feed.
+              return { ...l, isLive: false };
+            }
             if (l.assetPath) {
               const exists = await electronAPI.checkFileExists(l.assetPath);
               if (exists) {
@@ -2131,6 +2142,9 @@ export default function App() {
           try {
             const parsed = JSON.parse(data);
             const processedLayers = await Promise.all(parsed.layers.map(async (l: any) => {
+              if (l.isLive) {
+                return { ...l, isLive: false };
+              }
               if (l.assetPath) {
                 const exists = await electronAPI.checkFileExists(l.assetPath);
                 if (exists) {
@@ -2307,12 +2321,70 @@ export default function App() {
     }
   }, []);
 
+  const requestVideoDevices = useCallback(async () => {
+    try {
+      if (!navigator.mediaDevices) return;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices.filter(d => d.kind === 'videoinput');
+      setVideoDevices(inputs);
+    } catch (err) {
+      console.error("Video Devices Error:", err);
+    }
+  }, []);
+
+  const stopWebcam = useCallback((layerId: string) => {
+    const stream = webcamStreamsRef.current[layerId];
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+      delete webcamStreamsRef.current[layerId];
+    }
+    const vid = videoRefs.current[layerId];
+    if (vid) vid.srcObject = null;
+  }, []);
+
+  const startWebcam = useCallback(async (layerId: string, deviceId?: string) => {
+    try {
+      stopWebcam(layerId);
+      const constraints: MediaStreamConstraints = {
+        video: deviceId ? { deviceId: { exact: deviceId } } : true,
+        audio: false,
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      webcamStreamsRef.current[layerId] = stream;
+      const vid = videoRefs.current[layerId];
+      if (vid) {
+        vid.srcObject = stream;
+        vid.play().catch(() => {});
+      }
+      setWebcamError(prev => { const next = { ...prev }; delete next[layerId]; return next; });
+      setLayers(prev => prev.map(l => l.id === layerId ? {
+        ...l,
+        type: 'video',
+        isLive: true,
+        liveDeviceId: deviceId || stream.getVideoTracks()[0]?.getSettings().deviceId || l.liveDeviceId,
+        src: null,
+        missingMedia: false,
+        videoTriggerMode: 'continuous',
+        name: 'Live Camera',
+      } : l));
+      requestVideoDevices();
+    } catch (err: any) {
+      console.error("Webcam Error:", err);
+      setWebcamError(prev => ({ ...prev, [layerId]: err?.message || 'Could not access the camera.' }));
+    }
+  }, [stopWebcam, requestVideoDevices]);
+
   useEffect(() => {
     requestMidiAccess();
     requestAudioDevices();
+    requestVideoDevices();
     navigator.mediaDevices?.addEventListener('devicechange', requestAudioDevices);
-    return () => navigator.mediaDevices?.removeEventListener('devicechange', requestAudioDevices);
-  }, [requestMidiAccess, requestAudioDevices]);
+    navigator.mediaDevices?.addEventListener('devicechange', requestVideoDevices);
+    return () => {
+      navigator.mediaDevices?.removeEventListener('devicechange', requestAudioDevices);
+      navigator.mediaDevices?.removeEventListener('devicechange', requestVideoDevices);
+    };
+  }, [requestMidiAccess, requestAudioDevices, requestVideoDevices]);
 
   const handleMidiMessage = useCallback((event: any) => {
     // Keep tablet awake while receiving MIDI events
@@ -3040,7 +3112,7 @@ export default function App() {
       // We still process the layer even if hidden if it has effects that could be drawing something (e.g. generative)
       // or if it's midi-triggered but currently silent, we still need to process its parameters.
       if (!(isVisibleNormally || hasActiveEffect || layer.midiMode)) return;
-      if (layer.type !== 'generative' && !layer.src) return;
+      if (layer.type !== 'generative' && !layer.src && !layer.isLive) return;
 
       let element: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement | null | undefined = null;
       if (layer.type === 'generative' && layer.generativeId && webglRendererRef.current) {
@@ -7689,7 +7761,12 @@ export default function App() {
         }
       } else if (layer.type === 'video') {
          element = videoRefs.current[layer.id];
-         if (element && isPlaying) {
+         if (element && layer.isLive) {
+           const vid = element as HTMLVideoElement;
+           if (isPlaying && vid.paused && vid.srcObject) {
+             vid.play().catch(() => {});
+           }
+         } else if (element && isPlaying) {
            const vid = element as HTMLVideoElement;
            const start = layer.videoStart || 0;
            const end = (layer.videoEnd && layer.videoEnd > start) ? layer.videoEnd : (vid.duration || (start + 10));
@@ -9340,6 +9417,12 @@ export default function App() {
     const validFiles = files.filter(f => f.type.startsWith('video/') || f.type.startsWith('image/'));
     if (validFiles.length === 0) return;
 
+    if (targetLayerId && layersRef.current.find(l => l.id === targetLayerId)?.isLive) {
+      stopWebcam(targetLayerId);
+    } else if (!targetLayerId && layersRef.current.length === 1 && layersRef.current[0].isLive) {
+      stopWebcam(layersRef.current[0].id);
+    }
+
     const preloadImg = (id: string, src: string) => {
       try {
         const img = new Image();
@@ -9396,6 +9479,7 @@ export default function App() {
           ...l,
           missingMedia: false,
           src: firstUrl,
+          isLive: false,
           type: firstIsVideo ? 'video' : 'image',
           name: firstFile.name,
           videoTriggerMode: 'continuous' as const,
@@ -9422,6 +9506,7 @@ export default function App() {
             name: firstFile.name,
             type: firstIsVideo ? 'video' : 'image',
             src: firstUrl,
+            isLive: false,
             missingMedia: false,
             triggerMapping: prev[0].triggerMapping || { ...DEFAULT_TRIGGER_MAPPING, channels: Array.from({length: 16}, (_, i) => i), noteSettings: { ...DEFAULT_NOTE_SETTINGS } },
             rhythmMapping: prev[0].rhythmMapping || { enabled: false, pattern: '4-on-the-Floor' as const, bpm: 120, customPattern: Array(16).fill(false) }
@@ -10321,18 +10406,20 @@ export default function App() {
                         <button 
                           onClick={(e) => {
                             e.stopPropagation();
+                            if (layer.isLive) stopWebcam(layer.id);
                             if (layers.length > 1) {
                               setLayers(prev => prev.filter(l => l.id !== layer.id));
                               if (activeLayerId === layer.id) setActiveLayerId(layers[0].id);
                             } else {
-                              setLayers(prev => prev.map(l => l.id === layer.id ? { 
-                                ...l, 
+                              setLayers(prev => prev.map(l => l.id === layer.id ? {
+                                ...l,
                                 name: 'Empty Layer',
-                                src: null, 
-                                type: 'video', 
+                                src: null,
+                                type: 'video',
+                                isLive: false,
                                 videoTriggerMode: 'continuous',
-                                mappings: [], 
-                                filterId: null 
+                                mappings: [],
+                                filterId: null
                               } : l));
                               if (videoRefs.current[layer.id]) videoRefs.current[layer.id].src = '';
                             }
@@ -10442,7 +10529,7 @@ export default function App() {
                                 <span className="text-[10px] uppercase tracking-widest font-bold truncate max-w-[180px]">
                                   {layer.type === 'generative'
                                     ? (generativesRef.current.find(g => g.uuid === layer.generativeId)?.description || layer.name || 'Change Script')
-                                    : (layer.src ? (layer.name.length > 20 ? layer.name.slice(0, 20) + '...' : layer.name) : 'Load Asset')}
+                                    : ((layer.src || layer.isLive) ? (layer.name.length > 20 ? layer.name.slice(0, 20) + '...' : layer.name) : 'Load Asset')}
                                 </span>
                              </button>
                          </div>
@@ -10619,9 +10706,16 @@ export default function App() {
                       key={layer.id}
                       ref={el => {
                         videoRefs.current[layer.id] = el;
+                        if (el && layer.isLive) {
+                          const stream = webcamStreamsRef.current[layer.id];
+                          if (stream && el.srcObject !== stream) {
+                            el.srcObject = stream;
+                            el.play().catch(() => {});
+                          }
+                        }
                       }}
-                      src={layer.src || undefined}
-                      loop
+                      src={layer.isLive ? undefined : (layer.src || undefined)}
+                      loop={!layer.isLive}
                       muted
                       playsInline
                       preload="auto"
@@ -10746,7 +10840,7 @@ export default function App() {
                 if (!activeLayer) return null;
                 const layerIdx = layers.findIndex(l => l.id === activeLayer.id) + 1;
 
-                if (!activeLayer.src && !activeLayer.missingAsset && activeLayer.type !== 'generative') {
+                if (!activeLayer.src && !activeLayer.isLive && !activeLayer.missingAsset && activeLayer.type !== 'generative') {
                   return (
                     <div className="p-8 text-center opacity-40 text-[11px] uppercase tracking-widest font-bold flex flex-col items-center justify-center h-full border border-dashed border-white/10 rounded-xl my-4">
                        LOAD AN ASSET OR SELECT A GENERATIVE SCRIPT TO VIEW PARAMETERS
@@ -11368,7 +11462,7 @@ return (
                     )}
 
                     {/* Image / Video Transform */}
-                    {activeLayer.type !== 'generative' && activeLayer.src && (
+                    {activeLayer.type !== 'generative' && (activeLayer.src || activeLayer.isLive) && (
                       <div className="space-y-4 pt-6 mt-6 border-t border-white/10">
                         <h3 className="text-[11px] font-bold uppercase tracking-widest text-red-400 border-b border-white/5 pb-2">
                            Parameters: Layer {layerIdx}
@@ -11428,7 +11522,7 @@ return (
                               {renderTransformKnob('rotation', 0, 360, 0, 'Rotation')}
                               {renderTransformKnob('posX', -100, 100, 0, 'Position X')}
                               {renderTransformKnob('posY', -100, 100, 0, 'Position Y')}
-                              {activeLayer.type === 'video' && renderTransformKnob('speed', 0, 2, 1, 'Speed')}
+                              {activeLayer.type === 'video' && !activeLayer.isLive && renderTransformKnob('speed', 0, 2, 1, 'Speed')}
                             </div>
                           );
                         })()}
@@ -12135,27 +12229,29 @@ return (
                    <div className="space-y-2">
                      <label className="text-[10px] uppercase tracking-widest opacity-40">Asset Type</label>
                      <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
-                        <button 
+                        <button
                           onClick={() => {
                             if(assetBrowserLayerTarget) {
-                               setLayers(prev => prev.map(layer => layer.id === assetBrowserLayerTarget ? {...layer, type: 'video', mappings: [], generativeSettings: {}, generativeMappings: [], generativeTriggerActive: {}, generativeTriggerAmount: {} } : layer));
+                               if (layers.find(l => l.id === assetBrowserLayerTarget)?.isLive) stopWebcam(assetBrowserLayerTarget);
+                               setLayers(prev => prev.map(layer => layer.id === assetBrowserLayerTarget ? {...layer, type: 'video', isLive: false, mappings: [], generativeSettings: {}, generativeMappings: [], generativeTriggerActive: {}, generativeTriggerAmount: {} } : layer));
                             }
                           }}
-                          className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layers.find(l => l.id === assetBrowserLayerTarget)?.type === 'video' ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                          className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layers.find(l => l.id === assetBrowserLayerTarget)?.type === 'video' && !layers.find(l => l.id === assetBrowserLayerTarget)?.isLive ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
                         >
                           Video
                         </button>
-                        <button 
+                        <button
                           onClick={() => {
                             if(assetBrowserLayerTarget) {
-                               setLayers(prev => prev.map(layer => layer.id === assetBrowserLayerTarget ? {...layer, type: 'image', mappings: [], generativeSettings: {}, generativeMappings: [], generativeTriggerActive: {}, generativeTriggerAmount: {} } : layer));
+                               if (layers.find(l => l.id === assetBrowserLayerTarget)?.isLive) stopWebcam(assetBrowserLayerTarget);
+                               setLayers(prev => prev.map(layer => layer.id === assetBrowserLayerTarget ? {...layer, type: 'image', isLive: false, mappings: [], generativeSettings: {}, generativeMappings: [], generativeTriggerActive: {}, generativeTriggerAmount: {} } : layer));
                             }
                           }}
                           className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layers.find(l => l.id === assetBrowserLayerTarget)?.type === 'image' ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
                         >
                           Image
                         </button>
-                        <button 
+                        <button
                           onClick={() => {
                              setLayers(prev => prev.map(layer => {
                                if (layer.id !== assetBrowserLayerTarget) return layer;
@@ -12179,10 +12275,49 @@ return (
                         >
                           Generative
                         </button>
+                        <button
+                          onClick={() => {
+                            if (assetBrowserLayerTarget) {
+                               setLayers(prev => prev.map(layer => layer.id === assetBrowserLayerTarget ? {...layer, type: 'video', src: null, mappings: [], generativeSettings: {}, generativeMappings: [], generativeTriggerActive: {}, generativeTriggerAmount: {} } : layer));
+                               startWebcam(assetBrowserLayerTarget);
+                            }
+                          }}
+                          className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layers.find(l => l.id === assetBrowserLayerTarget)?.isLive ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                        >
+                          Live Camera
+                        </button>
                      </div>
                    </div>
 
-                   {layers.find(l => l.id === assetBrowserLayerTarget)?.type !== 'generative' ? (
+                   {layers.find(l => l.id === assetBrowserLayerTarget)?.isLive && (
+                       <div className="space-y-3 pt-4 border-t border-white/5">
+                          <label className="text-[10px] uppercase tracking-widest opacity-40">Camera</label>
+                          <CustomSelect
+                             value={layers.find(l => l.id === assetBrowserLayerTarget)?.liveDeviceId || ''}
+                             onChange={(v) => { if (assetBrowserLayerTarget) startWebcam(assetBrowserLayerTarget, v || undefined); }}
+                             buttonClassName="w-full flex items-center justify-between gap-2 bg-black/40 border border-white/10 hover:border-white/25 rounded p-2 text-[10px] uppercase tracking-widest outline-none text-left text-white transition-colors"
+                             options={[
+                               { value: '', label: 'Default Camera' },
+                               ...videoDevices.map(d => ({ value: d.deviceId, label: d.label || `Camera ${d.deviceId.slice(0, 5)}` })),
+                             ]}
+                          />
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 flex items-center gap-2 text-[10px] text-green-400 uppercase tracking-widest font-bold">
+                              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /> Camera Live
+                            </div>
+                            <button
+                              onClick={() => { if (assetBrowserLayerTarget) { stopWebcam(assetBrowserLayerTarget); setLayers(prev => prev.map(l => l.id === assetBrowserLayerTarget ? { ...l, isLive: false, name: 'Empty Layer' } : l)); } }}
+                              className="px-3 py-1.5 rounded text-[9px] uppercase tracking-widest font-bold bg-red-500/20 hover:bg-red-500/30 text-red-400 transition-colors"
+                            >
+                              Stop Camera
+                            </button>
+                          </div>
+                          {assetBrowserLayerTarget && webcamError[assetBrowserLayerTarget] && (
+                            <p className="text-[9px] text-red-400 leading-relaxed">{webcamError[assetBrowserLayerTarget]}</p>
+                          )}
+                       </div>
+                   )}
+                   {layers.find(l => l.id === assetBrowserLayerTarget)?.type !== 'generative' && !layers.find(l => l.id === assetBrowserLayerTarget)?.isLive ? (
                        <div className="space-y-2 pt-4 border-t border-white/5">
                           <label className="text-[10px] uppercase tracking-widest opacity-40">Upload Media (Single or Multiple)</label>
                           <div className="relative group">
@@ -12194,8 +12329,21 @@ return (
                               </div>
                             </div>
                           </div>
+                          <div className="pt-3 border-t border-white/5">
+                            <button
+                              onClick={() => { if (assetBrowserLayerTarget) startWebcam(assetBrowserLayerTarget); }}
+                              className="w-full flex items-center justify-center gap-2 p-2.5 border border-white/10 hover:border-white hover:bg-white hover:text-black transition-colors text-[10px] uppercase tracking-widest font-bold"
+                            >
+                              <Webcam size={14} />
+                              Use Webcam Instead
+                            </button>
+                            {assetBrowserLayerTarget && webcamError[assetBrowserLayerTarget] && (
+                              <p className="text-[9px] text-red-400 leading-relaxed mt-2">{webcamError[assetBrowserLayerTarget]}</p>
+                            )}
+                          </div>
                        </div>
-                   ) : (
+                   ) : null}
+                   {layers.find(l => l.id === assetBrowserLayerTarget)?.type === 'generative' && (
                        <div className="space-y-2 pt-4 border-t border-white/5">
                           <label className="text-[10px] uppercase tracking-widest opacity-40">Select Script</label>
                           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 overflow-y-auto max-h-[60vh] custom-scrollbar pb-10">
