@@ -10743,10 +10743,10 @@ export default function App() {
                 ))}
               </div>
 
-              {layers.every(l => (!l.src && l.type !== 'generative')) && <Waves className="absolute inset-0 z-0 pointer-events-none" />}
-              <canvas id="main-render-canvas" ref={canvasRef} className={`w-full h-full object-contain relative ${layers.every(l => (!l.src && l.type !== 'generative')) ? 'opacity-0' : ''} z-10`} />
+              {layers.every(l => (!l.src && !l.isLive && l.type !== 'generative')) && <Waves className="absolute inset-0 z-0 pointer-events-none" />}
+              <canvas id="main-render-canvas" ref={canvasRef} className={`w-full h-full object-contain relative ${layers.every(l => (!l.src && !l.isLive && l.type !== 'generative')) ? 'opacity-0' : ''} z-10`} />
 
-              {!isPlaying && !layers.every(l => (!l.src && l.type !== 'generative')) && (
+              {!isPlaying && !layers.every(l => (!l.src && !l.isLive && l.type !== 'generative')) && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-30 transition-all backdrop-blur-sm">
                   <button onClick={togglePlay} className="flex items-center gap-3 px-8 py-4 bg-red-600 hover:bg-red-500 text-white font-bold uppercase tracking-widest rounded-xl transition-all shadow-xl hover:scale-105 active:scale-95 cursor-pointer">
                     <Play size={20} fill="currentColor" /> Resume Engine
