@@ -4293,21 +4293,14 @@ export default function App() {
                 const cosRot = Math.cos(currentFaceAngle);
                 const sinRot = Math.sin(currentFaceAngle);
 
-                // Palette definitions with dynamic monochromatic lighting:
-                // Left side in LIGHT (brightest), Top in SHADOW (medium-dark shadow), Right in SHADOW (deep dark shadow)
+                // Palette definitions with dynamic monochromatic lighting: the top face
+                // (whichever face currently points "up" as the cube tumbles) is the light
+                // source's target and always the brightest; the two visible side faces
+                // both sit in shadow, in two close tones for depth. See the per-face
+                // brightness blend below for how this stays smooth through rotation.
                 const palettes = {
-                    crimson: {
-                        left: adjustHexBrightness(primaryHex, 0.08),   // IN LIGHT (Brightest highlight)
-                        top: adjustHexBrightness(primaryHex, -0.40),    // IN SHADOW (Medium-dark shadow)
-                        right: adjustHexBrightness(primaryHex, -0.62),  // IN SHADOW (Deep dark shadow)
-                        border: adjustHexBrightness(primaryHex, 0.35)  // Crisp light pastel border
-                    },
-                    slate: {
-                        left: adjustHexBrightness(secondaryHex, 0.08),   // IN LIGHT (Brightest highlight)
-                        top: adjustHexBrightness(secondaryHex, -0.40),    // IN SHADOW (Medium-dark shadow)
-                        right: adjustHexBrightness(secondaryHex, -0.62),  // IN SHADOW (Deep dark shadow)
-                        border: adjustHexBrightness(secondaryHex, 0.35)  // Crisp light pastel border
-                    }
+                    crimson: { base: primaryHex, border: adjustHexBrightness(primaryHex, 0.35) },
+                    slate: { base: secondaryHex, border: adjustHexBrightness(secondaryHex, 0.35) }
                 };
 
                 for (const cube of cubes) {
@@ -4393,20 +4386,21 @@ export default function App() {
                             // 180-degree canvas rotation, which mirrors on-screen left/right.
                             const relX = -(item.faceCenterX - cubeCenterX);
 
-                            // Lighting classification:
-                            // Upper face (rnz > 0.4) -> IN SHADOW (Medium-dark shadow)
-                            // Left face (relX < -0.5) -> IN LIGHT (Brightest highlight)
-                            // Right face (relX >= -0.5) -> IN SHADOW (Deep dark shadow)
-                            let faceColor = pal.top;
-                            if (rnz > 0.4) {
-                                faceColor = pal.top;
-                            } else if (relX < -0.5) {
-                                faceColor = pal.left;
-                            } else {
-                                faceColor = pal.right;
-                            }
+                            // Continuous top-lit shading: brightness ramps smoothly with how
+                            // much this face currently points "up" (rnz), so a tumbling cube
+                            // fades between shadow and highlight instead of popping between
+                            // fixed light/dark buckets. Faces pointing sideways/down land in
+                            // one of two close shadow tones (picked smoothly by which side of
+                            // the cube they're on) so the two visible side faces both read as
+                            // shadow, with a little depth between them.
+                            const upT = Math.max(0, Math.min(1, rnz));
+                            const upEase = upT * upT * (3 - 2 * upT);
+                            const sideT = Math.max(-1, Math.min(1, relX / Math.max(1, size * 0.4)));
+                            const shadowFactor = -0.32 + sideT * 0.14;
+                            const litFactor = 0.16;
+                            const factor = shadowFactor + (litFactor - shadowFactor) * upEase;
 
-                            ctx.fillStyle = faceColor;
+                            ctx.fillStyle = adjustHexBrightness(pal.base, factor);
                             ctx.beginPath();
                             ctx.moveTo(item.v[0].sx, item.v[0].sy);
                             for (let i = 1; i < item.v.length; i++) {
