@@ -4255,8 +4255,10 @@ export default function App() {
                     }
                 }
 
-                // Sort back to front
-                cubes.sort((a, b) => a.sortKey - b.sortKey);
+                // Sort back to front. The scene is painted through a 180-degree canvas
+                // rotation (viewed from the opposite corner), so what was "near" is now
+                // "far" -> reverse the painter's-algorithm order to keep occlusion correct.
+                cubes.sort((a, b) => b.sortKey - a.sortKey);
 
                 // Vertex local offsets for cube
                 const h = size / 2;
@@ -4386,8 +4388,10 @@ export default function App() {
                             const rny = norm.y;
                             const rnz = -norm.x * sinRot + norm.z * cosRot;
 
-                            // Relative horizontal offset from cube centroid on screen
-                            const relX = item.faceCenterX - cubeCenterX;
+                            // Relative horizontal offset from cube centroid on screen.
+                            // Negated because the whole scene is painted through a
+                            // 180-degree canvas rotation, which mirrors on-screen left/right.
+                            const relX = -(item.faceCenterX - cubeCenterX);
 
                             // Lighting classification:
                             // Upper face (rnz > 0.4) -> IN SHADOW (Medium-dark shadow)
