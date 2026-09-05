@@ -197,7 +197,8 @@ function disposeObject3D(obj: THREE.Object3D | null) {
   obj.parent?.remove(obj);
 }
 
-function clampNum(v: number, min: number, max: number) { return Math.max(min, Math.min(max, v)); }
+function clampNum(v: number, min: number, max: number) { return Math.max(min, Math.min(max, Number.isFinite(v) ? v : min)); }
+function safeNum(v: number, fb: number) { return Number.isFinite(v) ? v : fb; }
 
 // Small depth-test-off crosshair + wire sphere marking the orbit anchor point.
 function buildAnchorGizmo(): THREE.Object3D {
@@ -722,19 +723,28 @@ export class ThreeDEngine {
   // --- Camera Sequence -----------------------------------------------------------
 
   private applySnapshot(st: LayerState, s: CameraSnapshot) {
-    st.camera.pitch = s.pitch;
-    st.camera.yaw = s.yaw;
-    st.camera.roll = s.roll;
-    st.camera.radius = Math.max(0.01, s.radius);
-    st.camera.anchor.set(s.ax, s.ay, s.az);
-    st.seqFov = s.fov;
+    st.camera.pitch = clampNum(safeNum(s.pitch, 0), -89, 89);
+    st.camera.yaw = safeNum(s.yaw, 0);
+    st.camera.roll = safeNum(s.roll, 0);
+    st.camera.radius = Math.max(0.01, safeNum(s.radius, st.boundingRadius * 2.6 || 3));
+    st.camera.anchor.set(safeNum(s.ax, 0), safeNum(s.ay, 0), safeNum(s.az, 0));
+    st.seqFov = clampNum(safeNum(s.fov, 60), 15, 120);
   }
 
   captureSeqSnapshot(layerId: string): CameraSnapshot {
     const st = this.ensureLayerState(layerId);
+    // Sanitize: presets can transiently push pitch past ±90 / roll far past 360 /
+    // radius toward 0. Baking that into a saved angle makes the camera gimbal or
+    // clip the mesh when you jump to it, so clamp/normalize what we store.
+    const fin = (v: number, d: number) => (Number.isFinite(v) ? v : d);
+    const norm = (a: number) => { const v = ((fin(a, 0) % 360) + 360) % 360; return v > 180 ? v - 360 : v; };
     return {
-      pitch: st.camera.pitch, yaw: st.camera.yaw, roll: st.camera.roll, radius: st.camera.radius,
-      ax: st.camera.anchor.x, ay: st.camera.anchor.y, az: st.camera.anchor.z, fov: this.camera.fov,
+      pitch: clampNum(fin(st.camera.pitch, 0), -89, 89),
+      yaw: norm(st.camera.yaw),
+      roll: norm(st.camera.roll),
+      radius: Math.max(st.boundingRadius * 0.05 || 0.05, fin(st.camera.radius, st.boundingRadius * 2.6 || 3)),
+      ax: fin(st.camera.anchor.x, 0), ay: fin(st.camera.anchor.y, 0), az: fin(st.camera.anchor.z, 0),
+      fov: clampNum(fin(this.camera.fov, 60), 15, 120),
     };
   }
 
@@ -850,6 +860,11 @@ export class ThreeDEngine {
   }
 
   private applySpherical(st: LayerState) {
+    // Guard: never feed a NaN pose into lookAt() -- it produces a broken
+    // quaternion and the frame renders as garbage or nothing. Keep the last
+    // good camera instead.
+    if (!Number.isFinite(st.camera.pitch + st.camera.yaw + st.camera.roll + st.camera.radius +
+        st.camera.anchor.x + st.camera.anchor.y + st.camera.anchor.z)) return;
     const up = st.kind === 'splat' ? new THREE.Vector3(0, -1, 0) : new THREE.Vector3(0, 1, 0);
     const pos = this.applySphericalTo(new THREE.Vector3(), st.camera, up);
     this.camera.position.copy(pos);
@@ -890,12 +905,20 @@ export class ThreeDEngine {
       const raw = tw.dur > 0 ? (performance.now() - tw.start) / tw.dur : 1;
       const p = easeSeq(raw, tw.easing);
       const L = (a: number, b: number) => a + (b - a) * p;
-      st.camera.pitch = L(tw.from.pitch, tw.to.pitch);
-      st.camera.yaw = L(tw.from.yaw, tw.to.yaw);
-      st.camera.roll = L(tw.from.roll, tw.to.roll);
-      st.camera.radius = Math.max(0.01, L(tw.from.radius, tw.to.radius));
-      st.camera.anchor.set(L(tw.from.ax, tw.to.ax), L(tw.from.ay, tw.to.ay), L(tw.from.az, tw.to.az));
-      st.seqFov = L(tw.from.fov, tw.to.fov);
+      // yaw/roll take the shortest angular path (so a jump doesn't whip 340deg around)
+      const LA = (a: number, b: number) => a + ((((b - a) % 360) + 540) % 360 - 180) * p;
+      const np = clampNum(L(tw.from.pitch, tw.to.pitch), -89, 89);
+      const ny = LA(tw.from.yaw, tw.to.yaw);
+      const nr = LA(tw.from.roll, tw.to.roll);
+      const nrad = Math.max(0.01, L(tw.from.radius, tw.to.radius));
+      const nax = L(tw.from.ax, tw.to.ax), nay = L(tw.from.ay, tw.to.ay), naz = L(tw.from.az, tw.to.az);
+      const nfov = clampNum(L(tw.from.fov, tw.to.fov), 15, 120);
+      // Only commit if every value is finite -- a NaN would render garbage / nothing.
+      if ([np, ny, nr, nrad, nax, nay, naz, nfov].every(Number.isFinite)) {
+        st.camera.pitch = np; st.camera.yaw = ny; st.camera.roll = nr; st.camera.radius = nrad;
+        st.camera.anchor.set(nax, nay, naz);
+        st.seqFov = nfov;
+      }
       if (raw >= 1) { this.applySnapshot(st, tw.to); st.seqTween = null; }
     }
     if (st.seqFov != null) camFov = st.seqFov;
@@ -913,7 +936,7 @@ export class ThreeDEngine {
       st.cinemaPhase += dt * Math.max(0.01, params.cinema_speed || 1);
       const d = CINEMA_PRESETS[preset](st.cinemaPhase);
       const baseR = st.boundingRadius * 2.6 * params.zoom;
-      st.camera.pitch = params.pitch + d.dPitch;
+      st.camera.pitch = clampNum(params.pitch + d.dPitch, -89, 89); // never over the pole -> no gimbal
       st.camera.yaw = params.yaw + d.dYaw;
       st.camera.roll = params.roll + d.dRoll;
       st.camera.radius = Math.max(0.01, baseR * d.radiusFactor);
@@ -957,7 +980,13 @@ export class ThreeDEngine {
     if (st.renderCache && st.renderCacheKey === frameKey && !modActive) return st.renderCache;
 
     // ---- heavy path (something changed) ----
-    this.camera.fov = camFov ?? params.fov;
+    this.camera.fov = clampNum(safeNum(camFov ?? params.fov, 60), 15, 120);
+    // Near/far scale with the orbit distance: a close-up (or a sequence jump that
+    // ends near the surface) no longer gets its geometry sliced by a fixed near
+    // plane, and depth precision stays tight.
+    const rad = safeNum(st.camera.radius, 3), bR = safeNum(st.boundingRadius, 1);
+    this.camera.near = Math.max(0.02, rad * 0.02);
+    this.camera.far = Math.max(2000, (rad + bR) * 40 + 200);
     this.camera.updateProjectionMatrix();
     this.applySpherical(st);
 
