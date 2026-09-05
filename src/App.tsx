@@ -61,6 +61,8 @@ import { Waves } from './components/Waves';
 import { createNoise2D } from 'simplex-noise';
 import { prepareWithSegments, layoutNextLineRange, materializeLineRange, type LayoutCursor } from '@chenglou/pretext';
 import { StepSequencer } from './components/StepSequencer';
+import { ThreeDEngine, THREE_D_PARAMETERS, THREE_D_ACCEPT, detectThreeDAssetKindByExt, detectPlyKind, type ClipMode } from './lib/threeDEngine';
+import { ThreeDCameraOverlay } from './components/ThreeDCameraOverlay';
 
 // --- Types ---
 
@@ -119,7 +121,7 @@ interface RhythmMapping {
 interface Layer {
   id: string;
   name: string;
-  type: 'video' | 'image' | 'generative';
+  type: 'video' | 'image' | 'generative' | '3d';
   src: string | null;
   opacity: number;
   blendMode: GlobalCompositeOperation;
@@ -144,6 +146,14 @@ interface Layer {
   videoRewindSpeed?: number;
   isLive?: boolean;
   liveDeviceId?: string;
+  threeDKind?: 'mesh' | 'splat' | 'kinect';
+  threeDSrc?: string | null;
+  threeDSettings?: Record<string, number | string>;
+  threeDTriggerActive?: Record<string, boolean>;
+  threeDTriggerAmount?: Record<string, number>;
+  threeDMappings?: EffectMapping[];
+  threeDKinectUrl?: string;
+  threeDKinectUseSynthetic?: boolean;
   generativeId?: string;
   generativeSettings?: Record<string, number>;
   generativeTriggerActive?: Record<string, boolean>;
@@ -2217,6 +2227,12 @@ export default function App() {
   if (typeof window !== 'undefined' && !webglRendererRef.current) {
     webglRendererRef.current = new WebGLGenerativeRenderer(1920, 1080);
   }
+  const threeDEngineRef = useRef<ThreeDEngine | null>(null);
+  if (typeof window !== 'undefined' && !threeDEngineRef.current) {
+    threeDEngineRef.current = new ThreeDEngine();
+  }
+  const threeDLoadingRef = useRef<Record<string, boolean>>({});
+  const [kinectError, setKinectError] = useState<Record<string, string>>({});
 
   // --- Recording Logic ---
 
@@ -3112,7 +3128,8 @@ export default function App() {
       // We still process the layer even if hidden if it has effects that could be drawing something (e.g. generative)
       // or if it's midi-triggered but currently silent, we still need to process its parameters.
       if (!(isVisibleNormally || hasActiveEffect || layer.midiMode)) return;
-      if (layer.type !== 'generative' && !layer.src && !layer.isLive) return;
+      if (layer.type !== 'generative' && layer.type !== '3d' && !layer.src && !layer.isLive) return;
+      if (layer.type === '3d' && !layer.threeDKind) return;
 
       let element: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement | null | undefined = null;
       if (layer.type === 'generative' && layer.generativeId && webglRendererRef.current) {
@@ -7888,6 +7905,160 @@ export default function App() {
              }
            }
          }
+      } else if (layer.type === '3d' && threeDEngineRef.current) {
+          const engine3d = threeDEngineRef.current;
+          let unifiedTriggerValue3d = 0.0;
+          if (layer.audioMapping?.enabled) unifiedTriggerValue3d = audioVisualOpacity;
+          else if (layer.rhythmMapping?.enabled) unifiedTriggerValue3d = rhythmVisualOpacity;
+          else if (layer.midiMode) unifiedTriggerValue3d = midiVisualOpacity;
+
+          const baseSettings = { ...(layer.threeDSettings || {}) };
+          const modifiedThreeD: Record<string, number> = {};
+          for (const p of THREE_D_PARAMETERS) {
+              const baseVal = Number(baseSettings[p.name] !== undefined ? baseSettings[p.name] : p.default);
+              const pMap = layer.threeDMappings?.find(m => m.id === p.name);
+
+              let activeMagnitude = 0.0;
+              const isTriggerActive = !!layer.threeDTriggerActive?.[p.name];
+
+              if (isTriggerActive) {
+                  if (pMap?.audioMapping?.enabled) {
+                      const trackerId = '3d-' + layer.id + '-' + pMap.id + '-audio';
+                      if (!audioTrackersRef.current[trackerId]) {
+                        audioTrackersRef.current[trackerId] = { state: 'idle', value: 0, lastUpdate: now, lastTriggerTime: 0 };
+                      }
+                      const tracker = audioTrackersRef.current[trackerId];
+                      const dt = (now - tracker.lastUpdate) / 1000.0;
+                      tracker.lastUpdate = now;
+
+                      const mode = pMap.audioMapping.mode || 'smooth';
+                      const pAudioEngine = pMap.audioMapping.engine || 'level';
+                      const { intensity } = engine.getBandIntensity(pMap.audioMapping.stemId || '', pMap.audioMapping.freqRange || [20, 20000]);
+
+                      if (pAudioEngine === 'transient') {
+                          activeMagnitude = processTransientHit(
+                              intensity,
+                              pMap.audioMapping.sensitivity ?? 0.6,
+                              pMap.audioMapping.decayMs ?? 220,
+                              pMap.audioMapping.cooldownMs ?? 50,
+                              tracker,
+                              dt,
+                              now,
+                          );
+                      } else if (mode === 'smooth') {
+                          const attackSecs = pMap.audioMapping.attack ?? 0.05;
+                          const releaseSecs = pMap.audioMapping.release ?? 0.2;
+                          if (intensity >= pMap.audioMapping.threshold) tracker.state = 'attack';
+                          if (tracker.state === 'attack') {
+                             tracker.value += attackSecs > 0.001 ? (dt / attackSecs) : 1.0;
+                             if (tracker.value >= 1.0) { tracker.value = 1.0; tracker.state = 'release'; }
+                          } else {
+                             tracker.state = 'release';
+                             tracker.value -= releaseSecs > 0.001 ? (dt / releaseSecs) : 1.0;
+                             if (tracker.value <= 0.0) { tracker.value = 0.0; tracker.state = 'idle'; }
+                          }
+                          activeMagnitude = Math.max(0, Math.min(1, tracker.value));
+                      } else {
+                          if (intensity >= pMap.audioMapping.threshold && (now - tracker.lastTriggerTime > 100)) {
+                             tracker.value = 1.0;
+                             tracker.lastTriggerTime = now;
+                          }
+                          const decay = pMap.audioMapping.smoothing ?? 0.5;
+                          tracker.value *= decay;
+                          activeMagnitude = tracker.value;
+                      }
+                  } else if (pMap?.rhythmMapping?.enabled) {
+                      activeMagnitude = computeRhythmMagnitude(pMap.rhythmMapping, now);
+                  } else {
+                      const paramKey = `3d-${layer.id}-${p.name}`;
+                      const state = triggerStatesRef.current[paramKey];
+                      if (state) {
+                         const ns = pMap?.noteSettings || DEFAULT_NOTE_SETTINGS;
+                         if (ns.useFixedDuration || state.useFixedDuration) {
+                             if (state.activeUntil && Date.now() < state.activeUntil) {
+                                 state.currentEnvValue = 1.0;
+                                 state.phase = 'sustain';
+                             } else {
+                                 state.currentEnvValue = 0.0;
+                                 state.phase = 'idle';
+                                 state.isDown = false;
+                                 state.activeUntil = null;
+                             }
+                         } else {
+                             const dt = deltaTime / 1000.0;
+                             const sustain = ns.sustain !== undefined ? ns.sustain : 1.0;
+                             if (state.phase === 'attack') {
+                                const a = (ns.attack || 0) / 1000.0;
+                                if (a <= 0.001) state.currentEnvValue = 1;
+                                else state.currentEnvValue += dt / a;
+                                if (state.currentEnvValue >= 1) { state.currentEnvValue = 1; state.phase = 'decay'; }
+                             } else if (state.phase === 'decay') {
+                                const d = (ns.decay || 0) / 1000.0;
+                                if (d <= 0.001) state.currentEnvValue = sustain;
+                                else state.currentEnvValue -= dt * (1 - sustain) / d;
+                                if (state.currentEnvValue <= sustain) { state.currentEnvValue = sustain; state.phase = 'sustain'; }
+                             } else if (state.phase === 'sustain') {
+                                state.currentEnvValue = sustain;
+                             } else if (state.phase === 'release') {
+                                const r = (ns.release || 0) / 1000.0;
+                                if (r <= 0.001) state.currentEnvValue = 0;
+                                else state.currentEnvValue -= dt / r;
+                                if (state.currentEnvValue <= 0) { state.currentEnvValue = 0; state.phase = 'idle'; }
+                             }
+                         }
+                         activeMagnitude = state.currentEnvValue * (state.velocity / 127);
+                      } else {
+                         activeMagnitude = unifiedTriggerValue3d;
+                      }
+                  }
+              }
+
+              let targetVal = baseVal;
+              if (isTriggerActive) {
+                  const amount = layer.threeDTriggerAmount?.[p.name] ?? 0;
+                  const range = (p.max ?? 1) - (p.min ?? 0);
+                  targetVal = Math.max(p.min ?? 0, Math.min(p.max ?? 1, baseVal + amount * range * activeMagnitude));
+              }
+
+              const easeKey = '3d-' + layer.id + '-' + p.name;
+              const currentEased = parameterEasingRef.current[easeKey] !== undefined ? parameterEasingRef.current[easeKey] : baseVal;
+              const finalVal = (currentEased as number) + (targetVal - (currentEased as number)) * 0.15;
+              parameterEasingRef.current[easeKey] = finalVal;
+              modifiedThreeD[p.name] = finalVal;
+
+              const knobId = `layer-${layer.id}-param-${p.name}`;
+              const lineEl = document.getElementById(`knob-line-${knobId}`);
+              const circleEl = document.getElementById(`knob-circle-${knobId}`);
+              if (lineEl && circleEl) {
+                  const range = (p.max ?? 1) - (p.min ?? 0);
+                  const pct = ((finalVal - (p.min ?? 0)) / range) * 100;
+                  const rot = (pct / 100) * 270 - 135;
+                  (circleEl as any).style.strokeDashoffset = (251.2 - (pct / 100) * 188.4).toString();
+                  lineEl.setAttribute("transform", `rotate(${rot} 50 50)`);
+              }
+          }
+
+          if (layer.threeDKind && layer.threeDKind !== 'kinect' && layer.threeDSrc) {
+            engine3d.ensureLayer(layer.id, layer.threeDKind, layer.threeDSrc).catch(() => {});
+          } else if (layer.threeDKind === 'kinect') {
+            engine3d.ensureLayer(layer.id, 'kinect', 'kinect').catch(() => {});
+          }
+
+          if (!engine3d.isLoading(layer.id) && !engine3d.getLoadError(layer.id)) {
+            engine3d.resize(targetW, targetH);
+            const clipMode = (baseSettings.clipMode as ClipMode) || 'off';
+            const rendered = engine3d.renderLayer(layer.id, {
+              pitch: modifiedThreeD.pitch, yaw: modifiedThreeD.yaw, roll: modifiedThreeD.roll,
+              zoom: modifiedThreeD.zoom, fov: modifiedThreeD.fov, bg: modifiedThreeD.bg,
+              pos_x: modifiedThreeD.pos_x, pos_y: modifiedThreeD.pos_y, pos_z: modifiedThreeD.pos_z,
+              rot_x: modifiedThreeD.rot_x, rot_y: modifiedThreeD.rot_y, rot_z: modifiedThreeD.rot_z,
+              glitch: modifiedThreeD.glitch, point_cloud: modifiedThreeD.point_cloud,
+              clip_radius: modifiedThreeD.clip_radius, clip_w: modifiedThreeD.clip_w,
+              clip_h: modifiedThreeD.clip_h, clip_d: modifiedThreeD.clip_d,
+              clipMode,
+            });
+            if (rendered) element = rendered;
+          }
       } else {
           let img = imageRefs.current[layer.id];
           if (!img && layer.src) {
@@ -10529,7 +10700,7 @@ export default function App() {
                                 <span className="text-[10px] uppercase tracking-widest font-bold truncate max-w-[180px]">
                                   {layer.type === 'generative'
                                     ? (generativesRef.current.find(g => g.uuid === layer.generativeId)?.description || layer.name || 'Change Script')
-                                    : ((layer.src || layer.isLive) ? (layer.name.length > 20 ? layer.name.slice(0, 20) + '...' : layer.name) : 'Load Asset')}
+                                    : ((layer.src || layer.isLive || (layer.type === '3d' && layer.threeDKind)) ? (layer.name.length > 20 ? layer.name.slice(0, 20) + '...' : layer.name) : 'Load Asset')}
                                 </span>
                              </button>
                          </div>
@@ -10743,10 +10914,51 @@ export default function App() {
                 ))}
               </div>
 
-              {layers.every(l => (!l.src && !l.isLive && l.type !== 'generative')) && <Waves className="absolute inset-0 z-0 pointer-events-none" />}
-              <canvas id="main-render-canvas" ref={canvasRef} className={`w-full h-full object-contain relative ${layers.every(l => (!l.src && !l.isLive && l.type !== 'generative')) ? 'opacity-0' : ''} z-10`} />
+              {layers.every(l => (!l.src && !l.isLive && l.type !== 'generative' && l.type !== '3d')) && <Waves className="absolute inset-0 z-0 pointer-events-none" />}
+              <canvas id="main-render-canvas" ref={canvasRef} className={`w-full h-full object-contain relative ${layers.every(l => (!l.src && !l.isLive && l.type !== 'generative' && l.type !== '3d')) ? 'opacity-0' : ''} z-10`} />
 
-              {!isPlaying && !layers.every(l => (!l.src && !l.isLive && l.type !== 'generative')) && (
+              <ThreeDCameraOverlay
+                active={!!layers.find(l => l.id === activeLayerId && l.type === '3d' && l.threeDKind)}
+                canvasRef={canvasRef}
+                onOrbit={(dPitch, dYaw) => {
+                  if (!activeLayerId || !threeDEngineRef.current) return;
+                  const orbit = threeDEngineRef.current.getCameraOrbit(activeLayerId);
+                  threeDEngineRef.current.setCameraOrbit(activeLayerId, {
+                    pitch: (orbit?.pitch ?? 0) + dPitch,
+                    yaw: (orbit?.yaw ?? 0) + dYaw,
+                  });
+                }}
+                onPan={(dx, dy) => { if (activeLayerId) threeDEngineRef.current?.panAnchor(activeLayerId, dx, dy); }}
+                onZoom={(factor) => {
+                  if (!activeLayerId || !threeDEngineRef.current) return;
+                  const orbit = threeDEngineRef.current.getCameraOrbit(activeLayerId);
+                  threeDEngineRef.current.setCameraOrbit(activeLayerId, { radius: (orbit?.radius ?? 1) * factor });
+                }}
+                onDoubleClickNDC={(ndcX, ndcY) => {
+                  if (!activeLayerId || !threeDEngineRef.current) return;
+                  const hit = threeDEngineRef.current.raycastAnchor(activeLayerId, ndcX, ndcY);
+                  if (hit) threeDEngineRef.current.setAnchor(activeLayerId, hit);
+                }}
+                onMoveAnchor={(dir) => { if (activeLayerId) threeDEngineRef.current?.moveAnchor(activeLayerId, dir); }}
+                onDragEnd={() => {
+                  if (!activeLayerId || !threeDEngineRef.current) return;
+                  const orbit = threeDEngineRef.current.getCameraOrbit(activeLayerId);
+                  if (!orbit) return;
+                  const boundingRadius = threeDEngineRef.current.getBoundingRadius(activeLayerId);
+                  setLayers(prev => prev.map(l => l.id === activeLayerId ? {
+                    ...l,
+                    threeDSettings: {
+                      ...(l.threeDSettings || {}),
+                      pitch: orbit.pitch,
+                      yaw: orbit.yaw,
+                      roll: orbit.roll,
+                      zoom: boundingRadius > 0 ? orbit.radius / (boundingRadius * 2.6) : (l.threeDSettings?.zoom ?? 1),
+                    },
+                  } : l));
+                }}
+              />
+
+              {!isPlaying && !layers.every(l => (!l.src && !l.isLive && l.type !== 'generative' && l.type !== '3d')) && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-30 transition-all backdrop-blur-sm">
                   <button onClick={togglePlay} className="flex items-center gap-3 px-8 py-4 bg-red-600 hover:bg-red-500 text-white font-bold uppercase tracking-widest rounded-xl transition-all shadow-xl hover:scale-105 active:scale-95 cursor-pointer">
                     <Play size={20} fill="currentColor" /> Resume Engine
@@ -10840,7 +11052,7 @@ export default function App() {
                 if (!activeLayer) return null;
                 const layerIdx = layers.findIndex(l => l.id === activeLayer.id) + 1;
 
-                if (!activeLayer.src && !activeLayer.isLive && !activeLayer.missingAsset && activeLayer.type !== 'generative') {
+                if (!activeLayer.src && !activeLayer.isLive && !activeLayer.missingAsset && activeLayer.type !== 'generative' && !(activeLayer.type === '3d' && activeLayer.threeDKind)) {
                   return (
                     <div className="p-8 text-center opacity-40 text-[11px] uppercase tracking-widest font-bold flex flex-col items-center justify-center h-full border border-dashed border-white/10 rounded-xl my-4">
                        LOAD AN ASSET OR SELECT A GENERATIVE SCRIPT TO VIEW PARAMETERS
@@ -10866,16 +11078,22 @@ export default function App() {
                   </div>
                 ) : null;
 
-                const renderKnob = (p: any, m: any, layerTarget: any, isGen: boolean) => {
-                   const paramId = isGen ? `generative-${p.name}` : `effect-${m.id}-${p.name}`;
-                   
+                const renderKnob = (p: any, m: any, layerTarget: any, family: 'gen' | 'effect' | '3d') => {
+                   const isGen = family === 'gen'; // 3D params are always numeric, so the boolean/action/string
+                   // branches below (which only ever branch on isGen) are never reached for family==='3d'.
+                   const paramId = family === '3d' ? `3d-${p.name}` : isGen ? `generative-${p.name}` : `effect-${m.id}-${p.name}`;
+
                    // Determine active state for triggers
-                   const isTriggerActive = isGen ? 
-                      !!layerTarget.generativeTriggerActive?.[p.name] : 
+                   const isTriggerActive = family === '3d' ?
+                      !!layerTarget.threeDTriggerActive?.[p.name] :
+                      isGen ?
+                      !!layerTarget.generativeTriggerActive?.[p.name] :
                       !!m.triggerActive?.[p.name];
-                      
-                   const triggerAmount = isGen ? 
-                      (layerTarget.generativeTriggerAmount?.[p.name] ?? 0) : 
+
+                   const triggerAmount = family === '3d' ?
+                      (layerTarget.threeDTriggerAmount?.[p.name] ?? 0) :
+                      isGen ?
+                      (layerTarget.generativeTriggerAmount?.[p.name] ?? 0) :
                       (m.triggerAmount?.[p.name] ?? 0);
 
                    
@@ -11048,7 +11266,9 @@ return (
                              <TriggerAmountInput
                                value={triggerAmount}
                                onChange={(val) => {
-                                  if (isGen) {
+                                  if (family === '3d') {
+                                     setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, threeDTriggerAmount: { ...(l.threeDTriggerAmount || {}), [p.name]: val } } : l));
+                                  } else if (isGen) {
                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerAmount: { ...(l.generativeTriggerAmount || {}), [p.name]: val } } : l));
                                   } else {
                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(map => map.id === m.id ? { ...map, triggerAmount: { ...(map.triggerAmount || {}), [p.name]: val } } : map) } : l));
@@ -11061,7 +11281,30 @@ return (
                            <button
                              onClick={() => {
                                 const newState = !isTriggerActive;
-                                if (isGen) {
+                                if (family === '3d') {
+                                   setLayers(prev => prev.map(l => l.id === layerTarget.id ? {
+                                     ...l,
+                                     threeDTriggerActive: { ...(l.threeDTriggerActive || {}), [p.name]: newState },
+                                     threeDTriggerAmount: (newState && !(l.threeDTriggerAmount?.[p.name]))
+                                       ? { ...(l.threeDTriggerAmount || {}), [p.name]: 0.5 }
+                                       : (l.threeDTriggerAmount || {}),
+                                   } : l));
+                                   const hasMapping = layerTarget.threeDMappings?.find((gm: any) => gm.id === p.name);
+                                   if (newState && !hasMapping) {
+                                      const targetM = {
+                                        ...INITIAL_MAPPINGS[0],
+                                        id: p.name,
+                                        name: p.name,
+                                        active: true,
+                                        triggerBehavior: 'momentary' as any,
+                                        noteSettings: { ...DEFAULT_NOTE_SETTINGS },
+                                        channels: Array.from({length: 16}, (_, i) => i)
+                                      };
+                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, threeDMappings: [...(l.threeDMappings || []), targetM] } : l));
+                                   }
+                                   setSelectedEffectId(`3d-${p.name}`);
+                                   setSelectedLayerForEffect(layerTarget.id);
+                                } else if (isGen) {
                                    setLayers(prev => prev.map(l => l.id === layerTarget.id ? {
                                      ...l,
                                      generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [p.name]: newState },
@@ -11072,11 +11315,11 @@ return (
                                    } : l));
                                    const hasMapping = layerTarget.generativeMappings?.find((gm: any) => gm.id === p.name);
                                    if (newState && !hasMapping) {
-                                      const targetM = { 
-                                        ...INITIAL_MAPPINGS[0], 
-                                        id: p.name, 
-                                        name: p.name, 
-                                        active: true, 
+                                      const targetM = {
+                                        ...INITIAL_MAPPINGS[0],
+                                        id: p.name,
+                                        name: p.name,
+                                        active: true,
                                         triggerBehavior: 'momentary' as any,
                                         noteSettings: { ...DEFAULT_NOTE_SETTINGS },
                                         channels: Array.from({length: 16}, (_, i) => i)
@@ -11102,7 +11345,7 @@ return (
                         {/* Center: Knob */}
                         <div className="flex-1 flex justify-center mt-1">
                           <Knob
-                             value={isGen ? (layerTarget.generativeSettings?.[p.name] ?? (p.id ? layerTarget.generativeSettings?.[p.id] : undefined) ?? p.default) : ((p.id ? m.settings?.[p.id] : undefined) ?? m.settings?.[p.name] ?? p.default ?? p.min)}
+                             value={family === '3d' ? Number(layerTarget.threeDSettings?.[p.name] ?? p.default) : isGen ? (layerTarget.generativeSettings?.[p.name] ?? (p.id ? layerTarget.generativeSettings?.[p.id] : undefined) ?? p.default) : ((p.id ? m.settings?.[p.id] : undefined) ?? m.settings?.[p.name] ?? p.default ?? p.min)}
                              min={p.min}
                              max={p.max}
                              label={p.name}
@@ -11122,7 +11365,9 @@ return (
                               }}
                              ccLabel={layerTarget.ccBindings?.[paramId] ? `CC ${layerTarget.ccBindings[paramId].cc}` : undefined}
                              onChange={(val) => {
-                                if (isGen) {
+                                if (family === '3d') {
+                                   setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, threeDSettings: { ...(l.threeDSettings || {}), [p.name]: val } } : l));
+                                } else if (isGen) {
                                    setLayers(prev => prev.map(l => {
                                       if (l.id !== layerTarget.id) return l;
                                       const nextSettings = { ...(l.generativeSettings || {}), [p.name]: val };
@@ -11166,6 +11411,59 @@ return (
 
                 return (
                   <div className="space-y-4 pb-20">
+                    {/* 3D Parameters */}
+                    {activeLayer.type === '3d' && activeLayer.threeDKind && (
+                      <div className="space-y-4">
+                        <CollapseHead id="params" label={`Parameters — ${activeLayer.threeDKind === 'mesh' ? '3D Mesh' : activeLayer.threeDKind === 'splat' ? 'Gaussian Splat' : 'Kinect Point Cloud'}`} />
+                        {belowPanel === 'params' && (
+                        <>
+                        {threeDEngineRef.current?.getLoadError(activeLayer.id) && (
+                          <div className="p-3 rounded bg-red-900/30 border border-red-500/50 text-red-300/80 text-[10px] font-mono">
+                            {threeDEngineRef.current.getLoadError(activeLayer.id)}
+                          </div>
+                        )}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
+                          {sortParamsForDisplay(THREE_D_PARAMETERS).map(p => {
+                            const mapping = activeLayer.threeDMappings?.find(m => m.id === p.name) || { id: p.name, name: p.name, active: false };
+                            return renderKnob(p, mapping, activeLayer, '3d');
+                          })}
+                        </div>
+
+                        <div className="space-y-2 pt-4 border-t border-white/5">
+                          <label className="text-[10px] uppercase tracking-widest opacity-40">Clip Region</label>
+                          <CustomSelect
+                            value={(activeLayer.threeDSettings?.clipMode as string) || 'off'}
+                            onChange={(v) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, threeDSettings: { ...(l.threeDSettings || {}), clipMode: v } } : l))}
+                            buttonClassName="w-full flex items-center justify-between gap-2 bg-black/40 border border-white/10 hover:border-white/25 rounded p-2 text-[10px] uppercase tracking-widest outline-none text-left text-white transition-colors"
+                            options={[
+                              { value: 'off', label: 'Off' },
+                              { value: 'sphere', label: `Sphere${activeLayer.threeDKind === 'splat' ? ' (not available for Splats)' : ''}` },
+                              { value: 'box', label: 'Box' },
+                            ]}
+                          />
+                          {activeLayer.threeDKind === 'splat' && (activeLayer.threeDSettings?.clipMode as string || 'off') !== 'off' && (
+                            <p className="text-[8px] uppercase tracking-widest text-white/30 leading-relaxed">
+                              Clip Region isn't applied to Gaussian Splats yet — Glitch and Point Cloud still work.
+                            </p>
+                          )}
+                        </div>
+
+                        {activeLayer.threeDKind === 'kinect' && (
+                          <div className="space-y-2 pt-4 border-t border-white/5">
+                            <div className="flex items-center justify-between">
+                              <label className="text-[10px] uppercase tracking-widest opacity-40">Kinect Source</label>
+                              <span className={`text-[9px] uppercase tracking-widest font-bold flex items-center gap-1.5 ${threeDEngineRef.current?.isKinectLive(activeLayer.id) ? 'text-green-400' : 'text-white/40'}`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${threeDEngineRef.current?.isKinectLive(activeLayer.id) ? 'bg-green-500 animate-pulse' : 'bg-white/30'}`} />
+                                {threeDEngineRef.current?.isKinectLive(activeLayer.id) ? 'Live' : 'Synthetic Demo'}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                        </>
+                        )}
+                      </div>
+                    )}
+
                     {/* Generative Parameters */}
                     {activeLayer.type === 'generative' && activeLayer.generativeId && generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.parameters.length > 0 && (
                       <div className="space-y-4">
@@ -11174,7 +11472,7 @@ return (
                         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
                           {sortParamsForDisplay(generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.parameters || []).map(p => {
                             const mapping = activeLayer.generativeMappings?.find(m => m.id === p.name) || { id: p.name, name: p.name, active: false };
-                            return renderKnob(p, mapping, activeLayer, true);
+                            return renderKnob(p, mapping, activeLayer, 'gen');
                           })}
                         </div>
                         )}
@@ -11453,7 +11751,7 @@ return (
                             <div key={m.id} className="space-y-4">
                               <h4 className="text-[10px] font-bold uppercase tracking-widest text-white/50 pb-1">{effectDef.name}</h4>
                               <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
-                                {sortParamsForDisplay(effectDef.parameters).map(p => renderKnob(p, m, activeLayer, false))}
+                                {sortParamsForDisplay(effectDef.parameters).map(p => renderKnob(p, m, activeLayer, 'effect'))}
                               </div>
                             </div>
                           );
@@ -11462,7 +11760,7 @@ return (
                     )}
 
                     {/* Image / Video Transform */}
-                    {activeLayer.type !== 'generative' && (activeLayer.src || activeLayer.isLive) && (
+                    {activeLayer.type !== 'generative' && (activeLayer.src || activeLayer.isLive || (activeLayer.type === '3d' && activeLayer.threeDKind)) && (
                       <div className="space-y-4 pt-6 mt-6 border-t border-white/10">
                         <h3 className="text-[11px] font-bold uppercase tracking-widest text-red-400 border-b border-white/5 pb-2">
                            Parameters: Layer {layerIdx}
@@ -11696,6 +11994,7 @@ return (
                     const layerIdx = layers.findIndex(l => l.id === layerTarget.id) + 1;
                     
                     let isGenerativeParam = false;
+                    let isThreeDParam = false;
                     let headerTitle = `Trigger: Layer ${layerIdx}`;
                     let mapping: any = layerTarget.mappings.find(m => m.id === selectedEffectId);
 
@@ -11728,6 +12027,21 @@ return (
                            triggerBehavior: 'momentary'
                        };
                        isGenerativeParam = true;
+                    } else if (selectedEffectId.startsWith('3d-')) {
+                       const pName = selectedEffectId.replace('3d-', '');
+                       const formattedName = (pName.charAt(0).toUpperCase() + pName.slice(1)).replace(/_/g, ' ');
+                       headerTitle = `Trigger: Layer ${layerIdx} - ${formattedName}`;
+                       mapping = layerTarget.threeDMappings?.find(m => m.id === pName) || {
+                           id: pName,
+                           name: formattedName,
+                           active: true,
+                           channels: Array.from({length: 16}, (_, i) => i),
+                           noteStart: 0,
+                           noteEnd: 127,
+                           noteSettings: { ...DEFAULT_NOTE_SETTINGS },
+                           triggerBehavior: 'momentary'
+                       };
+                       isThreeDParam = true;
                     } else if (selectedEffectId.startsWith('effect-')) {
                        const parts = selectedEffectId.split('-');
                        const effectId = parts[1];
@@ -11751,16 +12065,22 @@ return (
 
                     if (!mapping) return null;
 
-                    // Merge a partial patch into this mapping's audioMapping (generative param or effect param).
+                    // Shared write path for the trigger config panel: routes to whichever
+                    // family of mappings this parameter belongs to (generative / 3d / effect).
+                    const patchMapping = (updater: (m: any) => any) => {
+                      setLayers(prev => prev.map(l => {
+                        if (l.id !== layerTarget.id) return l;
+                        if (isGenerativeParam) return { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? updater(m) : m) };
+                        if (isThreeDParam) return { ...l, threeDMappings: l.threeDMappings?.map(m => m.id === mapping.id ? updater(m) : m) };
+                        return { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? updater(m) : m) };
+                      }));
+                    };
+                    // Merge a partial patch into this mapping's audioMapping (generative/3d/effect param).
                     const patchAudio = (patch: Partial<AudioMapping>) => {
-                      const upd = (m: any) => ({ ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), ...patch } });
-                      if (isGenerativeParam) setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? upd(m) : m) } : l));
-                      else setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? upd(m) : m) } : l));
+                      patchMapping((m: any) => ({ ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), ...patch } }));
                     };
                     const patchRhythm = (patch: any) => {
-                      const upd = (m: any) => ({ ...m, rhythmMapping: { ...(m.rhythmMapping || { enabled: true, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), ...patch } });
-                      if (isGenerativeParam) setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? upd(m) : m) } : l));
-                      else setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? upd(m) : m) } : l));
+                      patchMapping((m: any) => ({ ...m, rhythmMapping: { ...(m.rhythmMapping || { enabled: true, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), ...patch } }));
                     };
                     const rm = mapping.rhythmMapping || { enabled: true, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false), noteSettings: DEFAULT_NOTE_SETTINGS };
                     const audioEngineType = mapping.audioMapping?.engine || 'level';
@@ -11772,9 +12092,7 @@ return (
                           <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
                             <button 
                               onClick={() => {
-                                 const updater = (m: any) => ({ ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: true }, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false } });
-                                 if (isGenerativeParam) setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? updater(m) : m) } : l));
-                                 else setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? updater(m) : m) } : l));
+                                 patchMapping((m: any) => ({ ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: true }, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false } }));
                               }}
                               className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${mapping.audioMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
                             >
@@ -11782,9 +12100,7 @@ return (
                             </button>
                             <button 
                               onClick={() => {
-                                 const updater = (m: any) => ({ ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false }, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false } });
-                                 if (isGenerativeParam) setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? updater(m) : m) } : l));
-                                 else setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? updater(m) : m) } : l));
+                                 patchMapping((m: any) => ({ ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false }, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false } }));
                               }}
                               className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${!mapping.audioMapping?.enabled && !mapping.rhythmMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
                             >
@@ -11792,9 +12108,7 @@ return (
                             </button>
                             <button 
                               onClick={() => {
-                                 const updater = (m: any) => ({ ...m, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: true }, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false } });
-                                 if (isGenerativeParam) setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? updater(m) : m) } : l));
-                                 else setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, mappings: l.mappings.map(m => m.id === mapping.id ? updater(m) : m) } : l));
+                                 patchMapping((m: any) => ({ ...m, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: true }, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false } }));
                               }}
                               className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${mapping.rhythmMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
                             >
@@ -11805,6 +12119,8 @@ return (
                                  // To turn off a parameter trigger, we just set its triggerActive to false
                                  if (isGenerativeParam) {
                                     setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [mapping.id]: false } } : l));
+                                 } else if (isThreeDParam) {
+                                    setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, threeDTriggerActive: { ...(l.threeDTriggerActive || {}), [mapping.id]: false } } : l));
                                  } else {
                                     if (selectedEffectId?.startsWith('effect-') && selectedEffectId.split('-').length >= 3) {
                                        const paramName = selectedEffectId.split('-').slice(2).join('-');
@@ -11954,36 +12270,36 @@ return (
                               isLearnActive={midiLearnTarget?.layerId === layerTarget.id && midiLearnTarget?.effectId === mapping.id ? midiLearnTarget : false}
                               onToggleLearn={(field) => setMidiLearnTarget(prev => prev?.layerId === layerTarget.id && prev?.effectId === mapping.id && prev?.field === field ? null : { layerId: layerTarget.id, effectId: mapping.id, field })}
                               onUpdate={(field, val) => {
-                                if (isGenerativeParam) {
-                                  setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, [field]: val } : m) } : l));
+                                if (isGenerativeParam || isThreeDParam) {
+                                  patchMapping((m: any) => ({ ...m, [field]: val }));
                                 } else {
                                   updateMapping(layerTarget.id, mapping.id, field as keyof EffectMapping, val)
                                 }
                               }}
                               onUpdateNote={(field, val) => {
-                                if (isGenerativeParam) {
-                                  setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, noteSettings: { ...m.noteSettings, [field]: val } } : m) } : l));
+                                if (isGenerativeParam || isThreeDParam) {
+                                  patchMapping((m: any) => ({ ...m, noteSettings: { ...m.noteSettings, [field]: val } }));
                                 } else {
                                   updateNoteSetting(layerTarget.id, mapping.id, field, val)
                                 }
                               }}
                               onToggleChannel={(ch) => {
-                                if (isGenerativeParam) {
-                                  setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, channels: m.channels.includes(ch) ? m.channels.filter(c => c !== ch) : [...m.channels, ch] } : m) } : l));
+                                if (isGenerativeParam || isThreeDParam) {
+                                  patchMapping((m: any) => ({ ...m, channels: m.channels.includes(ch) ? m.channels.filter((c: number) => c !== ch) : [...m.channels, ch] }));
                                 } else {
                                   toggleChannel(layerTarget.id, mapping.id, ch)
                                 }
                               }}
                               onSetAllChannels={() => {
-                                if (isGenerativeParam) {
-                                  setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, channels: Array.from({length: 16}, (_, i) => i) } : m) } : l));
+                                if (isGenerativeParam || isThreeDParam) {
+                                  patchMapping((m: any) => ({ ...m, channels: Array.from({length: 16}, (_, i) => i) }));
                                 } else {
                                   setAllChannels(layerTarget.id, mapping.id)
                                 }
                               }}
                               onSetNoChannels={() => {
-                                if (isGenerativeParam) {
-                                  setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeMappings: l.generativeMappings?.map(m => m.id === mapping.id ? { ...m, channels: [] } : m) } : l));
+                                if (isGenerativeParam || isThreeDParam) {
+                                  patchMapping((m: any) => ({ ...m, channels: [] }));
                                 } else {
                                   setNoChannels(layerTarget.id, mapping.id)
                                 }
@@ -12286,6 +12602,23 @@ return (
                         >
                           Live Camera
                         </button>
+                        <button
+                          onClick={() => {
+                            if (assetBrowserLayerTarget) {
+                               const existing = layers.find(l => l.id === assetBrowserLayerTarget);
+                               if (existing?.isLive) stopWebcam(assetBrowserLayerTarget);
+                               setLayers(prev => prev.map(layer => layer.id === assetBrowserLayerTarget ? {
+                                 ...layer, type: '3d', isLive: false, src: null,
+                                 mappings: [], generativeSettings: {}, generativeMappings: [], generativeTriggerActive: {}, generativeTriggerAmount: {},
+                                 threeDSettings: layer.threeDSettings || {}, threeDMappings: layer.threeDMappings || [],
+                                 threeDTriggerActive: layer.threeDTriggerActive || {}, threeDTriggerAmount: layer.threeDTriggerAmount || {},
+                               } : layer));
+                            }
+                          }}
+                          className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layers.find(l => l.id === assetBrowserLayerTarget)?.type === '3d' ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
+                        >
+                          3D Asset
+                        </button>
                      </div>
                    </div>
 
@@ -12317,7 +12650,7 @@ return (
                           )}
                        </div>
                    )}
-                   {layers.find(l => l.id === assetBrowserLayerTarget)?.type !== 'generative' && !layers.find(l => l.id === assetBrowserLayerTarget)?.isLive ? (
+                   {layers.find(l => l.id === assetBrowserLayerTarget)?.type !== 'generative' && layers.find(l => l.id === assetBrowserLayerTarget)?.type !== '3d' && !layers.find(l => l.id === assetBrowserLayerTarget)?.isLive ? (
                        <div className="space-y-2 pt-4 border-t border-white/5">
                           <label className="text-[10px] uppercase tracking-widest opacity-40">Upload Media (Single or Multiple)</label>
                           <div className="relative group">
@@ -12343,6 +12676,105 @@ return (
                           </div>
                        </div>
                    ) : null}
+                   {layers.find(l => l.id === assetBrowserLayerTarget)?.type === '3d' && (() => {
+                       const target3d = layers.find(l => l.id === assetBrowserLayerTarget);
+                       const isKinect = target3d?.threeDKind === 'kinect';
+                       return (
+                       <div className="space-y-4 pt-4 border-t border-white/5">
+                          <div className="space-y-2">
+                            <label className="text-[10px] uppercase tracking-widest opacity-40">Upload Mesh or Splat File</label>
+                            <div className="relative group">
+                              <input
+                                type="file"
+                                accept={THREE_D_ACCEPT}
+                                onChange={async (e) => {
+                                  const file = e.target.files?.[0];
+                                  if (!file || !assetBrowserLayerTarget) return;
+                                  const layerId = assetBrowserLayerTarget;
+                                  const url = URL.createObjectURL(file);
+                                  let kind = detectThreeDAssetKindByExt(file.name);
+                                  if (kind === 'ply-ambiguous') kind = await detectPlyKind(file);
+                                  if (kind === 'unsupported-sog') {
+                                    setKinectError(prev => ({ ...prev, [layerId]: '.sog splat files are not supported yet — export as .splat or .ksplat instead.' }));
+                                    return;
+                                  }
+                                  if (!kind) return;
+                                  setLayers(prev => prev.map(l => l.id === layerId ? { ...l, name: file.name, threeDKind: kind as any, threeDSrc: url } : l));
+                                  setShowAssetBrowser(false);
+                                }}
+                                className="absolute inset-0 opacity-0 cursor-pointer z-10"
+                              />
+                              <div className="border border-white/10 p-3 rounded-none bg-transparent group-hover:border border-white hover:bg-white hover:text-black transition-colors flex items-center justify-between">
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <Upload size={14} className="opacity-50" />
+                                  <span className="text-[10px] truncate">{target3d?.threeDSrc && target3d.threeDKind !== 'kinect' ? target3d.name : 'Click to Browse (.glb, .gltf, .ply, .splat, .ksplat)...'}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="space-y-2 pt-3 border-t border-white/5">
+                            <label className="text-[10px] uppercase tracking-widest opacity-40">Kinect Point Cloud (Live)</label>
+                            <input
+                              type="text"
+                              defaultValue={target3d?.threeDKinectUrl || 'ws://localhost:8787'}
+                              onBlur={(e) => { if (assetBrowserLayerTarget) setLayers(prev => prev.map(l => l.id === assetBrowserLayerTarget ? { ...l, threeDKinectUrl: e.target.value } : l)); }}
+                              className="w-full bg-black/40 border border-white/10 rounded p-2 text-[10px] font-mono outline-none focus:border-white/30"
+                              placeholder="ws://localhost:8787"
+                            />
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => {
+                                  if (!assetBrowserLayerTarget) return;
+                                  const layerId = assetBrowserLayerTarget;
+                                  const url = target3d?.threeDKinectUrl || 'ws://localhost:8787';
+                                  setLayers(prev => prev.map(l => l.id === layerId ? { ...l, name: 'Kinect Point Cloud', threeDKind: 'kinect', threeDSrc: 'kinect', threeDKinectUrl: url } : l));
+                                  threeDEngineRef.current?.connectKinect(layerId, url);
+                                  setKinectError(prev => { const next = { ...prev }; delete next[layerId]; return next; });
+                                }}
+                                className="flex-1 py-2 rounded text-[9px] uppercase tracking-widest font-bold bg-black/40 border border-white/10 hover:border-white hover:bg-white hover:text-black transition-colors"
+                              >
+                                Connect
+                              </button>
+                              <button
+                                onClick={() => {
+                                  if (!assetBrowserLayerTarget) return;
+                                  const layerId = assetBrowserLayerTarget;
+                                  setLayers(prev => prev.map(l => l.id === layerId ? { ...l, name: 'Kinect Point Cloud', threeDKind: 'kinect', threeDSrc: 'kinect' } : l));
+                                  threeDEngineRef.current?.useSyntheticKinectDemo(layerId);
+                                  setShowAssetBrowser(false);
+                                }}
+                                className="flex-1 py-2 rounded text-[9px] uppercase tracking-widest font-bold bg-black/40 border border-white/10 hover:border-white hover:bg-white hover:text-black transition-colors"
+                              >
+                                Use Synthetic Demo
+                              </button>
+                              {isKinect && (
+                                <button
+                                  onClick={() => { if (assetBrowserLayerTarget) threeDEngineRef.current?.disconnectKinect(assetBrowserLayerTarget); }}
+                                  className="px-3 py-2 rounded text-[9px] uppercase tracking-widest font-bold bg-red-500/20 hover:bg-red-500/30 text-red-400 transition-colors"
+                                >
+                                  Disconnect
+                                </button>
+                              )}
+                            </div>
+                            {isKinect && (
+                              <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-widest font-bold">
+                                <span className={`w-1.5 h-1.5 rounded-full ${threeDEngineRef.current?.isKinectLive(assetBrowserLayerTarget!) ? 'bg-green-500 animate-pulse' : 'bg-white/30'}`} />
+                                <span className={threeDEngineRef.current?.isKinectLive(assetBrowserLayerTarget!) ? 'text-green-400' : 'text-white/40'}>
+                                  {threeDEngineRef.current?.isKinectLive(assetBrowserLayerTarget!) ? 'Live' : 'Synthetic Demo'}
+                                </span>
+                              </div>
+                            )}
+                            {assetBrowserLayerTarget && (kinectError[assetBrowserLayerTarget] || threeDEngineRef.current?.getKinectError(assetBrowserLayerTarget)) && (
+                              <p className="text-[9px] text-red-400 leading-relaxed">{kinectError[assetBrowserLayerTarget] || threeDEngineRef.current?.getKinectError(assetBrowserLayerTarget)}</p>
+                            )}
+                            <p className="text-[8px] uppercase tracking-widest text-white/30 leading-relaxed">
+                              Run <code className="text-white/50">npm run kinect-demo-server</code> for a local test stream, or point this at your own Kinect bridge.
+                            </p>
+                          </div>
+                       </div>
+                       );
+                   })()}
                    {layers.find(l => l.id === assetBrowserLayerTarget)?.type === 'generative' && (
                        <div className="space-y-2 pt-4 border-t border-white/5">
                           <label className="text-[10px] uppercase tracking-widest opacity-40">Select Script</label>
