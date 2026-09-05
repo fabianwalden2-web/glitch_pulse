@@ -16,24 +16,31 @@ export type ThreeDKind = 'mesh' | 'splat' | 'kinect';
 // Same shape as GenerativeParameter so renderKnob/sortParamsForDisplay in
 // App.tsx can render these with zero changes to that machinery.
 export const THREE_D_PARAMETERS: GenerativeParameter[] = [
-  { name: 'pitch', min: -89, max: 89, default: 0, type: 'number' },
-  { name: 'yaw', min: -180, max: 180, default: 0, type: 'number' },
-  { name: 'roll', min: -180, max: 180, default: 0, type: 'number' },
-  { name: 'zoom', min: 0.3, max: 4, default: 1, type: 'number' },
-  { name: 'fov', min: 20, max: 110, default: 60, type: 'number' },
-  { name: 'bg', min: 0, max: 0.3, default: 0, type: 'number' },
-  { name: 'pos_x', min: -150, max: 150, default: 0, type: 'number' },
-  { name: 'pos_y', min: -150, max: 150, default: 0, type: 'number' },
-  { name: 'pos_z', min: -150, max: 150, default: 0, type: 'number' },
-  { name: 'rot_x', min: -180, max: 180, default: 0, type: 'number' },
-  { name: 'rot_y', min: -180, max: 180, default: 0, type: 'number' },
-  { name: 'rot_z', min: -180, max: 180, default: 0, type: 'number' },
-  { name: 'glitch', min: 0, max: 100, default: 0, type: 'number' },
-  { name: 'point_cloud', min: 0, max: 100, default: 0, type: 'number' },
-  { name: 'clip_radius', min: 10, max: 150, default: 100, type: 'number' },
-  { name: 'clip_w', min: 10, max: 150, default: 100, type: 'number' },
-  { name: 'clip_h', min: 10, max: 150, default: 100, type: 'number' },
-  { name: 'clip_d', min: 10, max: 150, default: 100, type: 'number' },
+  { name: 'pitch', min: -89, max: 89, default: 0, type: 'number', group: 'camera' },
+  { name: 'yaw', min: -180, max: 180, default: 0, type: 'number', group: 'camera' },
+  { name: 'roll', min: -180, max: 180, default: 0, type: 'number', group: 'camera' },
+  { name: 'zoom', min: 0.3, max: 4, default: 1, type: 'number', group: 'camera' },
+  { name: 'fov', min: 20, max: 110, default: 60, type: 'number', group: 'camera' },
+  { name: 'bg', min: 0, max: 0.3, default: 0, type: 'number', group: 'camera' },
+  { name: 'pos_x', min: -150, max: 150, default: 0, type: 'number', group: 'position' },
+  { name: 'pos_y', min: -150, max: 150, default: 0, type: 'number', group: 'position' },
+  { name: 'pos_z', min: -150, max: 150, default: 0, type: 'number', group: 'position' },
+  { name: 'rot_x', min: -180, max: 180, default: 0, type: 'number', group: 'position' },
+  { name: 'rot_y', min: -180, max: 180, default: 0, type: 'number', group: 'position' },
+  { name: 'rot_z', min: -180, max: 180, default: 0, type: 'number', group: 'position' },
+  { name: 'glitch', min: 0, max: 100, default: 0, type: 'number', group: 'object' },
+  { name: 'point_cloud', min: 0, max: 100, default: 0, type: 'number', group: 'object' },
+  { name: 'clip_radius', min: 10, max: 150, default: 100, type: 'number', group: 'object' },
+  { name: 'clip_w', min: 10, max: 150, default: 100, type: 'number', group: 'object' },
+  { name: 'clip_h', min: 10, max: 150, default: 100, type: 'number', group: 'object' },
+  { name: 'clip_d', min: 10, max: 150, default: 100, type: 'number', group: 'object' },
+];
+
+// Display order + labels for the three parameter groups (mirrors the source project).
+export const THREE_D_PARAM_GROUPS: { id: string; label: string }[] = [
+  { id: 'camera', label: 'Camera' },
+  { id: 'position', label: 'Position' },
+  { id: 'object', label: 'Object' },
 ];
 
 export type ClipMode = 'off' | 'sphere' | 'box';
@@ -91,6 +98,7 @@ interface LayerState {
   boundingRadius: number;
   boundingCenter: THREE.Vector3;
   camera: CameraOrbitState;
+  showAnchor: boolean;
   raycastSamples: Float32Array | null; // world-space xyz triples, capped ~6000 points
   glitchSeed: number;
   // mesh-only
@@ -126,6 +134,33 @@ function disposeObject3D(obj: THREE.Object3D | null) {
 }
 
 function clampNum(v: number, min: number, max: number) { return Math.max(min, Math.min(max, v)); }
+
+// Small depth-test-off crosshair + wire sphere marking the orbit anchor point.
+function buildAnchorGizmo(): THREE.Object3D {
+  const group = new THREE.Group();
+  const mk = (color: number) => new THREE.LineBasicMaterial({ color, depthTest: false, depthWrite: false, transparent: true });
+  const axis = (a: THREE.Vector3, b: THREE.Vector3, color: number) => {
+    const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+    const l = new THREE.Line(g, mk(color));
+    l.renderOrder = 999;
+    return l;
+  };
+  group.add(axis(new THREE.Vector3(-1, 0, 0), new THREE.Vector3(1, 0, 0), 0xff4d4d));
+  group.add(axis(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0, 1, 0), 0x4dff88));
+  group.add(axis(new THREE.Vector3(0, 0, -1), new THREE.Vector3(0, 0, 1), 0x4d9dff));
+  const ring = new THREE.LineLoop(
+    new THREE.BufferGeometry().setFromPoints(
+      Array.from({ length: 48 }, (_, i) => {
+        const a = (i / 48) * Math.PI * 2;
+        return new THREE.Vector3(Math.cos(a), Math.sin(a), 0);
+      }),
+    ),
+    mk(0xffffff),
+  );
+  ring.renderOrder = 999;
+  group.add(ring);
+  return group;
+}
 
 // --- Synthetic Kinect demo: colored torus-knot point cloud -------------------
 
@@ -202,6 +237,10 @@ export class ThreeDEngine {
   private gltfLoader: GLTFLoader;
   private dracoLoader: DRACOLoader;
   private clock = new THREE.Clock();
+  // Shared anchor-point gizmo, drawn as a final overlay pass for whichever
+  // layer currently has its anchor toggled visible (see renderLayer).
+  private overlayScene: THREE.Scene;
+  private anchorGizmo: THREE.Object3D;
 
   constructor() {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
@@ -213,6 +252,10 @@ export class ThreeDEngine {
     this.gltfLoader = new GLTFLoader();
     this.gltfLoader.setDRACOLoader(this.dracoLoader);
     this.gltfLoader.setMeshoptDecoder(MeshoptDecoder as any);
+
+    this.overlayScene = new THREE.Scene();
+    this.anchorGizmo = buildAnchorGizmo();
+    this.overlayScene.add(this.anchorGizmo);
   }
 
   get canvas(): HTMLCanvasElement { return this.renderer.domElement; }
@@ -264,6 +307,7 @@ export class ThreeDEngine {
         loadToken: 0, loading: false, loadError: null,
         boundingRadius: 1, boundingCenter: new THREE.Vector3(),
         camera: { pitch: 10, yaw: 0, roll: 0, radius: 3, anchor: new THREE.Vector3() },
+        showAnchor: false,
         raycastSamples: null, glitchSeed: Math.random() * 1000,
         meshNodes: [], meshPointCloud: null,
         kinectGeometry: null, kinectMaterial: null, kinectPoints: null,
@@ -570,6 +614,27 @@ export class ThreeDEngine {
     st.camera.anchor.copy(anchor);
   }
 
+  setAnchorVisible(layerId: string, visible: boolean) {
+    this.ensureLayerState(layerId).showAnchor = visible;
+  }
+
+  isAnchorVisible(layerId: string): boolean {
+    return this.layers.get(layerId)?.showAnchor ?? false;
+  }
+
+  // Recenter: drop the anchor back on the content's bounding centre and return
+  // the orbit to its auto-framed defaults. App.tsx also resets the matching
+  // threeDSettings knobs so the change sticks past the next frame.
+  reframe(layerId: string) {
+    const st = this.layers.get(layerId);
+    if (!st) return;
+    st.camera.anchor.copy(st.boundingCenter);
+    st.camera.pitch = 0;
+    st.camera.yaw = 0;
+    st.camera.roll = 0;
+    st.camera.radius = Math.max(0.01, st.boundingRadius * 2.6);
+  }
+
   panAnchor(layerId: string, dxNdc: number, dyNdc: number) {
     const st = this.ensureLayerState(layerId);
     const up = st.kind === 'splat' ? new THREE.Vector3(0, -1, 0) : new THREE.Vector3(0, 1, 0);
@@ -730,6 +795,14 @@ export class ThreeDEngine {
       this.renderer.clippingPlanes = (st.kind === 'mesh' ? this.getMeshClipPlanes(st) : []);
       this.renderer.render(st.scene, this.camera);
       this.renderer.clippingPlanes = [];
+    }
+
+    if (st.showAnchor) {
+      this.renderer.clippingPlanes = [];
+      this.anchorGizmo.position.copy(st.camera.anchor);
+      this.anchorGizmo.quaternion.copy(this.camera.quaternion); // face the camera so the ring reads as a disc
+      this.anchorGizmo.scale.setScalar(Math.max(0.001, st.boundingRadius * 0.06));
+      this.renderer.render(this.overlayScene, this.camera);
     }
 
     return this.renderer.domElement;

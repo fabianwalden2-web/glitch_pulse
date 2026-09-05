@@ -51,7 +51,10 @@ import {
   Copy,
   Sparkles,
   Mic,
-  Webcam
+  Webcam,
+  Move3d,
+  Crosshair,
+  Focus
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition, BUILTIN_PALETTES, GenerativeElement, ColorPalettePreset, GENERATIVE_CATEGORY_ORDER } from './lib/generatives';
@@ -61,7 +64,7 @@ import { Waves } from './components/Waves';
 import { createNoise2D } from 'simplex-noise';
 import { prepareWithSegments, layoutNextLineRange, materializeLineRange, type LayoutCursor } from '@chenglou/pretext';
 import { StepSequencer } from './components/StepSequencer';
-import { ThreeDEngine, THREE_D_PARAMETERS, THREE_D_ACCEPT, detectThreeDAssetKindByExt, detectPlyKind, type ClipMode } from './lib/threeDEngine';
+import { ThreeDEngine, THREE_D_PARAMETERS, THREE_D_PARAM_GROUPS, THREE_D_ACCEPT, detectThreeDAssetKindByExt, detectPlyKind, type ClipMode } from './lib/threeDEngine';
 import { ThreeDCameraOverlay } from './components/ThreeDCameraOverlay';
 
 // --- Types ---
@@ -2234,6 +2237,15 @@ export default function App() {
   }
   const threeDLoadingRef = useRef<Record<string, boolean>>({});
   const [kinectError, setKinectError] = useState<Record<string, string>>({});
+  // Canvas 3D-navigation mode: when on, the ThreeDCameraOverlay captures the
+  // pointer (orbit/pan/zoom/anchor) and the anchor + recenter tools show.
+  const [threeDControlsActive, setThreeDControlsActive] = useState(false);
+  const [threeDAnchorShown, setThreeDAnchorShown] = useState(false);
+  // Keep the anchor-toggle button in sync with the (per-layer) engine state
+  // when the active layer changes.
+  useEffect(() => {
+    setThreeDAnchorShown(activeLayerId ? (threeDEngineRef.current?.isAnchorVisible(activeLayerId) ?? false) : false);
+  }, [activeLayerId]);
 
   // --- Recording Logic ---
 
@@ -10919,7 +10931,7 @@ export default function App() {
               <canvas id="main-render-canvas" ref={canvasRef} className={`w-full h-full object-contain relative ${layers.every(l => (!l.src && !l.isLive && l.type !== 'generative' && l.type !== '3d')) ? 'opacity-0' : ''} z-10`} />
 
               <ThreeDCameraOverlay
-                active={!!layers.find(l => l.id === activeLayerId && l.type === '3d' && l.threeDKind)}
+                active={threeDControlsActive && !!layers.find(l => l.id === activeLayerId && l.type === '3d' && l.threeDKind)}
                 canvasRef={canvasRef}
                 onOrbit={(dPitch, dYaw) => {
                   if (!activeLayerId || !threeDEngineRef.current) return;
@@ -10958,6 +10970,53 @@ export default function App() {
                   } : l));
                 }}
               />
+
+              {(() => {
+                const l3d = layers.find(l => l.id === activeLayerId && l.type === '3d' && l.threeDKind);
+                if (!l3d) return null;
+                return (
+                  <>
+                    <button
+                      onClick={() => setThreeDControlsActive(v => !v)}
+                      className={`absolute top-3 right-3 z-30 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-[10px] font-bold uppercase tracking-widest transition-colors ${threeDControlsActive ? 'bg-red-600 border-red-500 text-white' : 'bg-black/60 border-white/15 text-white/70 hover:text-white hover:border-white/40'}`}
+                      title="Toggle full 3D camera control on the canvas (drag to orbit, right-drag to pan, scroll to zoom, double-click to place anchor)"
+                    >
+                      <Move3d size={13} /> 3D Controls
+                    </button>
+
+                    {threeDControlsActive && (
+                      <div className="absolute top-3 left-3 z-30 flex flex-col gap-2">
+                        <button
+                          onClick={() => {
+                            if (!activeLayerId || !threeDEngineRef.current) return;
+                            const next = !threeDEngineRef.current.isAnchorVisible(activeLayerId);
+                            threeDEngineRef.current.setAnchorVisible(activeLayerId, next);
+                            setThreeDAnchorShown(next);
+                          }}
+                          className={`p-2 rounded-md border transition-colors ${threeDAnchorShown ? 'bg-red-600 border-red-500 text-white' : 'bg-black/60 border-white/15 text-white/70 hover:text-white hover:border-white/40'}`}
+                          title={threeDAnchorShown ? 'Hide anchor point' : 'Show anchor point'}
+                        >
+                          <Crosshair size={14} />
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (!activeLayerId || !threeDEngineRef.current) return;
+                            threeDEngineRef.current.reframe(activeLayerId);
+                            setLayers(prev => prev.map(l => l.id === activeLayerId ? {
+                              ...l,
+                              threeDSettings: { ...(l.threeDSettings || {}), pitch: 0, yaw: 0, roll: 0, zoom: 1 },
+                            } : l));
+                          }}
+                          className="p-2 rounded-md border bg-black/60 border-white/15 text-white/70 hover:text-white hover:border-white/40 transition-colors"
+                          title="Recenter the camera on the asset"
+                        >
+                          <Focus size={14} />
+                        </button>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
 
               {!isPlaying && !layers.every(l => (!l.src && !l.isLive && l.type !== 'generative' && l.type !== '3d')) && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-30 transition-all backdrop-blur-sm">
@@ -11423,12 +11482,21 @@ return (
                             {threeDEngineRef.current.getLoadError(activeLayer.id)}
                           </div>
                         )}
-                        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
-                          {sortParamsForDisplay(THREE_D_PARAMETERS).map(p => {
-                            const mapping = activeLayer.threeDMappings?.find(m => m.id === p.name) || { id: p.name, name: p.name, active: false };
-                            return renderKnob(p, mapping, activeLayer, '3d');
-                          })}
-                        </div>
+                        {THREE_D_PARAM_GROUPS.map(group => {
+                          const groupParams = sortParamsForDisplay(THREE_D_PARAMETERS.filter(p => p.group === group.id));
+                          if (groupParams.length === 0) return null;
+                          return (
+                            <div key={group.id} className="space-y-3">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-white/40">{group.label}</label>
+                              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
+                                {groupParams.map(p => {
+                                  const mapping = activeLayer.threeDMappings?.find(m => m.id === p.name) || { id: p.name, name: p.name, active: false };
+                                  return renderKnob(p, mapping, activeLayer, '3d');
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
 
                         <div className="space-y-2 pt-4 border-t border-white/5">
                           <label className="text-[10px] uppercase tracking-widest opacity-40">Clip Region</label>
@@ -11760,8 +11828,9 @@ return (
                       </div>
                     )}
 
-                    {/* Image / Video Transform */}
-                    {activeLayer.type !== 'generative' && (activeLayer.src || activeLayer.isLive || (activeLayer.type === '3d' && activeLayer.threeDKind)) && (
+                    {/* Image / Video Transform -- 3D layers use the grouped 3D
+                        parameters (Position group) for object transform instead. */}
+                    {activeLayer.type !== 'generative' && activeLayer.type !== '3d' && (activeLayer.src || activeLayer.isLive) && (
                       <div className="space-y-4 pt-6 mt-6 border-t border-white/10">
                         <h3 className="text-[11px] font-bold uppercase tracking-widest text-red-400 border-b border-white/5 pb-2">
                            Parameters: Layer {layerIdx}

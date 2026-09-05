@@ -5,6 +5,7 @@ export interface GenerativeParameter {
   default: number | string;
   type?: 'number' | 'string' | 'boolean' | 'action';
   icon?: string;
+  group?: string;
 }
 
 export interface GenerativeElement {
