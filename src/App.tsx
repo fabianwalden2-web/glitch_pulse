@@ -65,7 +65,7 @@ import { Waves } from './components/Waves';
 import { createNoise2D } from 'simplex-noise';
 import { prepareWithSegments, layoutNextLineRange, materializeLineRange, type LayoutCursor } from '@chenglou/pretext';
 import { StepSequencer } from './components/StepSequencer';
-import { ThreeDEngine, THREE_D_PARAMETERS, THREE_D_PARAM_GROUPS, THREE_D_ACCEPT, detectThreeDAssetKindByExt, detectPlyKind, type ClipMode } from './lib/threeDEngine';
+import { ThreeDEngine, THREE_D_PARAMETERS, THREE_D_PARAM_GROUPS, THREE_D_ACCEPT, CINEMA_PRESET_NAMES, detectThreeDAssetKindByExt, detectPlyKind, type ClipMode } from './lib/threeDEngine';
 import { ThreeDCameraOverlay } from './components/ThreeDCameraOverlay';
 
 // --- Types ---
@@ -8097,6 +8097,8 @@ export default function App() {
               clip_radius: modifiedThreeD.clip_radius, clip_w: modifiedThreeD.clip_w,
               clip_h: modifiedThreeD.clip_h, clip_d: modifiedThreeD.clip_d,
               clipMode,
+              cinema_speed: modifiedThreeD.cinema_speed,
+              cinema_preset: (baseSettings.cinemaPreset as string) || 'off',
             });
             if (rendered) element = rendered;
           }
@@ -9642,7 +9644,12 @@ export default function App() {
         pop.height = mainCanvas.height;
       }
       const pctx = pop.getContext('2d');
-      if (pctx) pctx.drawImage(mainCanvas, 0, 0);
+      if (pctx) {
+        // Clear first -- frames with a transparent background would otherwise
+        // stack on top of each other and smear.
+        pctx.clearRect(0, 0, pop.width, pop.height);
+        pctx.drawImage(mainCanvas, 0, 0);
+      }
     } else if (pop && popoutWinRef.current?.closed) {
       popoutWinRef.current = null;
       popoutCanvasRef.current = null;
@@ -11052,6 +11059,7 @@ export default function App() {
                       yaw: orbit.yaw,
                       roll: orbit.roll,
                       zoom: boundingRadius > 0 ? orbit.radius / (boundingRadius * 2.6) : (l.threeDSettings?.zoom ?? 1),
+                      cinemaPreset: 'off', // manual nav ends any Camera Motion preset
                     },
                   } : l));
                 }}
@@ -11088,9 +11096,10 @@ export default function App() {
                           onClick={() => {
                             if (!activeLayerId || !threeDEngineRef.current) return;
                             threeDEngineRef.current.reframe(activeLayerId);
+                            threeDEngineRef.current.cancelCinema(activeLayerId);
                             setLayers(prev => prev.map(l => l.id === activeLayerId ? {
                               ...l,
-                              threeDSettings: { ...(l.threeDSettings || {}), pitch: 0, yaw: 0, roll: 0, zoom: 1 },
+                              threeDSettings: { ...(l.threeDSettings || {}), pitch: 0, yaw: 0, roll: 0, zoom: 1, cinemaPreset: 'off' },
                             } : l));
                           }}
                           className="p-2 rounded-md border bg-black/60 border-white/15 text-white/70 hover:text-white hover:border-white/40 transition-colors"
@@ -11574,7 +11583,10 @@ return (
                         )}
                         {(() => {
                           const clipMode = (activeLayer.threeDSettings?.clipMode as string) || 'off';
+                          const cinemaPreset = (activeLayer.threeDSettings?.cinemaPreset as string) || 'off';
                           const isClipParam = (name: string) => name === 'clip_radius' || name === 'clip_w' || name === 'clip_h' || name === 'clip_d';
+                          // cinema_speed is shown under the Camera Motion selector, not in the grid.
+                          const isHiddenGridParam = (name: string) => isClipParam(name) || name === 'cinema_speed';
                           const knobFor = (p: any) => {
                             const mapping = activeLayer.threeDMappings?.find(m => m.id === p.name) || { id: p.name, name: p.name, active: false };
                             return renderKnob(p, mapping, activeLayer, '3d');
@@ -11582,7 +11594,7 @@ return (
                           return (<>
                             {THREE_D_PARAM_GROUPS.map(group => {
                               // Clip knobs are rendered separately, gated on the Clip Region mode.
-                              const groupParams = sortParamsForDisplay(THREE_D_PARAMETERS.filter(p => p.group === group.id && !isClipParam(p.name)));
+                              const groupParams = sortParamsForDisplay(THREE_D_PARAMETERS.filter(p => p.group === group.id && !isHiddenGridParam(p.name)));
                               if (groupParams.length === 0) return null;
                               return (
                                 <div key={group.id} className="space-y-3">
@@ -11590,6 +11602,38 @@ return (
                                   <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
                                     {groupParams.map(knobFor)}
                                   </div>
+                                  {group.id === 'camera' && (
+                                    <div className="space-y-2 pt-1">
+                                      <label className="text-[10px] uppercase tracking-widest opacity-40">Camera Motion</label>
+                                      <CustomSelect
+                                        value={cinemaPreset}
+                                        onChange={(v) => {
+                                          setLayers(prev => prev.map(l => {
+                                            if (l.id !== activeLayer.id) return l;
+                                            const next = { ...(l.threeDSettings || {}), cinemaPreset: v };
+                                            // Turning the preset off: freeze the camera where it left off so it doesn't jump.
+                                            if (v === 'off') {
+                                              const orbit = threeDEngineRef.current?.getCameraOrbit(activeLayer.id);
+                                              const br = threeDEngineRef.current?.getBoundingRadius(activeLayer.id) ?? 0;
+                                              if (orbit) {
+                                                next.pitch = orbit.pitch; next.yaw = orbit.yaw; next.roll = orbit.roll;
+                                                next.zoom = br > 0 ? orbit.radius / (br * 2.6) : (l.threeDSettings?.zoom ?? 1);
+                                              }
+                                              threeDEngineRef.current?.cancelCinema(activeLayer.id);
+                                            }
+                                            return { ...l, threeDSettings: next };
+                                          }));
+                                        }}
+                                        buttonClassName="w-full flex items-center justify-between gap-2 bg-black/40 border border-white/10 hover:border-white/25 rounded p-2 text-[10px] uppercase tracking-widest outline-none text-left text-white transition-colors"
+                                        options={[{ value: 'off', label: 'Off (Manual)' }, ...CINEMA_PRESET_NAMES.map(n => ({ value: n, label: n }))]}
+                                      />
+                                      {cinemaPreset !== 'off' && (
+                                        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4 pt-2">
+                                          {THREE_D_PARAMETERS.filter(p => p.name === 'cinema_speed').map(knobFor)}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
                               );
                             })}
