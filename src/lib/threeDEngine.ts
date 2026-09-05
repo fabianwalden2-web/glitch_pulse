@@ -8,6 +8,7 @@ import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { GenerativeParameter } from './generatives';
 
 export type ThreeDKind = 'mesh' | 'splat' | 'kinect';
@@ -22,6 +23,8 @@ export const THREE_D_PARAMETERS: GenerativeParameter[] = [
   { name: 'zoom', min: 0.3, max: 4, default: 1, type: 'number', group: 'camera' },
   { name: 'fov', min: 20, max: 110, default: 60, type: 'number', group: 'camera' },
   { name: 'bg', min: 0, max: 0.3, default: 0, type: 'number', group: 'camera' },
+  // tone-mapping exposure for glTF meshes (filmic look, like the pmndrs viewers)
+  { name: 'exposure', min: 0.15, max: 3, default: 1, type: 'number', group: 'camera' },
   // playback-rate multiplier for the active Camera Motion preset (see CINEMA_PRESETS)
   { name: 'cinema_speed', min: 0.05, max: 4, default: 1, type: 'number', group: 'camera' },
   { name: 'pos_x', min: -150, max: 150, default: 0, type: 'number', group: 'position' },
@@ -58,6 +61,7 @@ export interface ThreeDRenderParams {
   clipMode: ClipMode;
   cinema_speed: number;
   cinema_preset: string;
+  exposure: number;
 }
 
 // --- Camera Motion presets (guide §5.3) -------------------------------------
@@ -306,17 +310,28 @@ export class ThreeDEngine {
   // layer currently has its anchor toggled visible (see renderLayer).
   private overlayScene: THREE.Scene;
   private anchorGizmo: THREE.Object3D;
+  // Neutral studio image-based lighting for glTF PBR materials. Without an
+  // environment map, metal/rough surfaces get no ambient bounce and glTF models
+  // look dark and flat (unlike the pmndrs/three viewers, which all use IBL).
+  private envMap: THREE.Texture | null = null;
 
   constructor() {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
     this.renderer.autoClear = false;
     this.renderer.localClippingEnabled = true;
+    this.renderer.toneMappingExposure = 1;
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.05, 100000);
     this.dracoLoader = new DRACOLoader();
     this.dracoLoader.setDecoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/draco/');
     this.gltfLoader = new GLTFLoader();
     this.gltfLoader.setDRACOLoader(this.dracoLoader);
     this.gltfLoader.setMeshoptDecoder(MeshoptDecoder as any);
+
+    try {
+      const pmrem = new THREE.PMREMGenerator(this.renderer);
+      this.envMap = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      pmrem.dispose();
+    } catch { /* IBL is a nice-to-have; degrade to direct lights only */ }
 
     this.overlayScene = new THREE.Scene();
     this.anchorGizmo = buildAnchorGizmo();
@@ -360,12 +375,16 @@ export class ThreeDEngine {
     let st = this.layers.get(layerId);
     if (!st) {
       const scene = new THREE.Scene();
-      const hemi = new THREE.HemisphereLight(0xffffff, 0x404040, 1.1);
+      // IBL does most of the lighting (soft, even, PBR-correct); the directional
+      // lights just add shape/highlights. Not drawn as a background -- alpha stays
+      // clean so the 3D layer composites over the others.
+      if (this.envMap) scene.environment = this.envMap;
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x2a2a30, this.envMap ? 0.35 : 1.1);
       scene.add(hemi);
-      const key = new THREE.DirectionalLight(0xffffff, 1.0);
+      const key = new THREE.DirectionalLight(0xffffff, this.envMap ? 1.3 : 1.0);
       key.position.set(3, 5, 4);
       scene.add(key);
-      const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+      const fill = new THREE.DirectionalLight(0xffffff, this.envMap ? 0.45 : 0.35);
       fill.position.set(-4, 2, -3);
       scene.add(fill);
       st = {
@@ -970,7 +989,7 @@ export class ThreeDEngine {
     const frameKey = [
       c.pitch.toFixed(2), c.yaw.toFixed(2), c.roll.toFixed(2), c.radius.toFixed(3),
       c.anchor.x.toFixed(2), c.anchor.y.toFixed(2), c.anchor.z.toFixed(2),
-      r2(camFov ?? params.fov), params.bg.toFixed(3),
+      r2(camFov ?? params.fov), params.bg.toFixed(3), r2(params.exposure ?? 1),
       r2(params.pos_x), r2(params.pos_y), r2(params.pos_z), r2(params.rot_x), r2(params.rot_y), r2(params.rot_z),
       r2(params.glitch), r2(params.reconstruction), r2(params.point_cloud),
       params.clipMode, r2(params.clip_radius), r2(params.clip_w), r2(params.clip_h), r2(params.clip_d),
@@ -980,6 +999,15 @@ export class ThreeDEngine {
     if (st.renderCache && st.renderCacheKey === frameKey && !modActive) return st.renderCache;
 
     // ---- heavy path (something changed) ----
+    // Filmic tone mapping for glTF meshes (matches the pmndrs / three viewers);
+    // splats + Kinect keep their own colour pipeline untouched.
+    if (st.kind === 'mesh') {
+      this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      this.renderer.toneMappingExposure = clampNum(safeNum(params.exposure, 1), 0.15, 3);
+    } else {
+      this.renderer.toneMapping = THREE.NoToneMapping;
+      this.renderer.toneMappingExposure = 1;
+    }
     this.camera.fov = clampNum(safeNum(camFov ?? params.fov, 60), 15, 120);
     // Near/far scale with the orbit distance: a close-up (or a sequence jump that
     // ends near the surface) no longer gets its geometry sliced by a fixed near

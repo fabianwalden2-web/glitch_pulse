@@ -8269,6 +8269,7 @@ export default function App() {
               clipMode,
               cinema_speed: modifiedThreeD.cinema_speed,
               cinema_preset: (baseSettings.cinemaPreset as string) || 'off',
+              exposure: modifiedThreeD.exposure,
             });
             if (rendered) element = rendered;
           }
@@ -11943,8 +11944,8 @@ return (
                             );
                           };
                           const isClipParam = (name: string) => name === 'clip_radius' || name === 'clip_w' || name === 'clip_h' || name === 'clip_d';
-                          // cinema_speed is shown under the Camera Motion selector, not in the grid.
-                          const isHiddenGridParam = (name: string) => isClipParam(name) || name === 'cinema_speed';
+                          // cinema_speed lives under the Camera Motion selector; exposure only applies to glTF meshes.
+                          const isHiddenGridParam = (name: string) => isClipParam(name) || name === 'cinema_speed' || (name === 'exposure' && activeLayer.threeDKind !== 'mesh');
                           const knobFor = (p: any) => {
                             const mapping = activeLayer.threeDMappings?.find(m => m.id === p.name) || { id: p.name, name: p.name, active: false };
                             return renderKnob(p, mapping, activeLayer, '3d');
