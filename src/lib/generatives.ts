@@ -1885,6 +1885,132 @@ void main(void) {
   "uuid": "flow-strokes-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Halftone Drift",
+  "category": "Geometric",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo",
+  "parameters": [
+    { "name": "cols",          "min": 6.0,  "max": 40.0,   "default": 17.0,   "type": "number" },
+    { "name": "noise_scale",   "min": 0.5,  "max": 10.0,   "default": 4.135,  "type": "number" },
+    { "name": "rotation_amt",  "min": 0.0,  "max": 2.0,    "default": 0.0,    "type": "number" },
+    { "name": "translate_amt", "min": 0.0,  "max": 40.0,   "default": 18.0,   "type": "number" },
+    { "name": "scale_amt",     "min": 0.0,  "max": 2.0,    "default": 0.0,    "type": "number" },
+    { "name": "seed",          "min": 0.0,  "max": 9999.0, "default": 3100.0, "type": "number" },
+    { "name": "ripple", "default": 0, "type": "action" },
+    { "name": "settle", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "cells", "name": "Cells", "defaultColor": "#ffffff" }
+  ],
+  "uuid": "halftone-drift-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Delta Maze",
+  "category": "Retro",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo",
+  "parameters": [
+    { "name": "cols",        "min": 8.0,   "max": 40.0,  "default": 18.0,  "type": "number" },
+    { "name": "rows",        "min": 10.0,  "max": 48.0,  "default": 22.0,  "type": "number" },
+    { "name": "line_width",  "min": 0.1,   "max": 1.0,   "default": 0.3,   "type": "number" },
+    { "name": "noise_scale", "min": 0.005, "max": 0.1,   "default": 0.036, "type": "number" },
+    { "name": "density",     "min": 0.0,   "max": 1.0,   "default": 0.6,   "type": "number" },
+    { "name": "seed",        "min": 0.0,   "max": 999.0, "default": 5.0,   "type": "number" },
+    { "name": "carve", "default": 0, "type": "action" },
+    { "name": "flood", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "grid", "name": "Grid", "defaultColor": "#555555" },
+    { "id": "path", "name": "Corridor", "defaultColor": "#ffffff" },
+    { "id": "flood", "name": "Flood", "defaultColor": "#eb556b" }
+  ],
+  "uuid": "delta-maze-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Thread Nest",
+  "category": "Lines & Terrain",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo",
+  "parameters": [
+    { "name": "loop_count",  "min": 10.0, "max": 120.0, "default": 54.0,  "type": "number" },
+    { "name": "min_radius",  "min": 20.0, "max": 200.0, "default": 100.0, "type": "number" },
+    { "name": "wobble",      "min": 0.0,  "max": 0.5,   "default": 0.185, "type": "number" },
+    { "name": "line_weight", "min": 0.3,  "max": 3.0,   "default": 1.0,   "type": "number" },
+    { "name": "seed",        "min": 0.0,  "max": 999.0, "default": 11.0,  "type": "number" },
+    { "name": "tighten", "default": 0, "type": "action" },
+    { "name": "unspool", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "lines", "name": "Thread", "defaultColor": "#ffffff" },
+    { "id": "accent", "name": "Loose End", "defaultColor": "#eb556b" }
+  ],
+  "uuid": "thread-nest-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Iso Bar Wave",
+  "category": "Geometric",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo",
+  "parameters": [
+    { "name": "bar_size",   "min": 8.0,  "max": 60.0,  "default": 34.0,  "type": "number" },
+    { "name": "amplitude",  "min": 0.0,  "max": 600.0, "default": 422.0, "type": "number" },
+    { "name": "count",      "min": 20.0, "max": 300.0, "default": 181.0, "type": "number" },
+    { "name": "frequency",  "min": 0.5,  "max": 12.0,  "default": 5.2,   "type": "number" },
+    { "name": "bar_height", "min": 10.0, "max": 200.0, "default": 80.0,  "type": "number" },
+    { "name": "pulse_wave", "default": 0, "type": "action" },
+    { "name": "phase_flip", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "top", "name": "Bar Tops", "defaultColor": "#ffffff" },
+    { "id": "side", "name": "Bar Sides", "defaultColor": "#999999" }
+  ],
+  "uuid": "iso-bar-wave-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Letter Storm",
+  "category": "Text",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo",
+  "parameters": [
+    { "name": "grid_dimension", "min": 6.0, "max": 40.0,  "default": 27.0, "type": "number" },
+    { "name": "seed",           "min": 0.0, "max": 999.0, "default": 100.0,"type": "number" },
+    { "name": "scale_var",      "min": 0.0, "max": 1.0,   "default": 0.6,  "type": "number" },
+    { "name": "rotation_var",   "min": 0.0, "max": 1.0,   "default": 0.3,  "type": "number" },
+    { "name": "word", "default": "SHARP", "type": "string" },
+    { "name": "scramble", "default": 0, "type": "action" },
+    { "name": "spell",    "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "letters", "name": "Letters", "defaultColor": "#ffffff" }
+  ],
+  "uuid": "letter-storm-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   }
 ];
 
@@ -1908,6 +2034,8 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'spiral-shells-1': 'Geometric',
   'polar-checker-1': 'Geometric',
   'voxel-cross-1': 'Geometric',
+  'halftone-drift-1': 'Geometric',
+  'iso-bar-wave-1': 'Geometric',
   // Psychedelic
   'shader-clouds-1': 'Psychedelic',
   'ferrofluid-1': 'Psychedelic',
@@ -1924,6 +2052,7 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'text-boat-sea-canvas-1': 'Text',
   'dragon-text-mask-canvas-1': 'Text',
   'number-paths-canvas-1': 'Text',
+  'letter-storm-1': 'Text',
   // Lines & Terrain
   'vein-labyrinth-canvas-1': 'Lines & Terrain',
   'terrain-lines-canvas-1': 'Lines & Terrain',
@@ -1935,6 +2064,7 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'hatched-summit-canvas-1': 'Lines & Terrain',
   'truchet-arcs-1': 'Lines & Terrain',
   'flow-strokes-1': 'Lines & Terrain',
+  'thread-nest-1': 'Lines & Terrain',
   // Retro
   'neon-labyrinth-canvas-1': 'Retro',
   'pixel-swarm-canvas-1': 'Retro',
@@ -1943,6 +2073,7 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'orbit-deflection-canvas-1': 'Retro',
   'centipede-garden-canvas-1': 'Retro',
   'circuit-routes-1': 'Retro',
+  'delta-maze-1': 'Retro',
 };
 
 export const GENERATIVE_CATEGORY_ORDER = ['Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];

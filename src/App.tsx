@@ -2055,6 +2055,11 @@ export default function App() {
   const truchetArcsStateRef = useRef<Record<string, any>>({});
   const voxelCrossStateRef = useRef<Record<string, any>>({});
   const flowStrokesStateRef = useRef<Record<string, any>>({});
+  const halftoneDriftStateRef = useRef<Record<string, any>>({});
+  const deltaMazeStateRef = useRef<Record<string, any>>({});
+  const threadNestStateRef = useRef<Record<string, any>>({});
+  const isoBarWaveStateRef = useRef<Record<string, any>>({});
+  const letterStormStateRef = useRef<Record<string, any>>({});
   const dragonTextStateRef = useRef<Record<string, any>>({});
 
   // Accumulation Mode Refs
@@ -8446,6 +8451,340 @@ export default function App() {
                   ctx.globalAlpha = 1;
               }
               element = canvas;
+          } else if (def.uuid === 'halftone-drift-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const hdBg = resolvedGenerativeColors['background'] || '#000000';
+              const hdCells = resolvedGenerativeColors['cells'] || '#ffffff';
+
+              const hd = modifiedSettings;
+              const hdCols = Math.max(6, Math.min(40, Math.round(hd.cols ?? 17)));
+              const hdNoiseScale = Math.max(0.5, Math.min(10, hd.noise_scale ?? 4.135));
+              const hdRot = Math.max(0, Math.min(2, hd.rotation_amt ?? 0));
+              const hdTrans = Math.max(0, Math.min(40, hd.translate_amt ?? 18));
+              const hdScaleAmt = Math.max(0, Math.min(2, hd.scale_amt ?? 0));
+              const hdSeed = Math.floor(hd.seed ?? 3100);
+
+              let hdSt = halftoneDriftStateRef.current[layer.id];
+              if (!hdSt) hdSt = halftoneDriftStateRef.current[layer.id] = { lastRipple: 0, rippleStart: -99, lastSettle: 0, settleStart: -99 };
+              const hdRipN = Number(hd.ripple ?? 0), hdSetN = Number(hd.settle ?? 0);
+              if (hdRipN > hdSt.lastRipple) { hdSt.lastRipple = hdRipN; hdSt.rippleStart = nowSec; }
+              if (hdSetN > hdSt.lastSettle) { hdSt.lastSettle = hdSetN; hdSt.settleStart = nowSec; }
+              const hdRipT = nowSec - hdSt.rippleStart;
+              const hdRipR = (hdRipT >= 0 && hdRipT < 1.8) ? (hdRipT / 1.8) : -1;
+              const hdSetT = nowSec - hdSt.settleStart;
+              const hdSetEnv = hdSetT >= 0 && hdSetT < 2.2 ? Math.sin(Math.PI * Math.min(1, hdSetT / 2.2)) : 0;
+
+              const hdHn = (x: number, y: number) => { const a = Math.sin(x * 12.9898 + y * 78.233 + hdSeed * 0.11) * 43758.5453; return a - Math.floor(a); };
+              const hdSn = (x: number, y: number) => {
+                  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+                  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+                  return hdHn(xi, yi) * (1 - u) * (1 - v) + hdHn(xi + 1, yi) * u * (1 - v) + hdHn(xi, yi + 1) * (1 - u) * v + hdHn(xi + 1, yi + 1) * u * v;
+              };
+
+              ctx.fillStyle = hdBg; ctx.fillRect(0, 0, targetW, targetH);
+              ctx.fillStyle = hdCells;
+              const hdCell = targetW / hdCols;
+              const hdRows = Math.ceil(targetH / hdCell);
+              const hdCx = targetW / 2, hdCy = targetH / 2;
+              const hdMaxD = Math.hypot(hdCx, hdCy);
+              const hdT = nowSec * 0.3;
+              for (let r = 0; r < hdRows; r++) {
+                  for (let c = 0; c < hdCols; c++) {
+                      const bx = c * hdCell + hdCell / 2, by = r * hdCell + hdCell / 2;
+                      const n = hdSn((c + hdT) / hdCols * hdNoiseScale, (r - hdT) / hdCols * hdNoiseScale);
+                      let size = hdCell * (0.15 + n * 0.8);
+                      let ox = (hdSn(c * 0.3 + 9, r * 0.3) - 0.5) * hdTrans;
+                      let oy = (hdSn(c * 0.3, r * 0.3 + 9) - 0.5) * hdTrans;
+                      let rot = (n - 0.5) * hdRot * Math.PI;
+                      let scl = 1 + (n - 0.5) * hdScaleAmt;
+                      if (hdRipR >= 0) {
+                          const d = Math.hypot(bx - hdCx, by - hdCy) / hdMaxD;
+                          const band = Math.abs(d - hdRipR);
+                          if (band < 0.12) {
+                              const w = (1 - band / 0.12);
+                              size *= 1 + w * 1.2;
+                              const dir = Math.atan2(by - hdCy, bx - hdCx);
+                              ox += Math.cos(dir) * w * hdCell * 0.6;
+                              oy += Math.sin(dir) * w * hdCell * 0.6;
+                          }
+                      }
+                      if (hdSetEnv > 0) {
+                          size = size + (hdCell * 0.5 - size) * hdSetEnv;
+                          ox *= 1 - hdSetEnv; oy *= 1 - hdSetEnv; rot *= 1 - hdSetEnv; scl = scl + (1 - scl) * hdSetEnv;
+                      }
+                      ctx.save();
+                      ctx.translate(bx + ox, by + oy);
+                      ctx.rotate(rot);
+                      ctx.scale(scl, scl);
+                      ctx.fillRect(-size / 2, -size / 2, size, size);
+                      ctx.restore();
+                  }
+              }
+              element = canvas;
+          } else if (def.uuid === 'delta-maze-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const dmBg = resolvedGenerativeColors['background'] || '#000000';
+              const dmGrid = resolvedGenerativeColors['grid'] || '#555555';
+              const dmPath = resolvedGenerativeColors['path'] || '#ffffff';
+              const dmFloodC = resolvedGenerativeColors['flood'] || '#eb556b';
+
+              const dm = modifiedSettings;
+              const dmCols = Math.max(8, Math.min(40, Math.round(dm.cols ?? 18)));
+              const dmRows = Math.max(10, Math.min(48, Math.round(dm.rows ?? 22)));
+              const dmLineW = Math.max(0.1, Math.min(1, dm.line_width ?? 0.3));
+              const dmNoiseScale = Math.max(0.005, Math.min(0.1, dm.noise_scale ?? 0.036));
+              const dmDensity = Math.max(0, Math.min(1, dm.density ?? 0.6));
+              const dmSeed = Math.floor(dm.seed ?? 5);
+
+              let dmSt = deltaMazeStateRef.current[layer.id];
+              if (!dmSt) dmSt = deltaMazeStateRef.current[layer.id] = { lastCarve: 0, carveStart: -99, seed: dmSeed, lastFlood: 0, floodStart: -99 };
+              const dmCarveN = Number(dm.carve ?? 0), dmFloodN = Number(dm.flood ?? 0);
+              if (dmCarveN > dmSt.lastCarve) { dmSt.lastCarve = dmCarveN; dmSt.seed = dmSeed + Math.floor(dmCarveN) * 331 + 1; dmSt.carveStart = nowSec; }
+              if (dmFloodN > dmSt.lastFlood) { dmSt.lastFlood = dmFloodN; dmSt.floodStart = nowSec; }
+              const dmCarveT = nowSec - dmSt.carveStart;
+              const dmCarveP = dmCarveT >= 0 && dmCarveT < 1.6 ? dmCarveT / 1.6 : 1;
+              const dmFloodT = nowSec - dmSt.floodStart;
+              const dmFloodP = dmFloodT >= 0 && dmFloodT < 2.0 ? dmFloodT / 2.0 : -1;
+
+              const dmHn = (x: number, y: number) => { const a = Math.sin(x * 127.1 + y * 311.7 + dmSt.seed * 0.07) * 43758.5453; return a - Math.floor(a); };
+              const dmSn = (x: number, y: number) => {
+                  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+                  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+                  return dmHn(xi, yi) * (1 - u) * (1 - v) + dmHn(xi + 1, yi) * u * (1 - v) + dmHn(xi, yi + 1) * (1 - u) * v + dmHn(xi + 1, yi + 1) * u * v;
+              };
+
+              ctx.fillStyle = dmBg; ctx.fillRect(0, 0, targetW, targetH);
+              const dmTw = targetW / (dmCols / 2), dmTh = targetH / dmRows;
+              const dmDrift = nowSec * 6;
+              ctx.strokeStyle = dmGrid; ctx.lineWidth = dmLineW * 2;
+              for (let r = 0; r < dmRows; r++) {
+                  for (let c = 0; c < dmCols; c++) {
+                      const up = c % 2 === 0;
+                      const x = c * dmTw / 2;
+                      const tri = up
+                          ? [[x, (r + 1) * dmTh], [x + dmTw, (r + 1) * dmTh], [x + dmTw / 2, r * dmTh]]
+                          : [[x, r * dmTh], [x + dmTw, r * dmTh], [x + dmTw / 2, (r + 1) * dmTh]];
+                      ctx.beginPath();
+                      tri.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+                      ctx.closePath();
+                      ctx.stroke();
+                      const nv = dmSn((x + dmDrift) * dmNoiseScale * 8 + 30, r * dmTh * dmNoiseScale * 8);
+                      if (nv >= dmDensity * 0.85) continue;
+                      const prog = r / dmRows;
+                      if (dmCarveP < 1 && prog > dmCarveP) continue;
+                      ctx.fillStyle = (dmFloodP >= 0 && prog < dmFloodP) ? dmFloodC : dmPath;
+                      ctx.fill();
+                  }
+              }
+              element = canvas;
+          } else if (def.uuid === 'thread-nest-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const tnBg = resolvedGenerativeColors['background'] || '#000000';
+              const tnLines = resolvedGenerativeColors['lines'] || '#ffffff';
+              const tnAccent = resolvedGenerativeColors['accent'] || '#eb556b';
+
+              const tn = modifiedSettings;
+              const tnCount = Math.max(10, Math.min(120, Math.round(tn.loop_count ?? 54)));
+              const tnMinR = Math.max(20, Math.min(200, tn.min_radius ?? 100));
+              const tnWobble = Math.max(0, Math.min(0.5, tn.wobble ?? 0.185));
+              const tnWeight = Math.max(0.3, Math.min(3, tn.line_weight ?? 1));
+              const tnSeed = Math.floor(tn.seed ?? 11);
+              const tnRnd = (n: number) => { const x = Math.sin(n * 127.1 + 311.7 + tnSeed * 0.19) * 43758.5453; return x - Math.floor(x); };
+
+              let tnSt = threadNestStateRef.current[layer.id];
+              if (!tnSt) tnSt = threadNestStateRef.current[layer.id] = { lastTighten: 0, tightenStart: -99, lastUnspool: 0, unspoolStart: -99 };
+              const tnTightN = Number(tn.tighten ?? 0), tnUnspN = Number(tn.unspool ?? 0);
+              if (tnTightN > tnSt.lastTighten) { tnSt.lastTighten = tnTightN; tnSt.tightenStart = nowSec; }
+              if (tnUnspN > tnSt.lastUnspool) { tnSt.lastUnspool = tnUnspN; tnSt.unspoolStart = nowSec; }
+              const tnTightT = nowSec - tnSt.tightenStart;
+              const tnTightEnv = tnTightT >= 0 && tnTightT < 1.8 ? Math.sin(Math.PI * (tnTightT / 1.8)) : 0;
+              const tnUnspT = nowSec - tnSt.unspoolStart;
+              const tnUnspP = tnUnspT >= 0 && tnUnspT < 1.6 ? tnUnspT / 1.6 : -1;
+
+              ctx.fillStyle = tnBg; ctx.fillRect(0, 0, targetW, targetH);
+              const tnCx = targetW / 2, tnCy = targetH / 2;
+              const tnSc = Math.min(targetW, targetH) / 520;
+              ctx.strokeStyle = tnLines; ctx.lineWidth = tnWeight * tnSc * 0.7; ctx.lineJoin = 'round';
+              for (let i = 0; i < tnCount; i++) {
+                  const baseR = (tnMinR + tnRnd(i * 1.7) * tnMinR * 1.3) * tnSc * (1 - tnTightEnv * 0.55);
+                  const jx = (tnRnd(i * 3.3) - 0.5) * tnMinR * 0.8 * tnSc * (1 - tnTightEnv);
+                  const jy = (tnRnd(i * 5.1) - 0.5) * tnMinR * 0.8 * tnSc * (1 - tnTightEnv);
+                  const ox = tnCx + jx, oy = tnCy + jy;
+                  const ph = tnRnd(i * 7.9) * 10;
+                  const rotW = nowSec * (0.1 + tnRnd(i * 2.1) * 0.3) * (i % 2 ? 1 : -1);
+                  ctx.globalAlpha = 0.35 + 0.4 * tnRnd(i * 9.2);
+                  ctx.beginPath();
+                  const seg = 40;
+                  for (let k = 0; k <= seg; k++) {
+                      const a = (k / seg) * Math.PI * 2 + rotW;
+                      const w = 1 + Math.sin(a * 3 + ph + nowSec) * tnWobble + Math.sin(a * 7 - ph) * tnWobble * 0.5;
+                      const rr = baseR * w;
+                      const px = ox + Math.cos(a) * rr, py = oy + Math.sin(a) * rr * 0.92;
+                      k ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+                  }
+                  ctx.closePath();
+                  ctx.stroke();
+              }
+              ctx.globalAlpha = 1;
+              if (tnUnspP >= 0) {
+                  ctx.strokeStyle = tnAccent; ctx.lineWidth = tnWeight * tnSc * 1.1;
+                  const bigR = Math.min(targetW, targetH) * 0.46;
+                  const end = tnUnspP * Math.PI * 4;
+                  ctx.beginPath();
+                  for (let a = 0; a <= end; a += 0.12) {
+                      const rr = bigR * (0.4 + 0.6 * (a / (Math.PI * 4))) * (1 + Math.sin(a * 5 + nowSec * 4) * 0.05);
+                      const px = tnCx + Math.cos(a - nowSec * 3) * rr, py = tnCy + Math.sin(a - nowSec * 3) * rr;
+                      a === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+                  }
+                  ctx.stroke();
+              }
+              element = canvas;
+          } else if (def.uuid === 'iso-bar-wave-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const ibBg = resolvedGenerativeColors['background'] || '#000000';
+              const ibTop = resolvedGenerativeColors['top'] || '#ffffff';
+              const ibSide = resolvedGenerativeColors['side'] || '#999999';
+
+              const ib = modifiedSettings;
+              const ibBarSize = Math.max(8, Math.min(60, ib.bar_size ?? 34));
+              const ibAmp = Math.max(0, Math.min(600, ib.amplitude ?? 422));
+              const ibCount = Math.max(20, Math.min(300, Math.round(ib.count ?? 181)));
+              const ibFreq = Math.max(0.5, Math.min(12, ib.frequency ?? 5.2));
+              const ibBarH = Math.max(10, Math.min(200, ib.bar_height ?? 80));
+
+              let ibSt = isoBarWaveStateRef.current[layer.id];
+              if (!ibSt) ibSt = isoBarWaveStateRef.current[layer.id] = { lastPulse: 0, pulseStart: -99, lastFlip: 0, flipStart: -99, phaseOff: 0, phaseFrom: 0 };
+              const ibPulseN = Number(ib.pulse_wave ?? 0), ibFlipN = Number(ib.phase_flip ?? 0);
+              if (ibPulseN > ibSt.lastPulse) { ibSt.lastPulse = ibPulseN; ibSt.pulseStart = nowSec; }
+              if (ibFlipN > ibSt.lastFlip) { ibSt.lastFlip = ibFlipN; ibSt.flipStart = nowSec; ibSt.phaseFrom = ibSt.phaseOff; ibSt.phaseOff = ibSt.phaseOff + Math.PI; }
+              const ibPulseT = nowSec - ibSt.pulseStart;
+              const ibPulseP = ibPulseT >= 0 && ibPulseT < 1.4 ? ibPulseT / 1.4 : -1;
+              const ibFlipT = nowSec - ibSt.flipStart;
+              const ibFlipP = ibFlipT >= 0 && ibFlipT < 0.9 ? ibFlipT / 0.9 : 1;
+              const ibPhase = ibSt.phaseFrom + (ibSt.phaseOff - ibSt.phaseFrom) * ibFlipP;
+
+              ctx.fillStyle = ibBg; ctx.fillRect(0, 0, targetW, targetH);
+              const ibScl = Math.min(targetW, targetH) / 720;
+              const ibS = ibBarSize * ibScl * 0.5;
+              const ibSpacing = targetW * 1.4 / ibCount;
+              const ibStartX = -targetW * 0.2;
+              const ibT = nowSec * 1.2;
+              const IB_ROWS = 5;
+              for (let row = IB_ROWS - 1; row >= 0; row--) {
+                  const rowY = targetH * 0.62 - row * ibBarH * ibScl * 0.5;
+                  ctx.globalAlpha = 1 - row * 0.16;
+                  for (let n = 0; n < ibCount; n++) {
+                      const fn = n / ibCount;
+                      let amp = ibAmp * ibScl * 0.5;
+                      if (ibPulseP >= 0) {
+                          const bumpC = ibPulseP * ibCount;
+                          amp *= 1 + Math.exp(-Math.pow((n - bumpC) / (ibCount * 0.06), 2)) * 1.6;
+                      }
+                      const y = rowY + Math.sin(fn * ibFreq * Math.PI * 2 + ibPhase + ibT + row * 0.5) * amp * (0.35 + 0.65 * (1 - row / IB_ROWS));
+                      const x = ibStartX + n * ibSpacing;
+                      const h = ibBarH * ibScl * (0.4 + 0.6 * Math.abs(Math.sin(fn * ibFreq * Math.PI + ibPhase)));
+                      ctx.fillStyle = ibSide;
+                      ctx.beginPath();
+                      ctx.moveTo(x - ibS, y - ibS * 0.5); ctx.lineTo(x, y); ctx.lineTo(x, y + h); ctx.lineTo(x - ibS, y + h - ibS * 0.5);
+                      ctx.closePath(); ctx.fill();
+                      ctx.beginPath();
+                      ctx.moveTo(x + ibS, y - ibS * 0.5); ctx.lineTo(x, y); ctx.lineTo(x, y + h); ctx.lineTo(x + ibS, y + h - ibS * 0.5);
+                      ctx.closePath(); ctx.fill();
+                      ctx.fillStyle = ibTop;
+                      ctx.beginPath();
+                      ctx.moveTo(x, y - ibS); ctx.lineTo(x + ibS, y - ibS * 0.5); ctx.lineTo(x, y); ctx.lineTo(x - ibS, y - ibS * 0.5);
+                      ctx.closePath(); ctx.fill();
+                  }
+              }
+              ctx.globalAlpha = 1;
+              element = canvas;
+          } else if (def.uuid === 'letter-storm-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const lsBg = resolvedGenerativeColors['background'] || '#000000';
+              const lsLetters = resolvedGenerativeColors['letters'] || '#ffffff';
+
+              const ls = modifiedSettings;
+              const lsDim = Math.max(6, Math.min(40, Math.round(ls.grid_dimension ?? 27)));
+              const lsSeed = Math.floor(ls.seed ?? 100);
+              const lsScaleVar = Math.max(0, Math.min(1, ls.scale_var ?? 0.6));
+              const lsRotVar = Math.max(0, Math.min(1, ls.rotation_var ?? 0.3));
+              const lsWordRaw = String((ls as any).word ?? 'SHARP');
+              const lsWord = (lsWordRaw.length ? lsWordRaw : 'SHARP').toUpperCase();
+
+              let lsSt = letterStormStateRef.current[layer.id];
+              if (!lsSt) lsSt = letterStormStateRef.current[layer.id] = { lastScramble: 0, scrambleStart: -99, lastSpell: 0, spellStart: -99, salt: 0 };
+              const lsScrN = Number(ls.scramble ?? 0), lsSpN = Number(ls.spell ?? 0);
+              if (lsScrN > lsSt.lastScramble) { lsSt.lastScramble = lsScrN; lsSt.scrambleStart = nowSec; lsSt.salt += 1; }
+              if (lsSpN > lsSt.lastSpell) { lsSt.lastSpell = lsSpN; lsSt.spellStart = nowSec; }
+              const lsScrT = nowSec - lsSt.scrambleStart;
+              const lsScrEnv = lsScrT >= 0 && lsScrT < 2.0 ? Math.sin(Math.PI * Math.min(1, lsScrT / 2.0)) : 0;
+              const lsSpT = nowSec - lsSt.spellStart;
+              const lsSpEnv = lsSpT >= 0 && lsSpT < 2.4 ? Math.sin(Math.PI * Math.min(1, lsSpT / 2.4)) : 0;
+
+              const lsRnd = (n: number) => { const x = Math.sin(n * 127.1 + 311.7 + (lsSeed + lsSt.salt) * 0.37) * 43758.5453; return x - Math.floor(x); };
+
+              ctx.fillStyle = lsBg; ctx.fillRect(0, 0, targetW, targetH);
+              ctx.fillStyle = lsLetters;
+              ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+              const lsCell = Math.min(targetW, targetH) / lsDim;
+              const lsNx = Math.ceil(targetW / lsCell), lsNy = Math.ceil(targetH / lsCell);
+              const lsCx = targetW / 2, lsCy = targetH / 2;
+              const lsSpellSize = Math.min(targetW / (lsWord.length + 1), targetH * 0.5);
+              for (let gy = 0; gy < lsNy; gy++) {
+                  for (let gx = 0; gx < lsNx; gx++) {
+                      const i = gy * lsNx + gx;
+                      let bx = gx * lsCell + lsCell / 2;
+                      let by = gy * lsCell + lsCell / 2;
+                      let li = Math.floor(lsRnd(i * 1.3) * lsWord.length) % lsWord.length;
+                      let sizeF = 0.6 + lsRnd(i * 2.7) * (0.6 + lsScaleVar * 2.4);
+                      let rot = (lsRnd(i * 4.1) - 0.5) * lsRotVar * Math.PI;
+                      if (lsScrEnv > 0) {
+                          const ang = Math.atan2(by - lsCy, bx - lsCx) + lsScrEnv * 6 + i * 0.02;
+                          const rad = Math.hypot(bx - lsCx, by - lsCy) * (1 - lsScrEnv * 0.3) + lsScrEnv * 40 * Math.sin(i + nowSec * 3);
+                          bx = bx + (lsCx + Math.cos(ang) * rad - bx) * lsScrEnv;
+                          by = by + (lsCy + Math.sin(ang) * rad - by) * lsScrEnv;
+                          rot += lsScrEnv * 4;
+                      }
+                      if (lsSpEnv > 0) {
+                          const wi = i % lsWord.length;
+                          const tx = lsCx + (wi - (lsWord.length - 1) / 2) * lsSpellSize;
+                          bx = bx + (tx - bx) * lsSpEnv;
+                          by = by + (lsCy - by) * lsSpEnv;
+                          rot *= (1 - lsSpEnv);
+                          sizeF = sizeF + (lsSpellSize / lsCell * 0.9 - sizeF) * lsSpEnv;
+                          li = lsSpEnv > 0.5 ? wi : li;
+                      }
+                      ctx.save();
+                      ctx.translate(bx, by);
+                      ctx.rotate(rot);
+                      ctx.font = `900 ${Math.max(6, lsCell * sizeF)}px Arial, sans-serif`;
+                      ctx.globalAlpha = 0.55 + 0.45 * lsRnd(i * 8.8);
+                      ctx.fillText(lsWord[li] || '?', 0, 0);
+                      ctx.restore();
+                  }
+              }
+              ctx.globalAlpha = 1;
+              element = canvas;
           } else {
               if (webglRendererRef.current.canvas.width !== targetW || webglRendererRef.current.canvas.height !== targetH) {
                   webglRendererRef.current.resize(targetW, targetH);
@@ -14144,6 +14483,11 @@ return (
                                    if (uuid === 'truchet-arcs-1') return '🌀';
                                    if (uuid === 'voxel-cross-1') return '🧊';
                                    if (uuid === 'flow-strokes-1') return '💨';
+                                   if (uuid === 'halftone-drift-1') return '⚫';
+                                   if (uuid === 'delta-maze-1') return '🔺';
+                                   if (uuid === 'thread-nest-1') return '🧶';
+                                   if (uuid === 'iso-bar-wave-1') return '📊';
+                                   if (uuid === 'letter-storm-1') return '🔤';
                                    if (uuid === 'bubble-spheres-1') return '🫧';
                                    if (uuid === 'dancing-cubes-canvas-1') return '🎲';
                                    return '✨';
