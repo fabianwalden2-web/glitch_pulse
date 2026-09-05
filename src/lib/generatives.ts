@@ -1817,9 +1817,9 @@ void main(void) {
   "defaultPaletteId": "monochrome_brutalist",
   "parameters": [
     { "name": "resolution", "min": 2.0, "max": 6.0,   "default": 3.0,  "type": "number" },
-    { "name": "gap",        "min": 0.0, "max": 5.0,   "default": 2.1,  "type": "number" },
+    { "name": "gap",        "min": 0.0, "max": 5.0,   "default": 0.9,  "type": "number" },
     { "name": "spin",       "min": 0.0, "max": 2.0,   "default": 0.35, "type": "number" },
-    { "name": "fill",       "min": 0.2, "max": 1.0,   "default": 0.75, "type": "number" },
+    { "name": "fill",       "min": 0.4, "max": 1.0,   "default": 1.0,  "type": "number" },
     { "name": "seed",       "min": 0.0, "max": 999.0, "default": 20.0, "type": "number" },
     { "name": "dissolve",    "default": 0, "type": "action" },
     { "name": "rotate_step", "default": 0, "type": "action" }

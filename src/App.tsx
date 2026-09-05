@@ -8399,7 +8399,7 @@ export default function App() {
                   return { sx: vcCx + (rx - rz) * vcS, sy: vcCy + (rx + rz) * vcS * 0.5 - k * vcStep * vcS, depth: rx + rz + k };
               };
               voxels.sort((a, b) => vcProj(a.i, a.j, a.k).depth - vcProj(b.i, b.j, b.k).depth);
-              const vcSCube = vcS * 0.66;
+              const vcSCube = vcS * 0.92;
               for (const v of voxels) {
                   const dist = Math.hypot(v.i, v.j, v.k) || 1;
                   const push = vcDisEnv * (1.4 + dist * 0.6);
