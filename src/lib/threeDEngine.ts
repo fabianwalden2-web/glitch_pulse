@@ -22,9 +22,12 @@ export const THREE_D_PARAMETERS: GenerativeParameter[] = [
   { name: 'roll', min: -180, max: 180, default: 0, type: 'number', group: 'camera' },
   { name: 'zoom', min: 0.3, max: 4, default: 1, type: 'number', group: 'camera' },
   { name: 'fov', min: 20, max: 110, default: 60, type: 'number', group: 'camera' },
-  { name: 'bg', min: 0, max: 0.3, default: 0, type: 'number', group: 'camera' },
+  // opacity of the solid background colour (only when Background = Solid)
+  { name: 'bg', min: 0, max: 1, default: 1, type: 'number', group: 'camera' },
   // tone-mapping exposure for glTF meshes (filmic look, like the pmndrs viewers)
   { name: 'exposure', min: 0.15, max: 3, default: 1, type: 'number', group: 'camera' },
+  // environment-map reflection strength on glTF meshes
+  { name: 'env_int', min: 0, max: 3, default: 1.2, type: 'number', group: 'camera' },
   // playback-rate multiplier for the active Camera Motion preset (see CINEMA_PRESETS)
   { name: 'cinema_speed', min: 0.05, max: 4, default: 1, type: 'number', group: 'camera' },
   { name: 'pos_x', min: -150, max: 150, default: 0, type: 'number', group: 'position' },
@@ -62,7 +65,13 @@ export interface ThreeDRenderParams {
   cinema_speed: number;
   cinema_preset: string;
   exposure: number;
+  env_int: number;
+  env: string;         // 'studio' | 'bright' | 'warm' | 'dawn' | 'cool' | 'none'
+  bg_mode: string;     // 'transparent' | 'solid'
+  bg_color: string;    // hex
 }
+
+export const ENV_PRESET_NAMES = ['studio', 'bright', 'warm', 'dawn', 'cool', 'none'] as const;
 
 // --- Camera Motion presets (guide §5.3) -------------------------------------
 // Each is a pure function of a phase timer `t` (seconds, advanced by dt * speed).
@@ -310,16 +319,18 @@ export class ThreeDEngine {
   // layer currently has its anchor toggled visible (see renderLayer).
   private overlayScene: THREE.Scene;
   private anchorGizmo: THREE.Object3D;
-  // Neutral studio image-based lighting for glTF PBR materials. Without an
-  // environment map, metal/rough surfaces get no ambient bounce and glTF models
-  // look dark and flat (unlike the pmndrs/three viewers, which all use IBL).
-  private envMap: THREE.Texture | null = null;
+  // Image-based lighting for glTF PBR materials. Without an environment map,
+  // metal/rough surfaces get no ambient bounce and glTF models look dark and
+  // flat (unlike the pmndrs/three viewers, which all use IBL). Presets are
+  // synthesised (no external HDR) and PMREM-prefiltered on first use.
+  private envCache = new Map<string, THREE.Texture>();
 
   constructor() {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
     this.renderer.autoClear = false;
     this.renderer.localClippingEnabled = true;
     this.renderer.toneMappingExposure = 1;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.05, 100000);
     this.dracoLoader = new DRACOLoader();
     this.dracoLoader.setDecoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/draco/');
@@ -327,18 +338,49 @@ export class ThreeDEngine {
     this.gltfLoader.setDRACOLoader(this.dracoLoader);
     this.gltfLoader.setMeshoptDecoder(MeshoptDecoder as any);
 
-    try {
-      const pmrem = new THREE.PMREMGenerator(this.renderer);
-      this.envMap = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-      pmrem.dispose();
-    } catch { /* IBL is a nice-to-have; degrade to direct lights only */ }
-
     this.overlayScene = new THREE.Scene();
     this.anchorGizmo = buildAnchorGizmo();
     this.overlayScene.add(this.anchorGizmo);
   }
 
   get canvas(): HTMLCanvasElement { return this.renderer.domElement; }
+
+  // Prefiltered environment map for the given preset (built + cached on first use).
+  private getEnv(name: string): THREE.Texture | null {
+    if (name === 'none') return null;
+    const key = name || 'studio';
+    const hit = this.envCache.get(key);
+    if (hit) return hit;
+    let tex: THREE.Texture | null = null;
+    try {
+      const pmrem = new THREE.PMREMGenerator(this.renderer);
+      if (key === 'studio') {
+        tex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      } else {
+        const g: Record<string, [number, number, number]> = {
+          bright: [0xffffff, 0xeef0f4, 0xc7cbd2],
+          warm: [0xffe1b0, 0xff9d63, 0x2a1f18],
+          dawn: [0xffc9de, 0xf6dbe8, 0x2b2740],
+          cool: [0xd7ecff, 0xffffff, 0x8ba6c2],
+        };
+        const [top, mid, bot] = g[key] || g.bright;
+        const scn = new THREE.Scene();
+        const geo = new THREE.SphereGeometry(60, 40, 24);
+        const mat = new THREE.ShaderMaterial({
+          side: THREE.BackSide,
+          uniforms: { uTop: { value: new THREE.Color(top) }, uMid: { value: new THREE.Color(mid) }, uBot: { value: new THREE.Color(bot) } },
+          vertexShader: 'varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+          fragmentShader: 'varying vec3 vP; uniform vec3 uTop; uniform vec3 uMid; uniform vec3 uBot; void main(){ float h = normalize(vP).y; vec3 c = h > 0.0 ? mix(uMid, uTop, pow(h,0.6)) : mix(uMid, uBot, pow(-h,0.6)); gl_FragColor = vec4(c, 1.0); }',
+        });
+        scn.add(new THREE.Mesh(geo, mat));
+        tex = pmrem.fromScene(scn, 0.02).texture;
+        geo.dispose(); mat.dispose();
+      }
+      pmrem.dispose();
+    } catch { tex = null; }
+    if (tex) this.envCache.set(key, tex);
+    return tex;
+  }
 
   resize(w: number, h: number) {
     const size = new THREE.Vector2();
@@ -376,15 +418,15 @@ export class ThreeDEngine {
     if (!st) {
       const scene = new THREE.Scene();
       // IBL does most of the lighting (soft, even, PBR-correct); the directional
-      // lights just add shape/highlights. Not drawn as a background -- alpha stays
-      // clean so the 3D layer composites over the others.
-      if (this.envMap) scene.environment = this.envMap;
-      const hemi = new THREE.HemisphereLight(0xffffff, 0x2a2a30, this.envMap ? 0.35 : 1.1);
+      // lights just add shape/highlights. The environment map is assigned per
+      // frame in renderLayer from the layer's chosen preset.
+      scene.environment = this.getEnv('studio');
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x2a2a30, 0.35);
       scene.add(hemi);
-      const key = new THREE.DirectionalLight(0xffffff, this.envMap ? 1.3 : 1.0);
+      const key = new THREE.DirectionalLight(0xffffff, 1.3);
       key.position.set(3, 5, 4);
       scene.add(key);
-      const fill = new THREE.DirectionalLight(0xffffff, this.envMap ? 0.45 : 0.35);
+      const fill = new THREE.DirectionalLight(0xffffff, 0.45);
       fill.position.set(-4, 2, -3);
       scene.add(fill);
       st = {
@@ -429,6 +471,8 @@ export class ThreeDEngine {
 
   disposeAll() {
     for (const id of Array.from(this.layers.keys())) this.disposeLayer(id);
+    for (const t of this.envCache.values()) t.dispose();
+    this.envCache.clear();
   }
 
   // --- loading -----------------------------------------------------------------
@@ -989,7 +1033,8 @@ export class ThreeDEngine {
     const frameKey = [
       c.pitch.toFixed(2), c.yaw.toFixed(2), c.roll.toFixed(2), c.radius.toFixed(3),
       c.anchor.x.toFixed(2), c.anchor.y.toFixed(2), c.anchor.z.toFixed(2),
-      r2(camFov ?? params.fov), params.bg.toFixed(3), r2(params.exposure ?? 1),
+      r2(camFov ?? params.fov), params.bg.toFixed(3), r2(params.exposure ?? 1), r2(params.env_int ?? 1.2),
+      params.env || 'studio', params.bg_mode || 'transparent', params.bg_color || '',
       r2(params.pos_x), r2(params.pos_y), r2(params.pos_z), r2(params.rot_x), r2(params.rot_y), r2(params.rot_z),
       r2(params.glitch), r2(params.reconstruction), r2(params.point_cloud),
       params.clipMode, r2(params.clip_radius), r2(params.clip_w), r2(params.clip_h), r2(params.clip_d),
@@ -1004,6 +1049,17 @@ export class ThreeDEngine {
     if (st.kind === 'mesh') {
       this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
       this.renderer.toneMappingExposure = clampNum(safeNum(params.exposure, 1), 0.15, 3);
+      // environment preset + reflection strength
+      const wantEnv = this.getEnv(params.env || 'studio');
+      if (st.scene.environment !== wantEnv) st.scene.environment = wantEnv;
+      const ei = clampNum(safeNum(params.env_int, 1.2), 0, 3);
+      if ((st as any)._lastEnvInt !== ei) {
+        (st as any)._lastEnvInt = ei;
+        for (const m of st.meshNodes) {
+          const mats = Array.isArray(m.material) ? m.material : [m.material];
+          for (const mm of mats) { if (mm && 'envMapIntensity' in mm) (mm as any).envMapIntensity = ei; }
+        }
+      }
     } else {
       this.renderer.toneMapping = THREE.NoToneMapping;
       this.renderer.toneMappingExposure = 1;
@@ -1071,10 +1127,16 @@ export class ThreeDEngine {
       this.applySplatClip(st, params.clipMode, clipCenter, params.clip_radius * clipScale, new THREE.Vector3(params.clip_w * clipScale, params.clip_h * clipScale, params.clip_d * clipScale));
     }
 
-    // Clear transparent when bg is 0 so the 3D render composites cleanly over/under
-    // other layers; only fill an opaque background when the user dials bg up.
-    const bg = params.bg;
-    this.renderer.setClearColor(new THREE.Color(bg, bg, bg), bg > 0.001 ? 1 : 0);
+    // Background: transparent (composites over the other layers) or a solid
+    // colour. The clear colour isn't tone-mapped, so a solid white reads as
+    // true white and makes the model pop.
+    if (params.bg_mode === 'solid') {
+      let col: THREE.Color;
+      try { col = new THREE.Color(params.bg_color || '#ffffff'); } catch { col = new THREE.Color('#ffffff'); }
+      this.renderer.setClearColor(col, clampNum(safeNum(params.bg, 1), 0, 1));
+    } else {
+      this.renderer.setClearColor(0x000000, 0);
+    }
     this.renderer.setScissorTest(false);
     this.renderer.clear();
 

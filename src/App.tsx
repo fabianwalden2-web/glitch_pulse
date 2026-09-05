@@ -66,7 +66,7 @@ import { Waves } from './components/Waves';
 import { createNoise2D } from 'simplex-noise';
 import { prepareWithSegments, layoutNextLineRange, materializeLineRange, type LayoutCursor } from '@chenglou/pretext';
 import { StepSequencer } from './components/StepSequencer';
-import { ThreeDEngine, THREE_D_PARAMETERS, THREE_D_PARAM_GROUPS, THREE_D_ACCEPT, CINEMA_PRESET_NAMES, SEQ_TRIGGER_NAMES, SEQ_SLOT_COUNT, detectThreeDAssetKindByExt, detectPlyKind, type ClipMode } from './lib/threeDEngine';
+import { ThreeDEngine, THREE_D_PARAMETERS, THREE_D_PARAM_GROUPS, THREE_D_ACCEPT, CINEMA_PRESET_NAMES, SEQ_TRIGGER_NAMES, SEQ_SLOT_COUNT, ENV_PRESET_NAMES, detectThreeDAssetKindByExt, detectPlyKind, type ClipMode } from './lib/threeDEngine';
 import { ThreeDCameraOverlay } from './components/ThreeDCameraOverlay';
 
 // --- Types ---
@@ -8270,6 +8270,10 @@ export default function App() {
               cinema_speed: modifiedThreeD.cinema_speed,
               cinema_preset: (baseSettings.cinemaPreset as string) || 'off',
               exposure: modifiedThreeD.exposure,
+              env_int: modifiedThreeD.env_int,
+              env: (baseSettings.env as string) || 'studio',
+              bg_mode: (baseSettings.bgMode as string) || 'transparent',
+              bg_color: (baseSettings.bgColor as string) || '#ffffff',
             });
             if (rendered) element = rendered;
           }
@@ -11944,8 +11948,10 @@ return (
                             );
                           };
                           const isClipParam = (name: string) => name === 'clip_radius' || name === 'clip_w' || name === 'clip_h' || name === 'clip_d';
-                          // cinema_speed lives under the Camera Motion selector; exposure only applies to glTF meshes.
-                          const isHiddenGridParam = (name: string) => isClipParam(name) || name === 'cinema_speed' || (name === 'exposure' && activeLayer.threeDKind !== 'mesh');
+                          // cinema_speed lives under Camera Motion; bg/env_int live in the World section;
+                          // exposure/env_int only apply to glTF meshes.
+                          const isHiddenGridParam = (name: string) => isClipParam(name) || name === 'cinema_speed' || name === 'bg' || name === 'env_int'
+                            || (name === 'exposure' && activeLayer.threeDKind !== 'mesh');
                           const knobFor = (p: any) => {
                             const mapping = activeLayer.threeDMappings?.find(m => m.id === p.name) || { id: p.name, name: p.name, active: false };
                             return renderKnob(p, mapping, activeLayer, '3d');
@@ -12073,6 +12079,66 @@ return (
                                 </div>
                               );
                             })}
+
+                            {(() => {
+                              const env = (activeLayer.threeDSettings?.env as string) || 'studio';
+                              const bgMode = (activeLayer.threeDSettings?.bgMode as string) || 'transparent';
+                              const bgColor = (activeLayer.threeDSettings?.bgColor as string) || '#ffffff';
+                              const bgOpacity = Number(activeLayer.threeDSettings?.bg ?? 1);
+                              const envInt = Number(activeLayer.threeDSettings?.env_int ?? 1.2);
+                              const isMesh = activeLayer.threeDKind === 'mesh';
+                              const selCls = "w-full flex items-center justify-between gap-2 bg-black/40 border border-white/10 hover:border-white/25 rounded p-2 text-[10px] uppercase tracking-widest outline-none text-left text-white transition-colors";
+                              return (
+                                <div className="space-y-3 pt-4 border-t border-white/5">
+                                  <label className="text-[10px] font-bold uppercase tracking-widest text-white/40">World</label>
+                                  {isMesh && (
+                                    <>
+                                      <div className="space-y-1.5">
+                                        <label className="text-[9px] uppercase tracking-widest opacity-40 block">Environment (lighting)</label>
+                                        <CustomSelect
+                                          value={env}
+                                          onChange={(v) => setSeq({ env: v })}
+                                          buttonClassName={selCls}
+                                          options={[
+                                            { value: 'studio', label: 'Studio (neutral)' },
+                                            { value: 'bright', label: 'Bright (high-key)' },
+                                            { value: 'warm', label: 'Warm / Sunset' },
+                                            { value: 'dawn', label: 'Dawn (soft pink)' },
+                                            { value: 'cool', label: 'Cool / Daylight' },
+                                            { value: 'none', label: 'None (lights only)' },
+                                          ]}
+                                        />
+                                      </div>
+                                      <div className="space-y-1">
+                                        <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Reflections</span><span>{envInt.toFixed(1)}x</span></div>
+                                        <input type="range" min={0} max={3} step={0.05} value={envInt} onChange={(e) => setSeq({ env_int: parseFloat(e.target.value) })} className="w-full accent-white h-1" />
+                                      </div>
+                                    </>
+                                  )}
+                                  <div className="space-y-1.5">
+                                    <label className="text-[9px] uppercase tracking-widest opacity-40 block">Background</label>
+                                    <CustomSelect
+                                      value={bgMode}
+                                      onChange={(v) => setSeq({ bgMode: v })}
+                                      buttonClassName={selCls}
+                                      options={[
+                                        { value: 'transparent', label: 'Transparent' },
+                                        { value: 'solid', label: 'Solid Colour' },
+                                      ]}
+                                    />
+                                    {bgMode === 'solid' && (
+                                      <div className="flex items-center gap-2 pt-1">
+                                        <input type="color" value={bgColor} onChange={(e) => setSeq({ bgColor: e.target.value })} className="w-8 h-8 rounded cursor-pointer bg-transparent border border-white/15 p-0" />
+                                        <div className="flex-1 space-y-1">
+                                          <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Opacity</span><span>{Math.round(bgOpacity * 100)}%</span></div>
+                                          <input type="range" min={0} max={1} step={0.02} value={bgOpacity} onChange={(e) => setSeq({ bg: parseFloat(e.target.value) })} className="w-full accent-white h-1" />
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })()}
 
                             <div className="space-y-2 pt-4 border-t border-white/5">
                               <label className="text-[10px] uppercase tracking-widest opacity-40">Clip Region</label>
