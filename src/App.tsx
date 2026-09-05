@@ -65,7 +65,7 @@ import { Waves } from './components/Waves';
 import { createNoise2D } from 'simplex-noise';
 import { prepareWithSegments, layoutNextLineRange, materializeLineRange, type LayoutCursor } from '@chenglou/pretext';
 import { StepSequencer } from './components/StepSequencer';
-import { ThreeDEngine, THREE_D_PARAMETERS, THREE_D_PARAM_GROUPS, THREE_D_ACCEPT, CINEMA_PRESET_NAMES, detectThreeDAssetKindByExt, detectPlyKind, type ClipMode } from './lib/threeDEngine';
+import { ThreeDEngine, THREE_D_PARAMETERS, THREE_D_PARAM_GROUPS, THREE_D_ACCEPT, CINEMA_PRESET_NAMES, SEQ_TRIGGER_NAMES, SEQ_SLOT_COUNT, detectThreeDAssetKindByExt, detectPlyKind, type ClipMode } from './lib/threeDEngine';
 import { ThreeDCameraOverlay } from './components/ThreeDCameraOverlay';
 
 // --- Types ---
@@ -2245,6 +2245,9 @@ export default function App() {
   // pointer (orbit/pan/zoom/anchor) and the anchor + recenter tools show.
   const [threeDControlsActive, setThreeDControlsActive] = useState(false);
   const [threeDAnchorShown, setThreeDAnchorShown] = useState(false);
+  // Camera Sequence: rising-edge state per (layer, seq trigger) + current slot per layer.
+  const seqEdgeRef = useRef<Record<string, boolean>>({});
+  const seqCurRef = useRef<Record<string, number>>({});
   // Keep the anchor-toggle button in sync with the (per-layer) engine state
   // when the active layer changes.
   useEffect(() => {
@@ -7935,7 +7938,13 @@ export default function App() {
 
           const baseSettings = { ...(layer.threeDSettings || {}) };
           const modifiedThreeD: Record<string, number> = {};
-          for (const p of THREE_D_PARAMETERS) {
+          // Camera-sequence advance / per-slot triggers ride the same trigger
+          // machinery as the knobs; they carry no knob and no easing.
+          const threeDLoopParams = [
+            ...THREE_D_PARAMETERS,
+            ...SEQ_TRIGGER_NAMES.map(n => ({ name: n, min: 0, max: 1, default: 0, type: 'number' as const })),
+          ];
+          for (const p of threeDLoopParams) {
               const baseVal = Number(baseSettings[p.name] !== undefined ? baseSettings[p.name] : p.default);
               const pMap = layer.threeDMappings?.find(m => m.id === p.name);
 
@@ -8034,6 +8043,10 @@ export default function App() {
                   }
               }
 
+              // Sequence triggers just need the raw envelope magnitude; the
+              // rising-edge check happens after the loop.
+              if (p.name.startsWith('seq_')) { modifiedThreeD[p.name] = activeMagnitude; continue; }
+
               const range = (p.max ?? 1) - (p.min ?? 0);
               // Rotation params loop through the full circle when triggered past an
               // end (350 + 30 -> 20) instead of clamping. pitch stays clamped (gimbal).
@@ -8077,6 +8090,38 @@ export default function App() {
                   (circleEl as any).style.strokeDashoffset = (251.2 - (pct / 100) * 188.4).toString();
                   lineEl.setAttribute("transform", `rotate(${rot} 50 50)`);
               }
+          }
+
+          // Camera Sequence: on a rising edge of a bound trigger, jump to a slot.
+          const seqMode = (baseSettings.seqMode as string) || 'off';
+          if (seqMode === 'advance' || seqMode === 'perSlot') {
+            const seqSlots: any[] = Array.isArray(baseSettings.seqSlots) ? (baseSettings.seqSlots as any[]) : [];
+            const filled = seqSlots.map((s, i) => (s ? i : -1)).filter(i => i >= 0);
+            const durMs = Number(baseSettings.seqTransitionMs ?? 600);
+            const easing = (baseSettings.seqEasing as any) || 'inout';
+            const rising = (key: string) => {
+              const mag = modifiedThreeD[key] ?? 0;
+              const eKey = layer.id + '-' + key;
+              const isHigh = mag > 0.5;
+              const was = seqEdgeRef.current[eKey] || false;
+              seqEdgeRef.current[eKey] = isHigh;
+              return isHigh && !was;
+            };
+            if (seqMode === 'advance' && filled.length > 0 && rising('seq_advance')) {
+              const cur = seqCurRef.current[layer.id] ?? -1;
+              const pos = filled.indexOf(cur);
+              const nextSlot = filled[(pos + 1) % filled.length];
+              seqCurRef.current[layer.id] = nextSlot;
+              engine3d.goToSeqSnapshot(layer.id, seqSlots[nextSlot], durMs, easing);
+            } else if (seqMode === 'perSlot') {
+              for (let i = 0; i < 5; i++) {
+                if (seqSlots[i] && rising('seq_slot_' + i)) {
+                  seqCurRef.current[layer.id] = i;
+                  engine3d.goToSeqSnapshot(layer.id, seqSlots[i], durMs, easing);
+                  break;
+                }
+              }
+            }
           }
 
           if (layer.threeDKind && layer.threeDKind !== 'kinect' && layer.threeDSrc) {
@@ -11026,20 +11071,9 @@ export default function App() {
               <ThreeDCameraOverlay
                 active={threeDControlsActive && !!layers.find(l => l.id === activeLayerId && l.type === '3d' && l.threeDKind)}
                 canvasRef={canvasRef}
-                onOrbit={(dPitch, dYaw) => {
-                  if (!activeLayerId || !threeDEngineRef.current) return;
-                  const orbit = threeDEngineRef.current.getCameraOrbit(activeLayerId);
-                  threeDEngineRef.current.setCameraOrbit(activeLayerId, {
-                    pitch: (orbit?.pitch ?? 0) + dPitch,
-                    yaw: (orbit?.yaw ?? 0) + dYaw,
-                  });
-                }}
+                onOrbit={(dPitch, dYaw) => { if (activeLayerId) threeDEngineRef.current?.orbitBy(activeLayerId, dPitch, dYaw); }}
                 onPan={(dx, dy) => { if (activeLayerId) threeDEngineRef.current?.panAnchor(activeLayerId, dx, dy); }}
-                onZoom={(factor) => {
-                  if (!activeLayerId || !threeDEngineRef.current) return;
-                  const orbit = threeDEngineRef.current.getCameraOrbit(activeLayerId);
-                  threeDEngineRef.current.setCameraOrbit(activeLayerId, { radius: (orbit?.radius ?? 1) * factor });
-                }}
+                onZoom={(factor) => { if (activeLayerId) threeDEngineRef.current?.orbitBy(activeLayerId, 0, 0, factor); }}
                 onDoubleClickNDC={(ndcX, ndcY) => {
                   if (!activeLayerId || !threeDEngineRef.current) return;
                   const hit = threeDEngineRef.current.raycastAnchor(activeLayerId, ndcX, ndcY);
@@ -11048,6 +11082,13 @@ export default function App() {
                 onMoveAnchor={(dir) => { if (activeLayerId) threeDEngineRef.current?.moveAnchor(activeLayerId, dir); }}
                 onDragEnd={() => {
                   if (!activeLayerId || !threeDEngineRef.current) return;
+                  const l = layers.find(x => x.id === activeLayerId);
+                  // While a preset or a sequence owns the camera, a drag just adds
+                  // a persistent steering offset in the engine -- don't overwrite
+                  // the base pitch/yaw knobs or cancel the motion.
+                  const preset = (l?.threeDSettings?.cinemaPreset as string) || 'off';
+                  const seqMode = (l?.threeDSettings?.seqMode as string) || 'off';
+                  if (preset !== 'off' || seqMode !== 'off') return;
                   const orbit = threeDEngineRef.current.getCameraOrbit(activeLayerId);
                   if (!orbit) return;
                   const boundingRadius = threeDEngineRef.current.getBoundingRadius(activeLayerId);
@@ -11584,6 +11625,40 @@ return (
                         {(() => {
                           const clipMode = (activeLayer.threeDSettings?.clipMode as string) || 'off';
                           const cinemaPreset = (activeLayer.threeDSettings?.cinemaPreset as string) || 'off';
+                          const seqMode = (activeLayer.threeDSettings?.seqMode as string) || 'off';
+                          const seqSlots: any[] = Array.isArray(activeLayer.threeDSettings?.seqSlots) ? (activeLayer.threeDSettings!.seqSlots as any[]) : [];
+                          const seqTransitionMs = Number(activeLayer.threeDSettings?.seqTransitionMs ?? 600);
+                          const seqEasing = (activeLayer.threeDSettings?.seqEasing as string) || 'inout';
+                          const setSeq = (patch: any) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, threeDSettings: { ...(l.threeDSettings || {}), ...patch } } : l));
+                          const setSlot = (i: number, val: any) => {
+                            const arr = [...seqSlots];
+                            while (arr.length < SEQ_SLOT_COUNT) arr.push(null);
+                            arr[i] = val;
+                            setSeq({ seqSlots: arr });
+                          };
+                          const seqZap = (key: string, label: string) => {
+                            const on = !!activeLayer.threeDTriggerActive?.[key];
+                            return (
+                              <button
+                                onClick={() => {
+                                  const newState = !on;
+                                  setLayers(prev => prev.map(l => {
+                                    if (l.id !== activeLayer.id) return l;
+                                    let maps = l.threeDMappings || [];
+                                    if (newState && !maps.find((m: any) => m.id === key)) {
+                                      maps = [...maps, { ...INITIAL_MAPPINGS[0], id: key, name: label, active: true, triggerBehavior: 'momentary' as any, noteSettings: { ...DEFAULT_NOTE_SETTINGS }, channels: Array.from({ length: 16 }, (_, i) => i) }];
+                                    }
+                                    return { ...l, threeDTriggerActive: { ...(l.threeDTriggerActive || {}), [key]: newState }, threeDMappings: maps };
+                                  }));
+                                  if (newState) { setSelectedEffectId(`3d-${key}`); setSelectedLayerForEffect(activeLayer.id); setSidebarTab('triggers'); }
+                                }}
+                                className={`p-1.5 rounded-full transition-all flex items-center justify-center ${on ? 'text-red-500 bg-red-500/20' : 'text-white/20 hover:text-white hover:bg-white/10'}`}
+                                title={`Connect ${label} to a trigger`}
+                              >
+                                <Zap size={10} />
+                              </button>
+                            );
+                          };
                           const isClipParam = (name: string) => name === 'clip_radius' || name === 'clip_w' || name === 'clip_h' || name === 'clip_d';
                           // cinema_speed is shown under the Camera Motion selector, not in the grid.
                           const isHiddenGridParam = (name: string) => isClipParam(name) || name === 'cinema_speed';
@@ -11610,7 +11685,8 @@ return (
                                         onChange={(v) => {
                                           setLayers(prev => prev.map(l => {
                                             if (l.id !== activeLayer.id) return l;
-                                            const next = { ...(l.threeDSettings || {}), cinemaPreset: v };
+                                            const next: any = { ...(l.threeDSettings || {}), cinemaPreset: v };
+                                            if (v !== 'off') next.seqMode = 'off'; // preset and sequence are mutually exclusive
                                             // Turning the preset off: freeze the camera where it left off so it doesn't jump.
                                             if (v === 'off') {
                                               const orbit = threeDEngineRef.current?.getCameraOrbit(activeLayer.id);
@@ -11630,6 +11706,82 @@ return (
                                       {cinemaPreset !== 'off' && (
                                         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4 pt-2">
                                           {THREE_D_PARAMETERS.filter(p => p.name === 'cinema_speed').map(knobFor)}
+                                        </div>
+                                      )}
+
+                                      <label className="text-[10px] uppercase tracking-widest opacity-40 block pt-2">Camera Sequence</label>
+                                      <CustomSelect
+                                        value={seqMode}
+                                        onChange={(v) => { setSeq({ seqMode: v, ...(v !== 'off' ? { cinemaPreset: 'off' } : {}) }); if (v === 'off') threeDEngineRef.current?.clearSeq(activeLayer.id); }}
+                                        buttonClassName="w-full flex items-center justify-between gap-2 bg-black/40 border border-white/10 hover:border-white/25 rounded p-2 text-[10px] uppercase tracking-widest outline-none text-left text-white transition-colors"
+                                        options={[
+                                          { value: 'off', label: 'Off' },
+                                          { value: 'manual', label: 'Manual (buttons)' },
+                                          { value: 'advance', label: 'On Trigger → Next' },
+                                          { value: 'perSlot', label: 'Per-Slot Triggers' },
+                                        ]}
+                                      />
+                                      {seqMode !== 'off' && (
+                                        <div className="space-y-2 pt-1">
+                                          <div className="flex items-center gap-2 flex-wrap">
+                                            <span className="text-[9px] uppercase tracking-widest text-white/40">Transition</span>
+                                            <input
+                                              type="number" min={0} max={8000} step={50} value={seqTransitionMs}
+                                              onChange={(e) => setSeq({ seqTransitionMs: Math.max(0, Number(e.target.value) || 0) })}
+                                              className="w-16 bg-black/40 border border-white/10 rounded p-1 text-[10px] outline-none text-white"
+                                            />
+                                            <span className="text-[8px] text-white/30">ms · 0 = instant</span>
+                                            <CustomSelect
+                                              value={seqEasing}
+                                              onChange={(v) => setSeq({ seqEasing: v })}
+                                              buttonClassName="bg-black/40 border border-white/10 hover:border-white/25 rounded px-2 py-1 text-[9px] uppercase tracking-widest outline-none text-white transition-colors flex items-center gap-1"
+                                              options={[
+                                                { value: 'inout', label: 'Ease In-Out' },
+                                                { value: 'linear', label: 'Linear' },
+                                                { value: 'in', label: 'Ease In' },
+                                                { value: 'out', label: 'Ease Out' },
+                                                { value: 'instant', label: 'Instant' },
+                                              ]}
+                                            />
+                                          </div>
+                                          {seqMode === 'advance' && (
+                                            <div className="flex items-center justify-between bg-black/30 rounded px-2 py-1.5">
+                                              <span className="text-[9px] uppercase tracking-widest text-white/60">Advance Trigger</span>
+                                              {seqZap('seq_advance', 'Sequence Advance')}
+                                            </div>
+                                          )}
+                                          <div className="space-y-1.5">
+                                            {Array.from({ length: SEQ_SLOT_COUNT }).map((_, i) => {
+                                              const filled = !!seqSlots[i];
+                                              return (
+                                                <div key={i} className={`flex items-center gap-1.5 rounded px-2 py-1.5 border ${filled ? 'bg-red-500/10 border-red-500/30' : 'bg-black/30 border-white/5'}`}>
+                                                  <span className="text-[10px] font-bold w-4 text-white/60">{i + 1}</span>
+                                                  <button
+                                                    onClick={() => setSlot(i, threeDEngineRef.current?.captureSeqSnapshot(activeLayer.id) ?? null)}
+                                                    className="text-[8px] uppercase tracking-widest px-2 py-1 rounded border border-white/15 hover:border-white/40 hover:text-white text-white/60"
+                                                  >
+                                                    {filled ? 'Recapture' : 'Capture'}
+                                                  </button>
+                                                  {filled && (
+                                                    <button
+                                                      onClick={() => {
+                                                        seqCurRef.current[activeLayer.id] = i;
+                                                        threeDEngineRef.current?.goToSeqSnapshot(activeLayer.id, seqSlots[i], seqTransitionMs, seqEasing as any);
+                                                      }}
+                                                      className="text-[8px] uppercase tracking-widest px-2 py-1 rounded border border-white/15 hover:border-white/40 hover:text-white text-white/60"
+                                                    >
+                                                      Go
+                                                    </button>
+                                                  )}
+                                                  {filled && (
+                                                    <button onClick={() => setSlot(i, null)} className="text-[10px] px-1.5 text-white/30 hover:text-red-400" title="Clear angle">&times;</button>
+                                                  )}
+                                                  <div className="flex-1" />
+                                                  {seqMode === 'perSlot' && filled && seqZap('seq_slot_' + i, 'Slot ' + (i + 1))}
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
                                         </div>
                                       )}
                                     </div>

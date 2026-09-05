@@ -61,55 +61,40 @@ export interface ThreeDRenderParams {
 }
 
 // --- Camera Motion presets (guide §5.3) -------------------------------------
-// Each is a pure function of a phase timer `t` (seconds, advanced by dt * speed)
-// and the orbit state captured when the preset was selected. Output feeds
-// applySpherical(); Dolly Zoom also drives FOV.
-export interface CinemaBase { pitch: number; yaw: number; roll: number; radius: number; fov: number; }
-export interface CinemaOut { pitch: number; yaw: number; roll: number; radius: number; fov?: number; }
+// Each is a pure function of a phase timer `t` (seconds, advanced by dt * speed).
+// Output is a DELTA relative to the live orbit (from the pitch/yaw/roll/zoom
+// knobs), so the user can still steer -- knob edits / drag ride on top of the
+// preset motion instead of cancelling it. Dolly Zoom also scales FOV.
+export interface CinemaDelta { dPitch: number; dYaw: number; dRoll: number; radiusFactor: number; fovFactor?: number; }
 export const CINEMA_PRESET_NAMES = [
   'Orbit', 'Dronie', 'Helix', 'Rocket', 'Boomerang',
   'Dolly Zoom', 'Fly-Through', 'Corkscrew', 'Pendulum', 'Ground-Skim',
 ] as const;
-export const CINEMA_PRESETS: Record<string, (t: number, b: CinemaBase) => CinemaOut> = {
-  Orbit: (t, b) => ({ pitch: b.pitch, yaw: b.yaw + t * 20, roll: b.roll, radius: b.radius }),
-  Dronie: (t, b) => {
-    const e = 1 - Math.exp(-t * 0.35);
-    return { pitch: b.pitch + 16 * e, yaw: b.yaw + t * 7, roll: b.roll, radius: b.radius * (1 + 0.7 * e) };
-  },
-  Helix: (t, b) => ({
-    pitch: b.pitch + 20 * Math.sin(t * 0.8), yaw: b.yaw + t * 30, roll: b.roll,
-    radius: b.radius * (1 + 0.15 * Math.sin(t * 0.5)),
-  }),
-  Rocket: (t, b) => ({
-    pitch: b.pitch + Math.min(38, t * 11), yaw: b.yaw + t * 5,
-    roll: b.roll + 3 * Math.sin(t * 5), radius: b.radius * (1 + Math.min(2, t * 0.7)),
-  }),
-  Boomerang: (t, b) => {
-    const s = Math.sin(t * 0.7);
-    return { pitch: b.pitch + 8 * s, yaw: b.yaw + 30 * s, roll: b.roll, radius: b.radius * (1 + 0.6 * s * s) };
-  },
-  'Dolly Zoom': (t, b) => {
-    const k = 0.5 + 0.5 * Math.sin(t * 0.5);
-    const radius = b.radius * (0.7 + k * 0.9);
-    return { pitch: b.pitch, yaw: b.yaw, roll: b.roll, radius, fov: clampNum(b.fov * b.radius / radius, 12, 110) };
-  },
-  'Fly-Through': (t, b) => {
-    const p = (t * 0.35) % 1;
-    return { pitch: b.pitch, yaw: b.yaw + p * 12, roll: b.roll, radius: b.radius * (1.25 - p * 1.15) };
-  },
-  Corkscrew: (t, b) => ({
-    pitch: b.pitch + 10 * Math.sin(t * 0.6), yaw: b.yaw + t * 25, roll: b.roll + t * 40,
-    radius: b.radius * (1 + 0.2 * Math.sin(t * 1.2)),
-  }),
-  Pendulum: (t, b) => {
-    const s = Math.sin(t * 0.8);
-    return { pitch: b.pitch - 10 * (1 - Math.abs(s)), yaw: b.yaw + 45 * s, roll: b.roll + 5 * s, radius: b.radius };
-  },
-  'Ground-Skim': (t, b) => ({
-    pitch: b.pitch - 25 + 5 * Math.sin(t * 1.5), yaw: b.yaw + t * 18, roll: b.roll + 3 * Math.sin(t * 1.2),
-    radius: b.radius * (1 + 0.1 * Math.sin(t * 2)),
-  }),
+export const CINEMA_PRESETS: Record<string, (t: number) => CinemaDelta> = {
+  Orbit: (t) => ({ dPitch: 0, dYaw: t * 20, dRoll: 0, radiusFactor: 1 }),
+  Dronie: (t) => { const e = 1 - Math.exp(-t * 0.35); return { dPitch: 16 * e, dYaw: t * 7, dRoll: 0, radiusFactor: 1 + 0.7 * e }; },
+  Helix: (t) => ({ dPitch: 20 * Math.sin(t * 0.8), dYaw: t * 30, dRoll: 0, radiusFactor: 1 + 0.15 * Math.sin(t * 0.5) }),
+  Rocket: (t) => ({ dPitch: Math.min(38, t * 11), dYaw: t * 5, dRoll: 3 * Math.sin(t * 5), radiusFactor: 1 + Math.min(2, t * 0.7) }),
+  Boomerang: (t) => { const s = Math.sin(t * 0.7); return { dPitch: 8 * s, dYaw: 30 * s, dRoll: 0, radiusFactor: 1 + 0.6 * s * s }; },
+  'Dolly Zoom': (t) => { const rf = 0.7 + (0.5 + 0.5 * Math.sin(t * 0.5)) * 0.9; return { dPitch: 0, dYaw: 0, dRoll: 0, radiusFactor: rf, fovFactor: 1 / rf }; },
+  'Fly-Through': (t) => { const p = (t * 0.35) % 1; return { dPitch: 0, dYaw: p * 12, dRoll: 0, radiusFactor: 1.25 - p * 1.15 }; },
+  Corkscrew: (t) => ({ dPitch: 10 * Math.sin(t * 0.6), dYaw: t * 25, dRoll: t * 40, radiusFactor: 1 + 0.2 * Math.sin(t * 1.2) }),
+  Pendulum: (t) => { const s = Math.sin(t * 0.8); return { dPitch: -10 * (1 - Math.abs(s)), dYaw: 45 * s, dRoll: 5 * s, radiusFactor: 1 }; },
+  'Ground-Skim': (t) => ({ dPitch: -25 + 5 * Math.sin(t * 1.5), dYaw: t * 18, dRoll: 3 * Math.sin(t * 1.2), radiusFactor: 1 + 0.1 * Math.sin(t * 2) }),
 };
+
+// --- Camera Sequence (custom saved angles + trigger-driven jumps) ----------
+export interface CameraSnapshot { pitch: number; yaw: number; roll: number; radius: number; ax: number; ay: number; az: number; fov: number; }
+export type SeqEasing = 'instant' | 'linear' | 'in' | 'out' | 'inout';
+export const SEQ_SLOT_COUNT = 5;
+export const SEQ_TRIGGER_NAMES = ['seq_advance', 'seq_slot_0', 'seq_slot_1', 'seq_slot_2', 'seq_slot_3', 'seq_slot_4'];
+export function easeSeq(p: number, mode: SeqEasing): number {
+  p = Math.max(0, Math.min(1, p));
+  if (mode === 'in') return p * p;
+  if (mode === 'out') return 1 - (1 - p) * (1 - p);
+  if (mode === 'inout') return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+  return p; // linear / instant (instant is handled by dur<=0)
+}
 
 // --- File-kind detection -----------------------------------------------------
 
@@ -168,8 +153,12 @@ interface LayerState {
   // Camera Motion preset playback
   cinemaPreset: string;          // '' / 'off' or one of CINEMA_PRESET_NAMES
   cinemaPhase: number;           // seconds, advanced by dt * cinema_speed
-  cinemaBase: CinemaBase | null; // orbit snapshot taken when the preset started
   cinemaLastT: number;           // performance.now()/1000 at last advance
+  // Live user steering that rides on top of a preset / sequence (drag + zoom).
+  userCamOffset: { pitch: number; yaw: number; roll: number; radiusScale: number };
+  // Camera Sequence: tween between two saved angles.
+  seqTween: { from: CameraSnapshot; to: CameraSnapshot; start: number; dur: number; easing: SeqEasing } | null;
+  seqFov: number | null;         // FOV held by the last sequence jump (overrides the knob)
   // Splat sphere/box clip: uniforms injected into the splat material via
   // onBeforeCompile (the library's shader has no native clip support).
   splatClipUniforms: { mode: { value: number }; center: { value: THREE.Vector3 }; radius: { value: number }; box: { value: THREE.Vector3 } } | null;
@@ -386,7 +375,9 @@ export class ThreeDEngine {
         showAnchor: false,
         lastCamParams: null,
         renderCache: null, renderCacheKey: '',
-        cinemaPreset: 'off', cinemaPhase: 0, cinemaBase: null, cinemaLastT: 0,
+        cinemaPreset: 'off', cinemaPhase: 0, cinemaLastT: 0,
+        userCamOffset: { pitch: 0, yaw: 0, roll: 0, radiusScale: 1 },
+        seqTween: null, seqFov: null,
         splatClipUniforms: null, splatClipInjected: false,
         raycastSamples: null, glitchSeed: Math.random() * 1000,
         meshNodes: [], meshPointCloud: null,
@@ -692,22 +683,79 @@ export class ThreeDEngine {
 
   setCameraOrbit(layerId: string, patch: Partial<CameraOrbitState>) {
     const st = this.ensureLayerState(layerId);
-    this.cancelCinema(layerId); // manual nav drops any active Camera Motion preset
     if (patch.pitch !== undefined) st.camera.pitch = clampNum(patch.pitch, -89, 89);
     if (patch.yaw !== undefined) st.camera.yaw = ((patch.yaw % 360) + 360) % 360 > 180 ? (patch.yaw % 360) - 360 : patch.yaw % 360;
     if (patch.roll !== undefined) st.camera.roll = patch.roll;
     if (patch.radius !== undefined) st.camera.radius = Math.max(0.01, patch.radius);
   }
 
-  // Stop the active Camera Motion preset (manual nav or an explicit "Off"). The
-  // camera is left wherever the preset put it -- App.tsx flushes that into
-  // threeDSettings so it persists and the knobs catch up.
+  // Relative orbit nudge from mouse drag / wheel. While a preset or a sequence
+  // tween owns the camera this accumulates into userCamOffset (so the user
+  // steers on top of the motion); otherwise it moves the orbit directly.
+  orbitBy(layerId: string, dPitch: number, dYaw: number, dRadiusFactor = 1, dRoll = 0) {
+    const st = this.ensureLayerState(layerId);
+    const modActive = (st.cinemaPreset && st.cinemaPreset !== 'off') || !!st.seqTween;
+    if (modActive) {
+      if (st.seqTween) st.seqTween = null; // a manual nudge cancels an in-flight jump
+      st.userCamOffset.pitch = clampNum(st.userCamOffset.pitch + dPitch, -180, 180);
+      st.userCamOffset.yaw += dYaw;
+      st.userCamOffset.roll += dRoll;
+      st.userCamOffset.radiusScale = Math.max(0.05, Math.min(20, st.userCamOffset.radiusScale * dRadiusFactor));
+    } else {
+      st.camera.pitch = clampNum(st.camera.pitch + dPitch, -89, 89);
+      st.camera.yaw += dYaw;
+      st.camera.roll += dRoll;
+      st.camera.radius = Math.max(0.01, st.camera.radius * dRadiusFactor);
+    }
+  }
+
+  // Stop the active Camera Motion preset (explicit "Off" / recenter). The camera
+  // is left wherever the preset put it -- App.tsx flushes that into threeDSettings
+  // so it persists and the knobs catch up.
   cancelCinema(layerId: string) {
     const st = this.layers.get(layerId);
-    if (st) { st.cinemaPreset = 'off'; st.cinemaBase = null; st.cinemaLastT = 0; }
+    if (st) { st.cinemaPreset = 'off'; st.cinemaLastT = 0; st.userCamOffset = { pitch: 0, yaw: 0, roll: 0, radiusScale: 1 }; }
   }
 
   getCameraFov(): number { return this.camera.fov; }
+
+  // --- Camera Sequence -----------------------------------------------------------
+
+  private applySnapshot(st: LayerState, s: CameraSnapshot) {
+    st.camera.pitch = s.pitch;
+    st.camera.yaw = s.yaw;
+    st.camera.roll = s.roll;
+    st.camera.radius = Math.max(0.01, s.radius);
+    st.camera.anchor.set(s.ax, s.ay, s.az);
+    st.seqFov = s.fov;
+  }
+
+  captureSeqSnapshot(layerId: string): CameraSnapshot {
+    const st = this.ensureLayerState(layerId);
+    return {
+      pitch: st.camera.pitch, yaw: st.camera.yaw, roll: st.camera.roll, radius: st.camera.radius,
+      ax: st.camera.anchor.x, ay: st.camera.anchor.y, az: st.camera.anchor.z, fov: this.camera.fov,
+    };
+  }
+
+  // Jump the camera to a saved angle, either instantly (durMs <= 0) or eased.
+  goToSeqSnapshot(layerId: string, to: CameraSnapshot, durMs: number, easing: SeqEasing) {
+    const st = this.layers.get(layerId);
+    if (!st || !to) return;
+    st.cinemaPreset = 'off'; // sequence and presets don't run together
+    st.userCamOffset = { pitch: 0, yaw: 0, roll: 0, radiusScale: 1 };
+    if (durMs <= 0 || easing === 'instant') {
+      this.applySnapshot(st, to);
+      st.seqTween = null;
+    } else {
+      st.seqTween = { from: this.captureSeqSnapshot(layerId), to, start: performance.now(), dur: durMs, easing };
+    }
+  }
+
+  clearSeq(layerId: string) {
+    const st = this.layers.get(layerId);
+    if (st) { st.seqTween = null; st.seqFov = null; st.userCamOffset = { pitch: 0, yaw: 0, roll: 0, radiusScale: 1 }; }
+  }
 
   setAnchor(layerId: string, anchor: THREE.Vector3) {
     const st = this.ensureLayerState(layerId);
@@ -737,7 +785,7 @@ export class ThreeDEngine {
 
   panAnchor(layerId: string, dxNdc: number, dyNdc: number) {
     const st = this.ensureLayerState(layerId);
-    this.cancelCinema(layerId);
+    if (st.seqTween) st.seqTween = null;
     const up = st.kind === 'splat' ? new THREE.Vector3(0, -1, 0) : new THREE.Vector3(0, 1, 0);
     const camPos = this.applySphericalTo(new THREE.Vector3(), st.camera, up);
     const forward = st.camera.anchor.clone().sub(camPos).normalize();
@@ -750,7 +798,7 @@ export class ThreeDEngine {
 
   moveAnchor(layerId: string, dir: 'up' | 'down' | 'left' | 'right' | 'forward' | 'backward', step?: number) {
     const st = this.ensureLayerState(layerId);
-    this.cancelCinema(layerId);
+    if (st.seqTween) st.seqTween = null;
     const up = st.kind === 'splat' ? new THREE.Vector3(0, -1, 0) : new THREE.Vector3(0, 1, 0);
     const camPos = this.applySphericalTo(new THREE.Vector3(), st.camera, up);
     const forward = st.camera.anchor.clone().sub(camPos).normalize();
@@ -816,41 +864,75 @@ export class ThreeDEngine {
     const st = this.layers.get(layerId);
     if (!st || st.loading || st.loadError) return null;
 
-    // Camera: knob/trigger params own the orbit, but manual mouse-drag nav
-    // (setCameraOrbit/panAnchor/moveAnchor) writes straight into st.camera. Only
-    // push a param into st.camera when it actually changed since last frame, so
-    // an in-progress drag isn't stomped every frame by an unchanged knob value.
+    const preset = params.cinema_preset || 'off';
+    const presetActive = preset !== 'off' && !!CINEMA_PRESETS[preset];
+    // A running preset or an in-flight sequence tween "owns" the orbit -- while
+    // one is live, knob edits / drag feed st.userCamOffset instead of st.camera,
+    // so the user can steer without cancelling the motion.
+    const modActive = presetActive || !!st.seqTween;
+
+    // Base orbit from the knobs (only when the camera isn't mod-owned, and only
+    // for values that actually changed so an in-progress drag isn't stomped).
     const lcp = st.lastCamParams;
-    if (!lcp || lcp.pitch !== params.pitch) st.camera.pitch = params.pitch;
-    if (!lcp || lcp.yaw !== params.yaw) st.camera.yaw = params.yaw;
-    if (!lcp || lcp.roll !== params.roll) st.camera.roll = params.roll;
-    if (!lcp || lcp.zoom !== params.zoom) st.camera.radius = Math.max(0.01, st.boundingRadius * 2.6 * params.zoom);
+    if (!modActive) {
+      if (!lcp || lcp.pitch !== params.pitch) st.camera.pitch = params.pitch;
+      if (!lcp || lcp.yaw !== params.yaw) st.camera.yaw = params.yaw;
+      if (!lcp || lcp.roll !== params.roll) st.camera.roll = params.roll;
+      if (!lcp || lcp.zoom !== params.zoom) st.camera.radius = Math.max(0.01, st.boundingRadius * 2.6 * params.zoom);
+    }
     st.lastCamParams = { pitch: params.pitch, yaw: params.yaw, roll: params.roll, zoom: params.zoom };
 
-    // Camera Motion preset: overrides the orbit each frame from a phase timer.
-    const preset = params.cinema_preset || 'off';
-    const cinemaActive = preset !== 'off' && !!CINEMA_PRESETS[preset];
-    let cinemaFov: number | null = null;
-    if (cinemaActive) {
+    let camFov: number | null = null;
+
+    // Camera Sequence: tween between two saved angles.
+    if (st.seqTween) {
+      const tw = st.seqTween;
+      const raw = tw.dur > 0 ? (performance.now() - tw.start) / tw.dur : 1;
+      const p = easeSeq(raw, tw.easing);
+      const L = (a: number, b: number) => a + (b - a) * p;
+      st.camera.pitch = L(tw.from.pitch, tw.to.pitch);
+      st.camera.yaw = L(tw.from.yaw, tw.to.yaw);
+      st.camera.roll = L(tw.from.roll, tw.to.roll);
+      st.camera.radius = Math.max(0.01, L(tw.from.radius, tw.to.radius));
+      st.camera.anchor.set(L(tw.from.ax, tw.to.ax), L(tw.from.ay, tw.to.ay), L(tw.from.az, tw.to.az));
+      st.seqFov = L(tw.from.fov, tw.to.fov);
+      if (raw >= 1) { this.applySnapshot(st, tw.to); st.seqTween = null; }
+    }
+    if (st.seqFov != null) camFov = st.seqFov;
+
+    // Camera Motion preset: a time-varying delta on top of the live orbit.
+    if (presetActive) {
       const now = performance.now() / 1000;
       const dt = st.cinemaLastT ? Math.min(0.1, now - st.cinemaLastT) : 0.016;
       st.cinemaLastT = now;
-      if (!st.cinemaBase || st.cinemaPreset !== preset) {
-        st.cinemaBase = { pitch: st.camera.pitch, yaw: st.camera.yaw, roll: st.camera.roll, radius: st.camera.radius, fov: this.camera.fov };
-        st.cinemaPhase = 0;
+      if (st.cinemaPreset !== preset) {
         st.cinemaPreset = preset;
+        st.cinemaPhase = 0;
+        st.userCamOffset = { pitch: 0, yaw: 0, roll: 0, radiusScale: 1 };
       }
       st.cinemaPhase += dt * Math.max(0.01, params.cinema_speed || 1);
-      const out = CINEMA_PRESETS[preset](st.cinemaPhase, st.cinemaBase);
-      st.camera.pitch = clampNum(out.pitch, -89, 89);
-      st.camera.yaw = out.yaw;
-      st.camera.roll = out.roll;
-      st.camera.radius = Math.max(0.01, out.radius);
-      if (typeof out.fov === 'number') cinemaFov = out.fov;
+      const d = CINEMA_PRESETS[preset](st.cinemaPhase);
+      const baseR = st.boundingRadius * 2.6 * params.zoom;
+      st.camera.pitch = params.pitch + d.dPitch;
+      st.camera.yaw = params.yaw + d.dYaw;
+      st.camera.roll = params.roll + d.dRoll;
+      st.camera.radius = Math.max(0.01, baseR * d.radiusFactor);
+      if (d.fovFactor) camFov = clampNum(params.fov * d.fovFactor, 12, 110);
     } else if (st.cinemaPreset !== 'off') {
       st.cinemaPreset = 'off';
-      st.cinemaBase = null;
       st.cinemaLastT = 0;
+    }
+
+    // User steering (drag + zoom) rides on top -- applied while mod-owned, and
+    // folded into the resting pose once the preset / sequence ends.
+    const off = st.userCamOffset;
+    const hasOffset = off.pitch !== 0 || off.yaw !== 0 || off.roll !== 0 || off.radiusScale !== 1;
+    if (hasOffset) {
+      st.camera.pitch = clampNum(st.camera.pitch + off.pitch, -89, 89);
+      st.camera.yaw += off.yaw;
+      st.camera.roll += off.roll;
+      st.camera.radius = Math.max(0.01, st.camera.radius * off.radiusScale);
+      if (!modActive) st.userCamOffset = { pitch: 0, yaw: 0, roll: 0, radiusScale: 1 };
     }
 
     const t = this.clock.getElapsedTime();
@@ -865,17 +947,17 @@ export class ThreeDEngine {
     const frameKey = [
       c.pitch.toFixed(2), c.yaw.toFixed(2), c.roll.toFixed(2), c.radius.toFixed(3),
       c.anchor.x.toFixed(2), c.anchor.y.toFixed(2), c.anchor.z.toFixed(2),
-      r2(cinemaFov ?? params.fov), params.bg.toFixed(3),
+      r2(camFov ?? params.fov), params.bg.toFixed(3),
       r2(params.pos_x), r2(params.pos_y), r2(params.pos_z), r2(params.rot_x), r2(params.rot_y), r2(params.rot_z),
       r2(params.glitch), r2(params.reconstruction), r2(params.point_cloud),
       params.clipMode, r2(params.clip_radius), r2(params.clip_w), r2(params.clip_h), r2(params.clip_d),
-      st.showAnchor ? 1 : 0, st.boundingRadius.toFixed(3), w, h, preset,
+      st.showAnchor ? 1 : 0, st.boundingRadius.toFixed(3), w, h, preset, st.seqTween ? 1 : 0,
       animating ? Math.floor(t * 60) : 0,
     ].join('|');
-    if (st.renderCache && st.renderCacheKey === frameKey && !cinemaActive) return st.renderCache;
+    if (st.renderCache && st.renderCacheKey === frameKey && !modActive) return st.renderCache;
 
     // ---- heavy path (something changed) ----
-    this.camera.fov = cinemaFov ?? params.fov;
+    this.camera.fov = camFov ?? params.fov;
     this.camera.updateProjectionMatrix();
     this.applySpherical(st);
 
