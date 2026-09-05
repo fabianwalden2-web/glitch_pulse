@@ -1712,7 +1712,8 @@ function buildSphereParticles(count: number): SphereParticle[] {
 // Background-subtraction chronophotography: given a background reference, key out
 // only the pixels of the current frame that changed, so repeated stamps build a
 // "multiplicity" image (one clean background, the subject frozen at each moment).
-const FA_DIFF_W = 640; // work width for the diff/mask (RGB stays full-res)
+const FA_DIFF_W = 640;   // work width for the diff/mask
+const FA_STAMP_W = 1280; // stored cutout width -- caps memory (32 x 1080p canvases = ~265MB)
 const _faScratch: Record<string, HTMLCanvasElement> = {};
 function faScratch(key: string, w: number, h: number): HTMLCanvasElement {
   let c = _faScratch[key];
@@ -1736,15 +1737,19 @@ function faMedian(frames: ImageData[]): ImageData {
   }
   return out;
 }
-// Returns a targetW x targetH canvas = current frame with alpha keyed to where
-// it differs from `bg` (feathered, speckle-cleaned). null if nothing moved.
+// Returns a canvas (<= FA_STAMP_W wide) = current frame with alpha keyed to
+// where it differs from `bg` (feathered, speckle-cleaned). null if nothing
+// moved. Pass `outCanvas` to reuse it (per-frame path) instead of allocating.
 function faBuildCutout(
   src: HTMLCanvasElement,
   bg: CanvasImageSource,
   opts: { threshold: number; feather: number; suppressShadows: boolean },
+  outCanvas?: HTMLCanvasElement,
 ): HTMLCanvasElement | null {
-  const W = src.width, H = src.height;
-  if (!W || !H) return null;
+  const srcW = src.width, srcH = src.height;
+  if (!srcW || !srcH) return null;
+  const W = Math.min(srcW, FA_STAMP_W);
+  const H = Math.max(1, Math.round((W * srcH) / srcW));
   const dw = Math.min(W, FA_DIFF_W);
   const dh = Math.max(1, Math.round((dw * H) / W));
   const cur = faScratch('fa-cur', dw, dh);
@@ -1782,10 +1787,13 @@ function faBuildCutout(
   const cid = clx.getImageData(0, 0, dw, dh);
   for (let i = 3; i < cid.data.length; i += 4) cid.data[i] = cid.data[i] > 110 ? 255 : 0;
   clx.putImageData(cid, 0, 0);
-  const out = document.createElement('canvas');
-  out.width = W; out.height = H;
+  const out = outCanvas || document.createElement('canvas');
+  if (out.width !== W || out.height !== H) { out.width = W; out.height = H; }
   const octx = out.getContext('2d')!;
-  octx.drawImage(src, 0, 0);
+  octx.globalCompositeOperation = 'source-over';
+  octx.filter = 'none';
+  octx.clearRect(0, 0, W, H);
+  octx.drawImage(src, 0, 0, W, H);
   octx.globalCompositeOperation = 'destination-in';
   const f = Math.max(0, opts.feather || 0);
   octx.filter = f > 0 ? `blur(${f}px)` : 'none';
@@ -2045,7 +2053,7 @@ export default function App() {
   const accumulateCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
   const referenceFrameRef = useRef<Record<string, HTMLCanvasElement>>({});
   const frameAccumulatorSnapshotsRef = useRef<Record<string, HTMLCanvasElement[]>>({});
-  const stutterStateRef = useRef<Record<string, { triggerStamp: boolean; clearBuffer: boolean; wasActive?: boolean; lastCaptureTime?: number; setBg?: boolean; medianBg?: { frames: ImageData[]; need: number } | null }>>({});
+  const stutterStateRef = useRef<Record<string, { triggerStamp: boolean; clearBuffer: boolean; wasActive?: boolean; lastCaptureTime?: number; setBg?: boolean; medianBg?: { frames: ImageData[]; need: number } | null; liveTick?: number; liveReady?: boolean }>>({});
   // "Isolate Motion" state: persistent composite buffer + background plate + cutout list per layer.
   const frameAccBufRef = useRef<Record<string, HTMLCanvasElement>>({});
   const frameAccBgRef = useRef<Record<string, HTMLCanvasElement>>({});
@@ -7899,15 +7907,23 @@ export default function App() {
          // buffer so Frame Accumulator / Boomerang / Rewind start clean.
          if (!layer.isLive && lastVideoSrcRef.current[layer.id] !== layer.src) {
            lastVideoSrcRef.current[layer.id] = layer.src;
+           const freeC = (c?: HTMLCanvasElement | null) => { if (c) { c.width = 0; c.height = 0; } };
+           freeC(frameAccBgRef.current[layer.id]);
            delete frameAccBgRef.current[layer.id];
+           (frameAccCutoutsRef.current[layer.id] || []).forEach(freeC);
            frameAccCutoutsRef.current[layer.id] = [];
+           (frameAccumulatorSnapshotsRef.current[layer.id] || []).forEach(freeC);
            frameAccumulatorSnapshotsRef.current[layer.id] = [];
-           const s = stutterStateRef.current[layer.id];
-           if (s) { s.clearBuffer = true; s.medianBg = null; s.setBg = false; s.triggerStamp = false; s.wasActive = false; }
-           delete referenceFrameRef.current[layer.id];
-           delete boomerangStartFrameRef.current[layer.id];
-           delete boomerangLastSnapRef.current[layer.id];
+           (rewindFramesBufferRef.current[layer.id] || []).forEach(freeC);
            rewindFramesBufferRef.current[layer.id] = [];
+           const s = stutterStateRef.current[layer.id];
+           if (s) { s.clearBuffer = true; s.medianBg = null; s.setBg = false; s.triggerStamp = false; s.wasActive = false; s.liveReady = false; }
+           freeC(referenceFrameRef.current[layer.id]);
+           delete referenceFrameRef.current[layer.id];
+           freeC(boomerangStartFrameRef.current[layer.id]);
+           delete boomerangStartFrameRef.current[layer.id];
+           freeC(boomerangLastSnapRef.current[layer.id]);
+           delete boomerangLastSnapRef.current[layer.id];
            delete videoInitialSeekDoneRef.current[layer.id];
            delete prevFrameRef.current[layer.id];
          }
@@ -8489,10 +8505,12 @@ export default function App() {
 
           if (isolate && element) {
             // ---- Isolate Motion (multiplicity / chronophotography) ----
-            const cur = faScratch('fa-frame-' + layer.id, targetW, targetH);
+            // Shared scratch (drawn + read within this layer's pass, then reused).
+            const cur = faScratch('fa-frame', targetW, targetH);
             const curCtx = cur.getContext('2d')!;
             curCtx.clearRect(0, 0, targetW, targetH);
             curCtx.drawImage(element, x, y, destW, destH);
+            const freeCanvas = (c?: HTMLCanvasElement | null) => { if (c) { c.width = 0; c.height = 0; } };
 
             let plate = frameAccBgRef.current[layer.id];
 
@@ -8508,8 +8526,10 @@ export default function App() {
                 const med = faMedian(stState.medianBg.frames);
                 const pc = document.createElement('canvas'); pc.width = mw; pc.height = mh;
                 pc.getContext('2d')!.putImageData(med, 0, 0);
+                freeCanvas(plate);
                 frameAccBgRef.current[layer.id] = pc;
                 plate = pc;
+                stState.medianBg.frames.length = 0;
                 stState.medianBg = null;
               }
             }
@@ -8518,6 +8538,7 @@ export default function App() {
             if (stState.setBg || !plate) {
               const pc = document.createElement('canvas'); pc.width = targetW; pc.height = targetH;
               pc.getContext('2d')!.drawImage(cur, 0, 0);
+              freeCanvas(plate);
               frameAccBgRef.current[layer.id] = pc;
               plate = pc;
               stState.setBg = false;
@@ -8546,7 +8567,7 @@ export default function App() {
                 const cutout = faBuildCutout(cur, plate, stampOpts);
                 if (cutout) {
                   cutouts.push(cutout);
-                  while (cutouts.length > maxSnapshots) cutouts.shift();
+                  while (cutouts.length > maxSnapshots) freeCanvas(cutouts.shift());
                 }
               }
             }
@@ -8559,13 +8580,19 @@ export default function App() {
             for (let k = 0; k < cutouts.length; k++) {
               ctx.save();
               ctx.globalAlpha = stampAlpha;
-              ctx.drawImage(cutouts[k], 0, 0);
+              ctx.drawImage(cutouts[k], 0, 0, targetW, targetH);
               ctx.restore();
             }
-            // Optionally show the live subject on top so the next moment is easy to time
+            // Optionally show the live subject on top. Recomputed at ~12fps into a
+            // reused canvas (a full diff every frame was the main memory churn).
             if (layer.accumulateShowLive && plate) {
-              const live = faBuildCutout(cur, plate, stampOpts);
-              if (live) ctx.drawImage(live, 0, 0);
+              stState.liveTick = ((stState.liveTick || 0) + 1) % 5;
+              const liveScratch = faScratch('fa-live', 8, 8);
+              if (stState.liveTick === 0 || !stState.liveReady) {
+                const built = faBuildCutout(cur, plate, stampOpts, liveScratch);
+                stState.liveReady = !!built;
+              }
+              if (stState.liveReady) ctx.drawImage(liveScratch, 0, 0, targetW, targetH);
             }
           } else {
             // ---- Overlay accumulation (original behaviour) ----
@@ -8576,7 +8603,7 @@ export default function App() {
               snapCanvas.height = targetH;
               snapCanvas.getContext('2d')!.drawImage(element, x, y, destW, destH);
               snapshots.push(snapCanvas);
-              while (snapshots.length > maxSnapshots) snapshots.shift();
+              while (snapshots.length > maxSnapshots) { const d = snapshots.shift(); if (d) { d.width = 0; d.height = 0; } }
             }
             ctx.clearRect(0, 0, targetW, targetH);
             ctx.drawImage(element, x, y, destW, destH);
@@ -10233,9 +10260,14 @@ export default function App() {
     }
     const src = canvasRef.current as HTMLCanvasElement | null;
     if (!src) return;
+    // Stop any stream left over from a previous (now-gone) pop-out so captures
+    // don't stack up and grow memory unbounded.
+    popoutStreamRef.current?.getTracks().forEach(t => t.stop());
+    popoutStreamRef.current = null;
     const win = window.open('', 'glitchpulse_canvas', 'width=1280,height=720');
     if (!win) return;
     win.document.title = 'Glitch Pulse — Canvas';
+    win.document.body.innerHTML = '';
     win.document.body.style.cssText = 'margin:0;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center;height:100vh';
     const vid = win.document.createElement('video');
     vid.autoplay = true;
@@ -12523,7 +12555,10 @@ return (
                                               <button
                                                 onClick={() => {
                                                   const s = stutterStateRef.current[activeLayer.id];
-                                                  if (s) s.clearBuffer = true;
+                                                  if (s) { s.clearBuffer = true; s.liveReady = false; }
+                                                  const freeC = (c?: HTMLCanvasElement | null) => { if (c) { c.width = 0; c.height = 0; } };
+                                                  (frameAccumulatorSnapshotsRef.current[activeLayer.id] || []).forEach(freeC);
+                                                  (frameAccCutoutsRef.current[activeLayer.id] || []).forEach(freeC);
                                                   frameAccumulatorSnapshotsRef.current[activeLayer.id] = [];
                                                   frameAccCutoutsRef.current[activeLayer.id] = [];
                                                 }}
