@@ -1679,6 +1679,110 @@ void main(void) {
   "uuid": "confetti-scatter-canvas-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Woven Hex Blocks",
+  "category": "Geometric",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo",
+  "parameters": [
+    { "name": "blocks",     "min": 4.0,  "max": 24.0, "default": 14.0, "type": "number" },
+    { "name": "bands",      "min": 3.0,  "max": 22.0, "default": 12.0, "type": "number" },
+    { "name": "taper",      "min": -1.0, "max": 1.0,  "default": -0.9, "type": "number" },
+    { "name": "band_ratio", "min": 0.05, "max": 0.6,  "default": 0.25, "type": "number" },
+    { "name": "spread",     "min": 0.35, "max": 1.6,  "default": 0.9,  "type": "number" },
+    { "name": "seed",       "min": 0.0,  "max": 999.0,"default": 43.0, "type": "number" },
+    { "name": "reweave",  "default": 0, "type": "action" },
+    { "name": "collapse", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "lines", "name": "Hatch Lines", "defaultColor": "#ffffff" },
+    { "id": "accent", "name": "Ridge Accent", "defaultColor": "#eb556b" }
+  ],
+  "uuid": "woven-hex-blocks-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Triangle Decay",
+  "category": "Geometric",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo",
+  "parameters": [
+    { "name": "cols",        "min": 10.0, "max": 80.0, "default": 57.0, "type": "number" },
+    { "name": "rows",        "min": 6.0,  "max": 48.0, "default": 29.0, "type": "number" },
+    { "name": "decay_start", "min": 0.0,  "max": 1.0,  "default": 0.24, "type": "number" },
+    { "name": "chaos",       "min": 0.0,  "max": 1.0,  "default": 0.6,  "type": "number" },
+    { "name": "seed",        "min": 0.0,  "max": 999.0,"default": 42.0, "type": "number" },
+    { "name": "avalanche", "default": 0, "type": "action" },
+    { "name": "reseed",    "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "fill", "name": "Triangle Fill", "defaultColor": "#ffffff" },
+    { "id": "accent", "name": "Fault Line", "defaultColor": "#eb556b" }
+  ],
+  "uuid": "triangle-decay-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Circuit Routes",
+  "category": "Retro",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "acid_matrix",
+  "parameters": [
+    { "name": "cols",          "min": 8.0,  "max": 40.0, "default": 19.0, "type": "number" },
+    { "name": "rows",          "min": 8.0,  "max": 40.0, "default": 20.0, "type": "number" },
+    { "name": "node_size",     "min": 1.0,  "max": 10.0, "default": 5.0,  "type": "number" },
+    { "name": "route_density", "min": 0.0,  "max": 0.5,  "default": 0.13, "type": "number" },
+    { "name": "jitter",        "min": 0.0,  "max": 30.0, "default": 0.0,  "type": "number" },
+    { "name": "seed",          "min": 0.0,  "max": 999.0,"default": 90.0, "type": "number" },
+    { "name": "pulse_route", "default": 0, "type": "action" },
+    { "name": "rewire",      "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Board", "defaultColor": "#0d1117" },
+    { "id": "nodes", "name": "Pads", "defaultColor": "#39d353" },
+    { "id": "traces", "name": "Traces", "defaultColor": "#2ea043" },
+    { "id": "pulse", "name": "Signal Pulse", "defaultColor": "#00ff66" }
+  ],
+  "uuid": "circuit-routes-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Spiral Shells",
+  "category": "Geometric",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo",
+  "parameters": [
+    { "name": "sides",     "min": 3.0,  "max": 12.0, "default": 8.0,  "type": "number" },
+    { "name": "rings",     "min": 3.0,  "max": 44.0, "default": 20.0, "type": "number" },
+    { "name": "morph",     "min": 0.0,  "max": 1.0,  "default": 1.0,  "type": "number" },
+    { "name": "turns",     "min": 0.0,  "max": 10.0, "default": 5.5,  "type": "number" },
+    { "name": "radius",    "min": 50.0, "max": 400.0,"default": 300.0,"type": "number" },
+    { "name": "noise_amt", "min": 0.0,  "max": 1.0,  "default": 0.37, "type": "number" },
+    { "name": "unwind", "default": 0, "type": "action" },
+    { "name": "twist",  "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "lines", "name": "Shell Edges", "defaultColor": "#ffffff" },
+    { "id": "accent", "name": "Core Accent", "defaultColor": "#7599a4" }
+  ],
+  "uuid": "spiral-shells-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   }
 ];
 
@@ -1697,6 +1801,9 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'symbol-portrait-canvas-1': 'Geometric',
   'floating-gem-canvas-1': 'Geometric',
   'confetti-scatter-canvas-1': 'Geometric',
+  'woven-hex-blocks-1': 'Geometric',
+  'triangle-decay-1': 'Geometric',
+  'spiral-shells-1': 'Geometric',
   // Psychedelic
   'shader-clouds-1': 'Psychedelic',
   'ferrofluid-1': 'Psychedelic',
@@ -1729,6 +1836,7 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'hillscape-canvas-1': 'Retro',
   'orbit-deflection-canvas-1': 'Retro',
   'centipede-garden-canvas-1': 'Retro',
+  'circuit-routes-1': 'Retro',
 };
 
 export const GENERATIVE_CATEGORY_ORDER = ['Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];

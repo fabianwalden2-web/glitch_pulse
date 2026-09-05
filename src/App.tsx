@@ -2047,6 +2047,10 @@ export default function App() {
   const inkBlotStateRef = useRef<Record<string, any>>({});
   const floatingGemStateRef = useRef<Record<string, any>>({});
   const confettiScatterStateRef = useRef<Record<string, any>>({});
+  const wovenHexStateRef = useRef<Record<string, any>>({});
+  const triangleDecayStateRef = useRef<Record<string, any>>({});
+  const circuitRoutesStateRef = useRef<Record<string, any>>({});
+  const spiralShellsStateRef = useRef<Record<string, any>>({});
   const dragonTextStateRef = useRef<Record<string, any>>({});
 
   // Accumulation Mode Refs
@@ -7883,6 +7887,303 @@ export default function App() {
               }
 
               element = canvas;
+          } else if (def.uuid === 'woven-hex-blocks-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const whBg = resolvedGenerativeColors['background'] || '#000000';
+              const whLine = resolvedGenerativeColors['lines'] || '#ffffff';
+              const whAccent = resolvedGenerativeColors['accent'] || whLine;
+
+              const wh = modifiedSettings;
+              const whBlocks = Math.max(4, Math.min(24, Math.round(wh.blocks ?? 14)));
+              const whBands = Math.max(3, Math.min(22, Math.round(wh.bands ?? 12)));
+              const whTaper = Math.max(-1, Math.min(1, wh.taper ?? -0.9));
+              const whBandRatio = Math.max(0.05, Math.min(0.6, wh.band_ratio ?? 0.25));
+              const whSpread = Math.max(0.35, Math.min(1.6, wh.spread ?? 0.9));
+              const whSeed = Math.floor(wh.seed ?? 43);
+              const whRnd = (n: number) => { const x = Math.sin(n * 127.1 + 311.7 + whSeed * 0.113) * 43758.5453; return x - Math.floor(x); };
+
+              let whSt = wovenHexStateRef.current[layer.id];
+              if (!whSt) { whSt = { lastReweave: 0, reweaveStart: -99, lastCollapse: 0, collapseStart: -99 }; wovenHexStateRef.current[layer.id] = whSt; }
+              const whRw = Number(wh.reweave ?? 0), whCl = Number(wh.collapse ?? 0);
+              if (whRw > whSt.lastReweave) { whSt.lastReweave = whRw; whSt.reweaveStart = nowSec; }
+              if (whCl > whSt.lastCollapse) { whSt.lastCollapse = whCl; whSt.collapseStart = nowSec; }
+              const whRwT = nowSec - whSt.reweaveStart;
+              const whRwP = (whRwT >= 0 && whRwT < 1.0) ? whRwT / 1.0 : 1;
+              const whClT = nowSec - whSt.collapseStart;
+              const whClEnv = (whClT >= 0 && whClT < 1.3) ? Math.sin(Math.PI * (whClT / 1.3)) : 0;
+
+              ctx.fillStyle = whBg; ctx.fillRect(0, 0, targetW, targetH);
+
+              const whRing = Math.ceil((Math.sqrt(Math.max(1, 12 * whBlocks - 3)) - 3) / 6) + 1;
+              const whAxial: { q: number; r: number }[] = [];
+              for (let q = -whRing; q <= whRing; q++)
+                  for (let r = Math.max(-whRing, -q - whRing); r <= Math.min(whRing, -q + whRing); r++)
+                      whAxial.push({ q, r });
+              whAxial.sort((a, b) => (Math.abs(a.q) + Math.abs(a.r) + Math.abs(a.q + a.r)) - (Math.abs(b.q) + Math.abs(b.r) + Math.abs(b.q + b.r)));
+              const whChosen = whAxial.slice(0, whBlocks);
+
+              const whUnit = Math.min(targetW, targetH) / (whRing * 3.6 + 4) * whSpread * 1.9;
+              const whR = whUnit * (1 - whClEnv * 0.12);
+              const whEx = { x: whUnit * 1.5, y: whUnit * 0.30 };
+              const whEy = { x: 0, y: whUnit * 1.02 * (1 - whClEnv * 0.72) };
+              const whCx = targetW / 2, whCy = targetH / 2;
+              const whBreath = Math.sin(nowSec * 0.6) * whUnit * 0.06;
+
+              const whHatch = (a: {x:number;y:number}, b: {x:number;y:number}, c: {x:number;y:number}, d: {x:number;y:number}, n: number, tp: number, col: string, lw: number) => {
+                  ctx.strokeStyle = col; ctx.lineWidth = lw;
+                  ctx.beginPath();
+                  for (let i = 0; i <= n; i++) {
+                      let t = i / n;
+                      t = tp >= 0 ? Math.pow(t, 1 + tp * 3) : 1 - Math.pow(1 - t, 1 - tp * 3);
+                      ctx.moveTo(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+                      ctx.lineTo(d.x + (c.x - d.x) * t, d.y + (c.y - d.y) * t);
+                  }
+                  ctx.stroke();
+              };
+
+              for (let i = 0; i < whChosen.length; i++) {
+                  const cell = whChosen[i];
+                  let bx = whCx + cell.q * whEx.x + cell.r * whEy.x;
+                  let by = whCy + cell.q * whEx.y + cell.r * whEy.y + whBreath * (i % 2 ? 1 : -1);
+                  if (whRwP < 1) {
+                      const sx = (whRnd(i * 2.3) - 0.5) * targetW * 1.4;
+                      const sy = (whRnd(i * 5.9) - 0.5) * targetH * 1.4;
+                      const k = 1 - Math.pow(1 - whRwP, 3);
+                      bx += sx * (1 - k); by += sy * (1 - k);
+                  }
+                  const vs: { x: number; y: number }[] = [];
+                  for (let k = 0; k < 6; k++) {
+                      const ang = Math.PI / 180 * (60 * k - 90);
+                      vs.push({ x: bx + Math.cos(ang) * whR, y: by + Math.sin(ang) * whR * 0.86 });
+                  }
+                  const O = { x: bx, y: by };
+                  const lw = Math.max(0.6, whR * 0.02 * (0.5 + whBandRatio));
+                  whHatch(vs[5], vs[0], vs[1], O, whBands, whTaper, whLine, lw);
+                  whHatch(vs[1], vs[2], vs[3], O, Math.round(whBands * 0.85), -whTaper, whLine, lw);
+                  whHatch(vs[3], vs[4], vs[5], O, whBands, whTaper * 0.6, whLine, lw);
+                  ctx.strokeStyle = whLine; ctx.lineWidth = lw * 1.2;
+                  ctx.beginPath();
+                  vs.forEach((v, k) => k ? ctx.lineTo(v.x, v.y) : ctx.moveTo(v.x, v.y));
+                  ctx.closePath(); ctx.stroke();
+                  ctx.strokeStyle = whAccent; ctx.lineWidth = lw * 0.9; ctx.globalAlpha = 0.5 + whClEnv * 0.5;
+                  ctx.beginPath();
+                  ctx.moveTo(vs[0].x, vs[0].y); ctx.lineTo(O.x, O.y);
+                  ctx.moveTo(vs[2].x, vs[2].y); ctx.lineTo(O.x, O.y);
+                  ctx.moveTo(vs[4].x, vs[4].y); ctx.lineTo(O.x, O.y);
+                  ctx.stroke(); ctx.globalAlpha = 1;
+              }
+              element = canvas;
+          } else if (def.uuid === 'triangle-decay-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const tdBg = resolvedGenerativeColors['background'] || '#000000';
+              const tdFill = resolvedGenerativeColors['fill'] || '#ffffff';
+              const tdAccent = resolvedGenerativeColors['accent'] || '#eb556b';
+
+              const td = modifiedSettings;
+              const tdCols = Math.max(10, Math.min(80, Math.round(td.cols ?? 57)));
+              const tdRows = Math.max(6, Math.min(48, Math.round(td.rows ?? 29)));
+              const tdDecayStart = Math.max(0, Math.min(1, td.decay_start ?? 0.24));
+              const tdChaos = Math.max(0, Math.min(1, td.chaos ?? 0.6));
+              const tdSeed = Math.floor(td.seed ?? 42);
+
+              let tdSt = triangleDecayStateRef.current[layer.id];
+              if (!tdSt) { tdSt = { lastAva: 0, avaStart: -99, lastReseed: 0, seedA: tdSeed, seedB: tdSeed, reseedStart: -99 }; triangleDecayStateRef.current[layer.id] = tdSt; }
+              const tdAva = Number(td.avalanche ?? 0), tdRs = Number(td.reseed ?? 0);
+              if (tdAva > tdSt.lastAva) { tdSt.lastAva = tdAva; tdSt.avaStart = nowSec; }
+              if (tdRs > tdSt.lastReseed) { tdSt.lastReseed = tdRs; tdSt.seedA = tdSt.seedB; tdSt.seedB = tdSeed + Math.floor(tdRs) * 977 + 13; tdSt.reseedStart = nowSec; }
+              const tdAvaT = nowSec - tdSt.avaStart;
+              const tdAvaP = (tdAvaT >= 0 && tdAvaT < 1.6) ? tdAvaT / 1.6 : 1;
+              const tdEffDecay = tdDecayStart * (tdAvaP >= 1 ? 1 : (tdAvaP < 0.35 ? 1 - tdAvaP / 0.35 : (tdAvaP - 0.35) / 0.65));
+              const tdRsT = nowSec - tdSt.reseedStart;
+              const tdRsMix = (tdRsT >= 0 && tdRsT < 1.1) ? (tdRsT / 1.1) : 1;
+              const tdRnd = (n: number, s: number) => { const x = Math.sin(n * 127.1 + 311.7 + s * 0.719) * 43758.5453; return x - Math.floor(x); };
+
+              ctx.fillStyle = tdBg; ctx.fillRect(0, 0, targetW, targetH);
+              const tdCw = targetW / tdCols, tdCh = targetH / tdRows;
+              ctx.fillStyle = tdFill;
+              for (let ry = 0; ry < tdRows; ry++) {
+                  const rowFrac = ry / Math.max(1, tdRows - 1);
+                  const dz = Math.max(0, (rowFrac - tdEffDecay) / Math.max(0.001, 1 - tdEffDecay));
+                  const amt = dz * dz * tdChaos;
+                  for (let rx = 0; rx < tdCols; rx++) {
+                      const id = ry * tdCols + rx;
+                      const jA = tdRnd(id * 1.7, tdSt.seedA), jB = tdRnd(id * 1.7, tdSt.seedB);
+                      const j = jA + (jB - jA) * tdRsMix;
+                      const k2A = tdRnd(id * 3.9, tdSt.seedA), k2B = tdRnd(id * 3.9, tdSt.seedB);
+                      const j2 = k2A + (k2B - k2A) * tdRsMix;
+                      const ox = (j - 0.5) * tdCw * 1.4 * amt;
+                      const oy = (j2 - 0.5) * tdCh * 1.4 * amt;
+                      const rot = (j - 0.5) * Math.PI * amt * 1.6;
+                      ctx.save();
+                      ctx.translate(rx * tdCw + tdCw / 2 + ox, ry * tdCh + tdCh / 2 + oy);
+                      ctx.rotate(rot);
+                      ctx.translate(-tdCw / 2, -tdCh / 2);
+                      const gap = amt > 0.15 && j2 < amt * 0.5;
+                      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(tdCw, 0); ctx.lineTo(0, tdCh); ctx.closePath(); ctx.fill();
+                      if (!gap) { ctx.beginPath(); ctx.moveTo(tdCw, 0); ctx.lineTo(tdCw, tdCh); ctx.lineTo(0, tdCh); ctx.closePath(); ctx.fill(); }
+                      ctx.restore();
+                  }
+              }
+              if (tdEffDecay < 0.999) {
+                  const fy = tdEffDecay * targetH;
+                  ctx.strokeStyle = tdAccent; ctx.lineWidth = 2; ctx.globalAlpha = 0.85;
+                  ctx.beginPath();
+                  for (let x = 0; x <= targetW; x += 12) {
+                      const yy = fy + Math.sin(x * 0.05 + nowSec * 3) * 6 * (tdAvaP < 1 ? 1 : 0.35);
+                      x ? ctx.lineTo(x, yy) : ctx.moveTo(x, yy);
+                  }
+                  ctx.stroke(); ctx.globalAlpha = 1;
+              }
+              element = canvas;
+          } else if (def.uuid === 'circuit-routes-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const crBg = resolvedGenerativeColors['background'] || '#0d1117';
+              const crNode = resolvedGenerativeColors['nodes'] || '#39d353';
+              const crTrace = resolvedGenerativeColors['traces'] || '#2ea043';
+              const crPulseC = resolvedGenerativeColors['pulse'] || '#00ff66';
+
+              const cr = modifiedSettings;
+              const crCols = Math.max(8, Math.min(40, Math.round(cr.cols ?? 19)));
+              const crRows = Math.max(8, Math.min(40, Math.round(cr.rows ?? 20)));
+              const crNodeSize = Math.max(1, Math.min(10, cr.node_size ?? 5));
+              const crRouteDensity = Math.max(0, Math.min(0.5, cr.route_density ?? 0.13));
+              const crJitter = Math.max(0, Math.min(30, cr.jitter ?? 0));
+              const crSeed0 = Math.floor(cr.seed ?? 90);
+
+              let crSt = circuitRoutesStateRef.current[layer.id];
+              if (!crSt) crSt = circuitRoutesStateRef.current[layer.id] = { routes: [], key: '', lastPulse: 0, pulseStart: -99, pulsePath: null, lastRewire: 0, rewireStart: -99, seed: crSeed0 };
+              const crRnd = (n: number) => { const x = Math.sin(n * 127.1 + 311.7 + crSt.seed * 0.531) * 43758.5453; return x - Math.floor(x); };
+              const crKey = `${crCols}x${crRows}:${crRouteDensity.toFixed(3)}:${crSt.seed}`;
+              if (crSt.key !== crKey) {
+                  crSt.key = crKey;
+                  crSt.routes = [];
+                  const maxR = Math.floor(crCols * crRows * crRouteDensity);
+                  let tries = 0;
+                  while (crSt.routes.length < maxR && tries < maxR * 8 + 20) {
+                      tries++;
+                      const c = Math.floor(crRnd(tries * 1.1) * crCols);
+                      const r = Math.floor(crRnd(tries * 2.7) * crRows);
+                      const horiz = crRnd(tries * 3.3) > 0.5;
+                      const len = 1 + Math.floor(crRnd(tries * 4.9) * 3);
+                      const c2 = horiz ? Math.min(crCols - 1, c + len) : c;
+                      const r2 = horiz ? r : Math.min(crRows - 1, r + len);
+                      const bend = crRnd(tries * 6.1) > 0.4;
+                      crSt.routes.push({ c, r, c2, r2, bend });
+                  }
+              }
+              const crPulseN = Number(cr.pulse_route ?? 0), crRewireN = Number(cr.rewire ?? 0);
+              if (crRewireN > crSt.lastRewire) { crSt.lastRewire = crRewireN; crSt.seed = crSeed0 + Math.floor(crRewireN) * 613 + 7; crSt.key = ''; crSt.rewireStart = nowSec; }
+              if (crPulseN > crSt.lastPulse) { crSt.lastPulse = crPulseN; crSt.pulseStart = nowSec; crSt.pulsePath = crSt.routes.length ? crSt.routes[Math.floor(Math.random() * crSt.routes.length)] : null; }
+              const crRewireT = nowSec - crSt.rewireStart, crRewireP = crRewireT >= 0 && crRewireT < 0.9 ? crRewireT / 0.9 : 1;
+              const crPulseT = nowSec - crSt.pulseStart, crPulseP = crPulseT >= 0 && crPulseT < 0.8 ? crPulseT / 0.8 : -1;
+
+              ctx.fillStyle = crBg; ctx.fillRect(0, 0, targetW, targetH);
+              const crGx = targetW / (crCols + 1), crGy = targetH / (crRows + 1);
+              const crP = (c: number, r: number) => ({
+                  x: crGx * (c + 1) + (crJitter ? (crRnd(c * 31.7 + r * 12.3) - 0.5) * crJitter : 0),
+                  y: crGy * (r + 1) + (crJitter ? (crRnd(c * 7.1 + r * 51.9) - 0.5) * crJitter : 0),
+              });
+              ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+              ctx.strokeStyle = crTrace; ctx.lineWidth = Math.max(1, crNodeSize * 0.4);
+              crSt.routes.forEach((rt: any, i: number) => {
+                  const reveal = crRewireP < 1 ? Math.max(0, Math.min(1, crRewireP * crSt.routes.length - i)) : 1;
+                  if (reveal <= 0) return;
+                  const a = crP(rt.c, rt.r), b = crP(rt.c2, rt.r2);
+                  const midx = rt.bend ? b.x : a.x, midy = rt.bend ? a.y : b.y;
+                  ctx.beginPath(); ctx.moveTo(a.x, a.y);
+                  ctx.lineTo(a.x + (midx - a.x) * Math.min(1, reveal * 2), a.y + (midy - a.y) * Math.min(1, reveal * 2));
+                  if (reveal > 0.5) {
+                      const k = (reveal - 0.5) * 2;
+                      ctx.lineTo(midx + (b.x - midx) * k, midy + (b.y - midy) * k);
+                  }
+                  ctx.stroke();
+              });
+              if (crPulseP >= 0 && crSt.pulsePath) {
+                  const rt = crSt.pulsePath;
+                  const a = crP(rt.c, rt.r), b = crP(rt.c2, rt.r2);
+                  const midx = rt.bend ? b.x : a.x, midy = rt.bend ? a.y : b.y;
+                  const seg = crPulseP < 0.5
+                      ? { x: a.x + (midx - a.x) * crPulseP * 2, y: a.y + (midy - a.y) * crPulseP * 2 }
+                      : { x: midx + (b.x - midx) * (crPulseP - 0.5) * 2, y: midy + (b.y - midy) * (crPulseP - 0.5) * 2 };
+                  ctx.fillStyle = crPulseC; ctx.shadowColor = crPulseC; ctx.shadowBlur = 16;
+                  ctx.beginPath(); ctx.arc(seg.x, seg.y, crNodeSize * 0.9, 0, Math.PI * 2); ctx.fill();
+                  ctx.shadowBlur = 0;
+              }
+              ctx.fillStyle = crNode;
+              for (let r = 0; r < crRows; r++) for (let c = 0; c < crCols; c++) {
+                  const p = crP(c, r);
+                  ctx.beginPath(); ctx.arc(p.x, p.y, crNodeSize * 0.5, 0, Math.PI * 2); ctx.fill();
+              }
+              element = canvas;
+          } else if (def.uuid === 'spiral-shells-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const ssBg = resolvedGenerativeColors['background'] || '#000000';
+              const ssLine = resolvedGenerativeColors['lines'] || '#ffffff';
+              const ssAccent = resolvedGenerativeColors['accent'] || '#7599a4';
+
+              const ss = modifiedSettings;
+              const ssSides = Math.max(3, Math.min(12, Math.round(ss.sides ?? 8)));
+              const ssRings = Math.max(3, Math.min(44, Math.round(ss.rings ?? 20)));
+              const ssMorph = Math.max(0, Math.min(1, ss.morph ?? 1));
+              const ssTurns = Math.max(0, Math.min(10, ss.turns ?? 5.5));
+              const ssBaseRadius = Math.max(50, Math.min(400, ss.radius ?? 300));
+              const ssNoiseAmt = Math.max(0, Math.min(1, ss.noise_amt ?? 0.37));
+
+              let ssSt = spiralShellsStateRef.current[layer.id];
+              if (!ssSt) ssSt = spiralShellsStateRef.current[layer.id] = { lastUnwind: 0, unwindStart: -99, lastTwist: 0, twistStart: -99 };
+              const ssUw = Number(ss.unwind ?? 0), ssTw = Number(ss.twist ?? 0);
+              if (ssUw > ssSt.lastUnwind) { ssSt.lastUnwind = ssUw; ssSt.unwindStart = nowSec; }
+              if (ssTw > ssSt.lastTwist) { ssSt.lastTwist = ssTw; ssSt.twistStart = nowSec; }
+              const ssUwT = nowSec - ssSt.unwindStart;
+              const ssUwEnv = (ssUwT >= 0 && ssUwT < 1.8) ? Math.sin(Math.PI * (ssUwT / 1.8)) : 0;
+              const ssTwT = nowSec - ssSt.twistStart;
+              const ssTwEnv = (ssTwT >= 0 && ssTwT < 1.4) ? (1 - ssTwT / 1.4) : 0;
+
+              ctx.fillStyle = ssBg; ctx.fillRect(0, 0, targetW, targetH);
+              const ssSc = Math.min(targetW, targetH) / 800;
+              const ssCx = targetW / 2, ssCy = targetH / 2;
+              const ssRot0 = nowSec * 0.15;
+              ctx.lineJoin = 'round';
+              for (let i = 0; i < ssRings; i++) {
+                  const f = i / ssRings;
+                  const rad = ssBaseRadius * ssSc * (1 - f * 0.92);
+                  const spiralAng = f * ssTurns * Math.PI * 2 + ssRot0;
+                  const spiralR = f * ssBaseRadius * ssSc * 0.55 * (1 - ssUwEnv);
+                  const ox = ssCx + Math.cos(spiralAng) * spiralR + ssUwEnv * (f - 0.5) * targetW * 0.9;
+                  const oy = ssCy + Math.sin(spiralAng) * spiralR * (1 - ssUwEnv);
+                  const ringRot = spiralAng * (0.5 + ssMorph * 0.5) + ssTwEnv * f * 6;
+                  ctx.strokeStyle = i === 0 ? ssAccent : ssLine;
+                  ctx.globalAlpha = 0.25 + 0.75 * (1 - f);
+                  ctx.lineWidth = Math.max(0.5, (1.6 - f) * ssSc * 1.3);
+                  ctx.beginPath();
+                  for (let k = 0; k <= ssSides; k++) {
+                      const a = (k / ssSides) * Math.PI * 2 + ringRot;
+                      const wob = 1 + Math.sin(a * 3 + nowSec + i) * ssNoiseAmt * 0.22;
+                      const rr = rad * wob * (1 - ssMorph * 0.12 * Math.cos(a * ssSides));
+                      const px = ox + Math.cos(a) * rr;
+                      const py = oy + Math.sin(a) * rr;
+                      k ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+                  }
+                  ctx.closePath(); ctx.stroke();
+              }
+              ctx.globalAlpha = 1;
+              element = canvas;
           } else {
               if (webglRendererRef.current.canvas.width !== targetW || webglRendererRef.current.canvas.height !== targetH) {
                   webglRendererRef.current.resize(targetW, targetH);
@@ -13573,6 +13874,10 @@ return (
                                    if (uuid === 'ink-blot-canvas-1') return '🖋️';
                                    if (uuid === 'floating-gem-canvas-1') return '💎';
                                    if (uuid === 'confetti-scatter-canvas-1') return '🎊';
+                                   if (uuid === 'woven-hex-blocks-1') return '⬡';
+                                   if (uuid === 'triangle-decay-1') return '🔻';
+                                   if (uuid === 'circuit-routes-1') return '🔌';
+                                   if (uuid === 'spiral-shells-1') return '🐚';
                                    if (uuid === 'bubble-spheres-1') return '🫧';
                                    if (uuid === 'dancing-cubes-canvas-1') return '🎲';
                                    return '✨';
