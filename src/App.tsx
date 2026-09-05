@@ -2048,7 +2048,6 @@ export default function App() {
   const floatingGemStateRef = useRef<Record<string, any>>({});
   const confettiScatterStateRef = useRef<Record<string, any>>({});
   const wovenHexStateRef = useRef<Record<string, any>>({});
-  const triangleDecayStateRef = useRef<Record<string, any>>({});
   const circuitRoutesStateRef = useRef<Record<string, any>>({});
   const spiralShellsStateRef = useRef<Record<string, any>>({});
   const polarCheckerStateRef = useRef<Record<string, any>>({});
@@ -2059,7 +2058,6 @@ export default function App() {
   const deltaMazeStateRef = useRef<Record<string, any>>({});
   const threadNestStateRef = useRef<Record<string, any>>({});
   const isoBarWaveStateRef = useRef<Record<string, any>>({});
-  const letterStormStateRef = useRef<Record<string, any>>({});
   const dragonTextStateRef = useRef<Record<string, any>>({});
 
   // Accumulation Mode Refs
@@ -7912,8 +7910,8 @@ export default function App() {
               const whTaper = Math.max(-1, Math.min(1, wh.taper ?? -0.9));
               const whBandRatio = Math.max(0.05, Math.min(0.6, wh.band_ratio ?? 0.25));
               const whSpread = Math.max(0.35, Math.min(1.6, wh.spread ?? 0.9));
-              const whSeed = Math.floor(wh.seed ?? 43);
-              const whRnd = (n: number) => { const x = Math.sin(n * 127.1 + 311.7 + whSeed * 0.113) * 43758.5453; return x - Math.floor(x); };
+              const whSize = Math.max(0.3, Math.min(2, wh.size ?? 1));
+              const whRnd = (n: number) => { const x = Math.sin(n * 127.1 + 311.7 + 137 * 0.113) * 43758.5453; return x - Math.floor(x); };
 
               let whSt = wovenHexStateRef.current[layer.id];
               if (!whSt) { whSt = { lastReweave: 0, reweaveStart: -99, lastCollapse: 0, collapseStart: -99 }; wovenHexStateRef.current[layer.id] = whSt; }
@@ -7935,7 +7933,7 @@ export default function App() {
               whAxial.sort((a, b) => (Math.abs(a.q) + Math.abs(a.r) + Math.abs(a.q + a.r)) - (Math.abs(b.q) + Math.abs(b.r) + Math.abs(b.q + b.r)));
               const whChosen = whAxial.slice(0, whBlocks);
 
-              const whUnit = Math.min(targetW, targetH) / (whRing * 3.6 + 4) * whSpread * 1.9;
+              const whUnit = Math.min(targetW, targetH) / (whRing * 3.6 + 4) * whSpread * whSize * 1.9;
               const whR = whUnit * (1 - whClEnv * 0.12);
               const whEx = { x: whUnit * 1.5, y: whUnit * 0.30 };
               const whEy = { x: 0, y: whUnit * 1.02 * (1 - whClEnv * 0.72) };
@@ -7986,72 +7984,6 @@ export default function App() {
                   ctx.stroke(); ctx.globalAlpha = 1;
               }
               element = canvas;
-          } else if (def.uuid === 'triangle-decay-1') {
-              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
-              const canvas = sphereCanvasRef.current[layer.id];
-              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
-              const ctx = canvas.getContext('2d')!;
-
-              const tdBg = resolvedGenerativeColors['background'] || '#000000';
-              const tdFill = resolvedGenerativeColors['fill'] || '#ffffff';
-              const tdAccent = resolvedGenerativeColors['accent'] || '#eb556b';
-
-              const td = modifiedSettings;
-              const tdCols = Math.max(10, Math.min(80, Math.round(td.cols ?? 57)));
-              const tdRows = Math.max(6, Math.min(48, Math.round(td.rows ?? 29)));
-              const tdDecayStart = Math.max(0, Math.min(1, td.decay_start ?? 0.24));
-              const tdChaos = Math.max(0, Math.min(1, td.chaos ?? 0.6));
-              const tdSeed = Math.floor(td.seed ?? 42);
-
-              let tdSt = triangleDecayStateRef.current[layer.id];
-              if (!tdSt) { tdSt = { lastAva: 0, avaStart: -99, lastReseed: 0, seedA: tdSeed, seedB: tdSeed, reseedStart: -99 }; triangleDecayStateRef.current[layer.id] = tdSt; }
-              const tdAva = Number(td.avalanche ?? 0), tdRs = Number(td.reseed ?? 0);
-              if (tdAva > tdSt.lastAva) { tdSt.lastAva = tdAva; tdSt.avaStart = nowSec; }
-              if (tdRs > tdSt.lastReseed) { tdSt.lastReseed = tdRs; tdSt.seedA = tdSt.seedB; tdSt.seedB = tdSeed + Math.floor(tdRs) * 977 + 13; tdSt.reseedStart = nowSec; }
-              const tdAvaT = nowSec - tdSt.avaStart;
-              const tdAvaP = (tdAvaT >= 0 && tdAvaT < 1.6) ? tdAvaT / 1.6 : 1;
-              const tdEffDecay = tdDecayStart * (tdAvaP >= 1 ? 1 : (tdAvaP < 0.35 ? 1 - tdAvaP / 0.35 : (tdAvaP - 0.35) / 0.65));
-              const tdRsT = nowSec - tdSt.reseedStart;
-              const tdRsMix = (tdRsT >= 0 && tdRsT < 1.1) ? (tdRsT / 1.1) : 1;
-              const tdRnd = (n: number, s: number) => { const x = Math.sin(n * 127.1 + 311.7 + s * 0.719) * 43758.5453; return x - Math.floor(x); };
-
-              ctx.fillStyle = tdBg; ctx.fillRect(0, 0, targetW, targetH);
-              const tdCw = targetW / tdCols, tdCh = targetH / tdRows;
-              ctx.fillStyle = tdFill;
-              for (let ry = 0; ry < tdRows; ry++) {
-                  const rowFrac = ry / Math.max(1, tdRows - 1);
-                  const dz = Math.max(0, (rowFrac - tdEffDecay) / Math.max(0.001, 1 - tdEffDecay));
-                  const amt = dz * dz * tdChaos;
-                  for (let rx = 0; rx < tdCols; rx++) {
-                      const id = ry * tdCols + rx;
-                      const jA = tdRnd(id * 1.7, tdSt.seedA), jB = tdRnd(id * 1.7, tdSt.seedB);
-                      const j = jA + (jB - jA) * tdRsMix;
-                      const k2A = tdRnd(id * 3.9, tdSt.seedA), k2B = tdRnd(id * 3.9, tdSt.seedB);
-                      const j2 = k2A + (k2B - k2A) * tdRsMix;
-                      const ox = (j - 0.5) * tdCw * 1.4 * amt;
-                      const oy = (j2 - 0.5) * tdCh * 1.4 * amt;
-                      const rot = (j - 0.5) * Math.PI * amt * 1.6;
-                      ctx.save();
-                      ctx.translate(rx * tdCw + tdCw / 2 + ox, ry * tdCh + tdCh / 2 + oy);
-                      ctx.rotate(rot);
-                      ctx.translate(-tdCw / 2, -tdCh / 2);
-                      const gap = amt > 0.15 && j2 < amt * 0.5;
-                      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(tdCw, 0); ctx.lineTo(0, tdCh); ctx.closePath(); ctx.fill();
-                      if (!gap) { ctx.beginPath(); ctx.moveTo(tdCw, 0); ctx.lineTo(tdCw, tdCh); ctx.lineTo(0, tdCh); ctx.closePath(); ctx.fill(); }
-                      ctx.restore();
-                  }
-              }
-              if (tdEffDecay < 0.999) {
-                  const fy = tdEffDecay * targetH;
-                  ctx.strokeStyle = tdAccent; ctx.lineWidth = 2; ctx.globalAlpha = 0.85;
-                  ctx.beginPath();
-                  for (let x = 0; x <= targetW; x += 12) {
-                      const yy = fy + Math.sin(x * 0.05 + nowSec * 3) * 6 * (tdAvaP < 1 ? 1 : 0.35);
-                      x ? ctx.lineTo(x, yy) : ctx.moveTo(x, yy);
-                  }
-                  ctx.stroke(); ctx.globalAlpha = 1;
-              }
-              element = canvas;
           } else if (def.uuid === 'circuit-routes-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
               const canvas = sphereCanvasRef.current[layer.id];
@@ -8064,76 +7996,143 @@ export default function App() {
               const crPulseC = resolvedGenerativeColors['pulse'] || '#00ff66';
 
               const cr = modifiedSettings;
-              const crCols = Math.max(8, Math.min(40, Math.round(cr.cols ?? 19)));
-              const crRows = Math.max(8, Math.min(40, Math.round(cr.rows ?? 20)));
+              const crCols = Math.max(8, Math.min(40, Math.round(cr.columns ?? 19)));
+              const crRows = crCols;
               const crNodeSize = Math.max(1, Math.min(10, cr.node_size ?? 5));
               const crRouteDensity = Math.max(0, Math.min(0.5, cr.route_density ?? 0.13));
               const crJitter = Math.max(0, Math.min(30, cr.jitter ?? 0));
-              const crSeed0 = Math.floor(cr.seed ?? 90);
+              const crRoamers = Math.max(0, Math.min(24, Math.round(cr.roamers ?? 5)));
+              const CR_SEED = 90;
+              const crRnd = (n: number) => { const x = Math.sin(n * 127.1 + 311.7 + CR_SEED * 0.531) * 43758.5453; return x - Math.floor(x); };
 
               let crSt = circuitRoutesStateRef.current[layer.id];
-              if (!crSt) crSt = circuitRoutesStateRef.current[layer.id] = { routes: [], key: '', lastPulse: 0, pulseStart: -99, pulsePath: null, lastRewire: 0, rewireStart: -99, seed: crSeed0 };
-              const crRnd = (n: number) => { const x = Math.sin(n * 127.1 + 311.7 + crSt.seed * 0.531) * 43758.5453; return x - Math.floor(x); };
-              const crKey = `${crCols}x${crRows}:${crRouteDensity.toFixed(3)}:${crSt.seed}`;
+              if (!crSt) crSt = circuitRoutesStateRef.current[layer.id] = { routes: [], adj: {}, agents: [], key: '', salt: 0, lastPulse: 0, lastRewire: 0, rewireStart: -99, lastRoamAt: -99 };
+              const crKey = `${crCols}:${crRouteDensity.toFixed(3)}:${crSt.salt}`;
               if (crSt.key !== crKey) {
                   crSt.key = crKey;
-                  crSt.routes = [];
+                  crSt.routes = []; crSt.adj = {}; crSt.agents = [];
                   const maxR = Math.floor(crCols * crRows * crRouteDensity);
                   let tries = 0;
-                  while (crSt.routes.length < maxR && tries < maxR * 8 + 20) {
+                  while (crSt.routes.length < maxR && tries < maxR * 8 + 40) {
                       tries++;
-                      const c = Math.floor(crRnd(tries * 1.1) * crCols);
-                      const r = Math.floor(crRnd(tries * 2.7) * crRows);
-                      const horiz = crRnd(tries * 3.3) > 0.5;
-                      const len = 1 + Math.floor(crRnd(tries * 4.9) * 3);
+                      const salt = tries + crSt.salt * 131.7;
+                      const c = Math.floor(crRnd(salt * 1.1) * crCols);
+                      const r = Math.floor(crRnd(salt * 2.7) * crRows);
+                      const horiz = crRnd(salt * 3.3) > 0.5;
+                      const len = 1 + Math.floor(crRnd(salt * 4.9) * 3);
                       const c2 = horiz ? Math.min(crCols - 1, c + len) : c;
                       const r2 = horiz ? r : Math.min(crRows - 1, r + len);
-                      const bend = crRnd(tries * 6.1) > 0.4;
+                      if (c2 === c && r2 === r) continue;
+                      const bend = crRnd(salt * 6.1) > 0.4;
+                      const idx = crSt.routes.length;
                       crSt.routes.push({ c, r, c2, r2, bend });
+                      const ka = c + ',' + r, kb = c2 + ',' + r2;
+                      (crSt.adj[ka] || (crSt.adj[ka] = [])).push(idx);
+                      (crSt.adj[kb] || (crSt.adj[kb] = [])).push(idx);
                   }
               }
-              const crPulseN = Number(cr.pulse_route ?? 0), crRewireN = Number(cr.rewire ?? 0);
-              if (crRewireN > crSt.lastRewire) { crSt.lastRewire = crRewireN; crSt.seed = crSeed0 + Math.floor(crRewireN) * 613 + 7; crSt.key = ''; crSt.rewireStart = nowSec; }
-              if (crPulseN > crSt.lastPulse) { crSt.lastPulse = crPulseN; crSt.pulseStart = nowSec; crSt.pulsePath = crSt.routes.length ? crSt.routes[Math.floor(Math.random() * crSt.routes.length)] : null; }
-              const crRewireT = nowSec - crSt.rewireStart, crRewireP = crRewireT >= 0 && crRewireT < 0.9 ? crRewireT / 0.9 : 1;
-              const crPulseT = nowSec - crSt.pulseStart, crPulseP = crPulseT >= 0 && crPulseT < 0.8 ? crPulseT / 0.8 : -1;
+              const routes = crSt.routes;
 
-              ctx.fillStyle = crBg; ctx.fillRect(0, 0, targetW, targetH);
               const crGx = targetW / (crCols + 1), crGy = targetH / (crRows + 1);
               const crP = (c: number, r: number) => ({
                   x: crGx * (c + 1) + (crJitter ? (crRnd(c * 31.7 + r * 12.3) - 0.5) * crJitter : 0),
                   y: crGy * (r + 1) + (crJitter ? (crRnd(c * 7.1 + r * 51.9) - 0.5) * crJitter : 0),
               });
+              const crRoutePos = (rt: any, s: number) => {
+                  const a = crP(rt.c, rt.r), b = crP(rt.c2, rt.r2);
+                  if (!rt.bend) return { x: a.x + (b.x - a.x) * s, y: a.y + (b.y - a.y) * s };
+                  const m = { x: b.x, y: a.y };
+                  if (s < 0.5) { const u = s * 2; return { x: a.x + (m.x - a.x) * u, y: a.y + (m.y - a.y) * u }; }
+                  const u = (s - 0.5) * 2; return { x: m.x + (b.x - m.x) * u, y: m.y + (b.y - m.y) * u };
+              };
+              const crAgentScreen = (ag: any) => crRoutePos(routes[ag.route], ag.entA ? ag.t : 1 - ag.t);
+              const crArrivalKey = (ag: any) => { const rt = routes[ag.route]; return ag.entA ? (rt.c2 + ',' + rt.r2) : (rt.c + ',' + rt.r); };
+              const crAdvance = (ag: any) => {
+                  let guard = 0;
+                  while (ag.t >= 1 && guard++ < 6) {
+                      const ak = crArrivalKey(ag);
+                      const cand = (crSt.adj[ak] || []).filter((ri: number) => ri !== ag.route);
+                      if (!cand.length) return false;
+                      const next = cand[Math.floor(Math.random() * cand.length)];
+                      const nrt = routes[next];
+                      ag.route = next;
+                      ag.entA = (nrt.c + ',' + nrt.r) === ak;
+                      ag.t -= 1;
+                  }
+                  return ag.t < 1;
+              };
+
+              const crPulseN = Number(cr.pulse_route ?? 0), crRewireN = Number(cr.rewire ?? 0);
+              if (crRewireN > crSt.lastRewire) { crSt.lastRewire = crRewireN; crSt.salt += 1; crSt.key = ''; crSt.rewireStart = nowSec; }
+              if (crPulseN > crSt.lastPulse) {
+                  crSt.lastPulse = crPulseN;
+                  const seen = new Set<number>();
+                  for (const kk of Object.keys(crSt.adj)) {
+                      const parts = kk.split(','); const pc = +parts[0], pr = +parts[1];
+                      if (pc === 0 || pr === 0 || pc === crCols - 1 || pr === crRows - 1) {
+                          const ri = crSt.adj[kk][0];
+                          if (seen.has(ri)) continue; seen.add(ri);
+                          const rt = routes[ri];
+                          const entA = (rt.c + ',' + rt.r) === kk;
+                          crSt.agents.push({ route: ri, entA, t: 0, speed: 1.5 + Math.random() * 0.6, kind: 'sig' });
+                      }
+                  }
+              }
+              const crRewireT = nowSec - crSt.rewireStart, crRewireP = crRewireT >= 0 && crRewireT < 0.9 ? crRewireT / 0.9 : 1;
+
+              const crDt = Math.min(0.05, Math.max(0.001, deltaTime || 0.016));
+              if (crRoamers > 0 && routes.length && crSt.agents.filter((a: any) => a.kind === 'roam').length < crRoamers && nowSec - crSt.lastRoamAt > 0.25) {
+                  crSt.agents.push({ route: Math.floor(Math.random() * routes.length), entA: Math.random() > 0.5, t: Math.random() * 0.25, speed: 0.55 + Math.random() * 0.7, kind: 'roam' });
+                  crSt.lastRoamAt = nowSec;
+              }
+              const crSurv: any[] = [];
+              for (const ag of crSt.agents) {
+                  ag.t += ag.speed * crDt;
+                  if (!crAdvance(ag)) continue;
+                  crSurv.push(ag);
+              }
+              const crCollR = Math.max(6, crNodeSize * 1.4);
+              const crPts = crSurv.map(crAgentScreen);
+              const crKill = new Set<number>();
+              for (let i = 0; i < crSurv.length; i++) {
+                  if (crSurv[i].kind !== 'sig') continue;
+                  for (let j = 0; j < crSurv.length; j++) {
+                      if (i === j) continue;
+                      const dx = crPts[i].x - crPts[j].x, dy = crPts[i].y - crPts[j].y;
+                      if (dx * dx + dy * dy < crCollR * crCollR && !(crSurv[i].t < 0.12 && crSurv[j].kind === 'sig' && crSurv[j].t < 0.12)) { crKill.add(i); break; }
+                  }
+              }
+              crSt.agents = crSurv.filter((_: any, i: number) => !crKill.has(i));
+
+              ctx.fillStyle = crBg; ctx.fillRect(0, 0, targetW, targetH);
               ctx.lineCap = 'round'; ctx.lineJoin = 'round';
               ctx.strokeStyle = crTrace; ctx.lineWidth = Math.max(1, crNodeSize * 0.4);
-              crSt.routes.forEach((rt: any, i: number) => {
-                  const reveal = crRewireP < 1 ? Math.max(0, Math.min(1, crRewireP * crSt.routes.length - i)) : 1;
+              routes.forEach((rt: any, i: number) => {
+                  const reveal = crRewireP < 1 ? Math.max(0, Math.min(1, crRewireP * routes.length - i)) : 1;
                   if (reveal <= 0) return;
-                  const a = crP(rt.c, rt.r), b = crP(rt.c2, rt.r2);
-                  const midx = rt.bend ? b.x : a.x, midy = rt.bend ? a.y : b.y;
-                  ctx.beginPath(); ctx.moveTo(a.x, a.y);
-                  ctx.lineTo(a.x + (midx - a.x) * Math.min(1, reveal * 2), a.y + (midy - a.y) * Math.min(1, reveal * 2));
-                  if (reveal > 0.5) {
-                      const k = (reveal - 0.5) * 2;
-                      ctx.lineTo(midx + (b.x - midx) * k, midy + (b.y - midy) * k);
-                  }
+                  const steps = rt.bend ? 2 : 1;
+                  const p0 = crRoutePos(rt, 0); ctx.beginPath(); ctx.moveTo(p0.x, p0.y);
+                  for (let s = 1; s <= steps; s++) { const p = crRoutePos(rt, (s / steps) * reveal); ctx.lineTo(p.x, p.y); }
                   ctx.stroke();
               });
-              if (crPulseP >= 0 && crSt.pulsePath) {
-                  const rt = crSt.pulsePath;
-                  const a = crP(rt.c, rt.r), b = crP(rt.c2, rt.r2);
-                  const midx = rt.bend ? b.x : a.x, midy = rt.bend ? a.y : b.y;
-                  const seg = crPulseP < 0.5
-                      ? { x: a.x + (midx - a.x) * crPulseP * 2, y: a.y + (midy - a.y) * crPulseP * 2 }
-                      : { x: midx + (b.x - midx) * (crPulseP - 0.5) * 2, y: midy + (b.y - midy) * (crPulseP - 0.5) * 2 };
-                  ctx.fillStyle = crPulseC; ctx.shadowColor = crPulseC; ctx.shadowBlur = 16;
-                  ctx.beginPath(); ctx.arc(seg.x, seg.y, crNodeSize * 0.9, 0, Math.PI * 2); ctx.fill();
-                  ctx.shadowBlur = 0;
-              }
               ctx.fillStyle = crNode;
               for (let r = 0; r < crRows; r++) for (let c = 0; c < crCols; c++) {
                   const p = crP(c, r);
                   ctx.beginPath(); ctx.arc(p.x, p.y, crNodeSize * 0.5, 0, Math.PI * 2); ctx.fill();
+              }
+              for (const ag of crSt.agents) {
+                  const p = crAgentScreen(ag);
+                  if (ag.kind === 'sig') {
+                      ctx.fillStyle = crPulseC; ctx.shadowColor = crPulseC; ctx.shadowBlur = 16;
+                      ctx.beginPath(); ctx.arc(p.x, p.y, crNodeSize * 0.9, 0, Math.PI * 2); ctx.fill();
+                      ctx.shadowBlur = 0;
+                  } else {
+                      const back = crRoutePos(routes[ag.route], Math.max(0, Math.min(1, (ag.entA ? ag.t : 1 - ag.t) + (ag.entA ? -0.06 : 0.06))));
+                      ctx.strokeStyle = crPulseC; ctx.globalAlpha = 0.5; ctx.lineWidth = crNodeSize * 0.5;
+                      ctx.beginPath(); ctx.moveTo(back.x, back.y); ctx.lineTo(p.x, p.y); ctx.stroke(); ctx.globalAlpha = 1;
+                      ctx.fillStyle = crPulseC;
+                      ctx.beginPath(); ctx.arc(p.x, p.y, crNodeSize * 0.55, 0, Math.PI * 2); ctx.fill();
+                  }
               }
               element = canvas;
           } else if (def.uuid === 'spiral-shells-1') {
@@ -8149,7 +8148,7 @@ export default function App() {
               const ss = modifiedSettings;
               const ssSides = Math.max(3, Math.min(12, Math.round(ss.sides ?? 8)));
               const ssRings = Math.max(3, Math.min(44, Math.round(ss.rings ?? 20)));
-              const ssMorph = Math.max(0, Math.min(1, ss.morph ?? 1));
+              const ssSize = Math.max(0.3, Math.min(2, ss.size ?? 1));
               const ssTurns = Math.max(0, Math.min(10, ss.turns ?? 5.5));
               const ssBaseRadius = Math.max(50, Math.min(400, ss.radius ?? 300));
               const ssNoiseAmt = Math.max(0, Math.min(1, ss.noise_amt ?? 0.37));
@@ -8165,7 +8164,7 @@ export default function App() {
               const ssTwEnv = (ssTwT >= 0 && ssTwT < 1.4) ? (1 - ssTwT / 1.4) : 0;
 
               ctx.fillStyle = ssBg; ctx.fillRect(0, 0, targetW, targetH);
-              const ssSc = Math.min(targetW, targetH) / 800;
+              const ssSc = Math.min(targetW, targetH) / 800 * ssSize;
               const ssCx = targetW / 2, ssCy = targetH / 2;
               const ssRot0 = nowSec * 0.15;
               ctx.lineJoin = 'round';
@@ -8176,7 +8175,7 @@ export default function App() {
                   const spiralR = f * ssBaseRadius * ssSc * 0.55 * (1 - ssUwEnv);
                   const ox = ssCx + Math.cos(spiralAng) * spiralR + ssUwEnv * (f - 0.5) * targetW * 0.9;
                   const oy = ssCy + Math.sin(spiralAng) * spiralR * (1 - ssUwEnv);
-                  const ringRot = spiralAng * (0.5 + ssMorph * 0.5) + ssTwEnv * f * 6;
+                  const ringRot = spiralAng + ssTwEnv * f * 6;
                   ctx.strokeStyle = i === 0 ? ssAccent : ssLine;
                   ctx.globalAlpha = 0.25 + 0.75 * (1 - f);
                   ctx.lineWidth = Math.max(0.5, (1.6 - f) * ssSc * 1.3);
@@ -8184,7 +8183,7 @@ export default function App() {
                   for (let k = 0; k <= ssSides; k++) {
                       const a = (k / ssSides) * Math.PI * 2 + ringRot;
                       const wob = 1 + Math.sin(a * 3 + nowSec + i) * ssNoiseAmt * 0.22;
-                      const rr = rad * wob * (1 - ssMorph * 0.12 * Math.cos(a * ssSides));
+                      const rr = rad * wob * (1 - 0.12 * Math.cos(a * ssSides));
                       const px = ox + Math.cos(a) * rr;
                       const py = oy + Math.sin(a) * rr;
                       k ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
@@ -8267,57 +8266,70 @@ export default function App() {
 
               const ta = modifiedSettings;
               const taArcCount = Math.max(2, Math.min(12, Math.round(ta.arc_count ?? 6)));
-              const taCols = Math.max(4, Math.min(20, Math.round(ta.cols ?? 10)));
-              const taRows = Math.max(4, Math.min(20, Math.round(ta.rows ?? 10)));
+              const taCols = Math.max(4, Math.min(20, Math.round(ta.columns ?? 10)));
+              const taRows = taCols;
               const taSeed0 = Math.floor(ta.seed ?? 6051);
               const taArcRatio = Math.max(0.1, Math.min(0.5, ta.arc_ratio ?? 0.2955));
 
               let taSt = truchetArcsStateRef.current[layer.id];
-              if (!taSt) taSt = truchetArcsStateRef.current[layer.id] = { lastReflow: 0, reflowStart: -99, seed: taSeed0, prevSeed: taSeed0, lastTrace: 0, traceStart: -99, traceRow: 0 };
-              const taReflowN = Number(ta.reflow ?? 0), taTraceN = Number(ta.trace ?? 0);
+              if (!taSt) taSt = truchetArcsStateRef.current[layer.id] = { lastReflow: 0, reflowStart: -99, seed: taSeed0, prevSeed: taSeed0, lastPop: 0, popStart: -99, popSalt: 0 };
+              const taReflowN = Number(ta.reflow ?? 0), taPopN = Number(ta.pop ?? 0);
               if (taReflowN > taSt.lastReflow) { taSt.lastReflow = taReflowN; taSt.prevSeed = taSt.seed; taSt.seed = taSeed0 + Math.floor(taReflowN) * 811 + 3; taSt.reflowStart = nowSec; }
-              if (taTraceN > taSt.lastTrace) { taSt.lastTrace = taTraceN; taSt.traceStart = nowSec; taSt.traceRow = Math.floor(Math.random() * taRows); }
+              if (taPopN > taSt.lastPop) { taSt.lastPop = taPopN; taSt.popStart = nowSec; taSt.popSalt += 1; }
               const taReflowT = nowSec - taSt.reflowStart;
               const taReflowP = taReflowT >= 0 && taReflowT < 1.2 ? taReflowT / 1.2 : 1;
-              const taTraceT = nowSec - taSt.traceStart;
-              const taTraceP = taTraceT >= 0 && taTraceT < 1.6 ? taTraceT / 1.6 : -1;
+              const taPopT = nowSec - taSt.popStart;
+              const taPopEnv = taPopT >= 0 && taPopT < 0.9 ? Math.sin(Math.PI * (taPopT / 0.9)) : 0;
               const taHash = (c: number, r: number, s: number) => { const x = Math.sin(c * 127.1 + r * 311.7 + s * 0.017) * 43758.5453; return x - Math.floor(x); };
 
               ctx.fillStyle = taBg; ctx.fillRect(0, 0, targetW, targetH);
               const taTw = targetW / taCols, taTh = targetH / taRows;
               const taTile = Math.min(taTw, taTh);
               ctx.lineCap = 'round';
-              ctx.strokeStyle = taLines;
-              for (let r = 0; r < taRows; r++) {
-                  for (let c = 0; c < taCols; c++) {
-                      const oNew = taHash(c, r, taSt.seed) > 0.5 ? 1 : 0;
-                      const oOld = taHash(c, r, taSt.prevSeed) > 0.5 ? 1 : 0;
-                      const dist = (c + r) / (taCols + taRows);
-                      const o = taReflowP >= 1 ? oNew : (dist < taReflowP ? oNew : oOld);
-                      const x0 = c * taTw + (taTw - taTile) / 2, y0 = r * taTh + (taTh - taTile) / 2;
-                      const corners = o === 0 ? [[0, 0], [1, 1]] : [[1, 0], [0, 1]];
-                      for (const cc of corners) {
-                          const cxU = cc[0], cyU = cc[1];
-                          const ccx = x0 + cxU * taTile, ccy = y0 + cyU * taTile;
-                          const quarter = cxU === cyU ? (cxU === 0 ? 0 : 2) : (cxU === 1 ? 1 : 3);
-                          const sa = quarter * Math.PI / 2, ea = sa + Math.PI / 2;
-                          for (let k = 1; k <= taArcCount; k++) {
-                              const rr = (k / (taArcCount + 0.001)) * taTile * 0.5;
-                              ctx.lineWidth = Math.max(0.5, taTile * 0.5 / taArcCount * taArcRatio * 2);
-                              ctx.beginPath();
-                              ctx.arc(ccx, ccy, rr, sa, ea);
-                              ctx.stroke();
-                          }
+
+              const taDrawTile = (c: number, r: number, scale: number, col: string) => {
+                  const oNew = taHash(c, r, taSt.seed) > 0.5 ? 1 : 0;
+                  const oOld = taHash(c, r, taSt.prevSeed) > 0.5 ? 1 : 0;
+                  const dist = (c + r) / (taCols + taRows);
+                  const o = taReflowP >= 1 ? oNew : (dist < taReflowP ? oNew : oOld);
+                  const cx = c * taTw + taTw / 2, cy = r * taTh + taTh / 2;
+                  ctx.save();
+                  ctx.translate(cx, cy);
+                  ctx.scale(scale, scale);
+                  ctx.translate(-taTile / 2, -taTile / 2);
+                  ctx.strokeStyle = col;
+                  const corners = o === 0 ? [[0, 0], [1, 1]] : [[1, 0], [0, 1]];
+                  for (const cc of corners) {
+                      const cxU = cc[0], cyU = cc[1];
+                      const ccx = cxU * taTile, ccy = cyU * taTile;
+                      const quarter = cxU === cyU ? (cxU === 0 ? 0 : 2) : (cxU === 1 ? 1 : 3);
+                      const sa = quarter * Math.PI / 2, ea = sa + Math.PI / 2;
+                      for (let k = 1; k <= taArcCount; k++) {
+                          const rr = (k / (taArcCount + 0.001)) * taTile * 0.5;
+                          ctx.lineWidth = Math.max(0.5, taTile * 0.5 / taArcCount * taArcRatio * 2) / scale;
+                          ctx.beginPath();
+                          ctx.arc(ccx, ccy, rr, sa, ea);
+                          ctx.stroke();
                       }
                   }
+                  ctx.restore();
+              };
+
+              const taPopped: [number, number][] = [];
+              for (let r = 0; r < taRows; r++) {
+                  for (let c = 0; c < taCols; c++) {
+                      if (taPopEnv > 0 && taHash(c, r, taSt.popSalt + 7000) < 0.28) { taPopped.push([c, r]); continue; }
+                      taDrawTile(c, r, 1, taLines);
+                  }
               }
-              if (taTraceP >= 0) {
-                  const rowY = (taSt.traceRow + 0.5) * taTh;
-                  const x = taTraceP * targetW;
-                  const y = rowY + Math.sin(x / taTile * Math.PI) * taTile * 0.42;
-                  ctx.fillStyle = taAccent; ctx.shadowColor = taAccent; ctx.shadowBlur = 18;
-                  ctx.beginPath(); ctx.arc(x, y, taTile * 0.12, 0, Math.PI * 2); ctx.fill();
-                  ctx.shadowBlur = 0;
+              // popped tiles scale up toward the viewer, drawn on top with a drop shadow
+              for (const [c, r] of taPopped) {
+                  const sc = 1 + taPopEnv * 1.1;
+                  ctx.shadowColor = 'rgba(0,0,0,0.55)';
+                  ctx.shadowBlur = 18 * taPopEnv;
+                  ctx.shadowOffsetX = 6 * taPopEnv; ctx.shadowOffsetY = 8 * taPopEnv;
+                  taDrawTile(c, r, sc, taAccent);
+                  ctx.shadowBlur = 0; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 0;
               }
               element = canvas;
           } else if (def.uuid === 'voxel-cross-1') {
@@ -8351,16 +8363,34 @@ export default function App() {
               const vcRotEase = vcRotP < 1 ? (vcRotP < 0.5 ? 2 * vcRotP * vcRotP : 1 - Math.pow(-2 * vcRotP + 2, 2) / 2) : 1;
               const vcYaw = (vcSt.yawFrom + (vcSt.yawTo - vcSt.yawFrom) * vcRotEase) + nowSec * vcSpin * 0.5;
 
+              // A solid 3D plus: three rectangular bars (thickness `vcThick` -> (2*thick+1) wide)
+              // of length `vcRes` crossing at the origin. Only surface voxels are drawn.
+              const vcThick = vcRes >= 5 ? 2 : 1;
+              const vcArm = vcRes;
+              const vcOcc = new Set<string>();
+              const vcInside = (i: number, j: number, k: number) => {
+                  const ai = Math.abs(i), aj = Math.abs(j), ak = Math.abs(k);
+                  return (ai <= vcArm && aj <= vcThick && ak <= vcThick)
+                      || (aj <= vcArm && ai <= vcThick && ak <= vcThick)
+                      || (ak <= vcArm && ai <= vcThick && aj <= vcThick);
+              };
+              for (let i = -vcArm; i <= vcArm; i++) for (let j = -vcArm; j <= vcArm; j++) for (let k = -vcArm; k <= vcArm; k++) {
+                  if (vcInside(i, j, k)) vcOcc.add(i + ',' + j + ',' + k);
+              }
               const voxels: { i: number; j: number; k: number }[] = [];
-              for (let i = -vcRes; i <= vcRes; i++) for (let j = -vcRes; j <= vcRes; j++) for (let k = -vcRes; k <= vcRes; k++) {
-                  const onAxis = (i !== 0 ? 1 : 0) + (j !== 0 ? 1 : 0) + (k !== 0 ? 1 : 0);
-                  if (onAxis > 1) continue;
-                  if (onAxis === 1 && vcHash(i * 31 + j * 71 + k * 131 + 500) > vcFill) continue;
+              for (const key of vcOcc) {
+                  const [i, j, k] = key.split(',').map(Number);
+                  const surface = !vcOcc.has((i + 1) + ',' + j + ',' + k) || !vcOcc.has((i - 1) + ',' + j + ',' + k)
+                      || !vcOcc.has(i + ',' + (j + 1) + ',' + k) || !vcOcc.has(i + ',' + (j - 1) + ',' + k)
+                      || !vcOcc.has(i + ',' + j + ',' + (k + 1)) || !vcOcc.has(i + ',' + j + ',' + (k - 1));
+                  if (!surface) continue;
+                  // `fill` thins out the arm cubes (never the central block) for a chunkier look
+                  if (Math.max(Math.abs(i), Math.abs(j), Math.abs(k)) > vcThick && vcHash(i * 31 + j * 71 + k * 131 + 500) > vcFill) continue;
                   voxels.push({ i, j, k });
               }
               ctx.fillStyle = vcBg; ctx.fillRect(0, 0, targetW, targetH);
-              const vcS = Math.min(targetW, targetH) / (vcRes * 4 + 6);
-              const vcStep = 1 + vcGap * 0.15;
+              const vcS = Math.min(targetW, targetH) / ((vcArm + vcThick) * 2.4 + 4);
+              const vcStep = 1 + vcGap * 0.12;
               const vcCx = targetW / 2, vcCy = targetH / 2;
               const vcCosY = Math.cos(vcYaw), vcSinY = Math.sin(vcYaw);
               const vcProj = (i: number, j: number, k: number) => {
@@ -8369,7 +8399,7 @@ export default function App() {
                   return { sx: vcCx + (rx - rz) * vcS, sy: vcCy + (rx + rz) * vcS * 0.5 - k * vcStep * vcS, depth: rx + rz + k };
               };
               voxels.sort((a, b) => vcProj(a.i, a.j, a.k).depth - vcProj(b.i, b.j, b.k).depth);
-              const vcSCube = vcS * 0.96;
+              const vcSCube = vcS * 0.66;
               for (const v of voxels) {
                   const dist = Math.hypot(v.i, v.j, v.k) || 1;
                   const push = vcDisEnv * (1.4 + dist * 0.6);
@@ -8408,30 +8438,36 @@ export default function App() {
               const fsSeed0 = Math.floor(fs.seed ?? 7);
 
               let fsSt = flowStrokesStateRef.current[layer.id];
-              if (!fsSt) fsSt = flowStrokesStateRef.current[layer.id] = { lastGust: 0, gustStart: -99, lastRecomp: 0, recompStart: -99, seed: fsSeed0, prevSeed: fsSeed0 };
-              const fsGustN = Number(fs.gust ?? 0), fsRecompN = Number(fs.recompute ?? 0);
+              if (!fsSt) fsSt = flowStrokesStateRef.current[layer.id] = { lastGust: 0, gustStart: -99, lastCenter: 0, centerStart: -99 };
+              const fsGustN = Number(fs.gust ?? 0), fsCenterN = Number(fs.center ?? 0);
               if (fsGustN > fsSt.lastGust) { fsSt.lastGust = fsGustN; fsSt.gustStart = nowSec; }
-              if (fsRecompN > fsSt.lastRecomp) { fsSt.lastRecomp = fsRecompN; fsSt.prevSeed = fsSt.seed; fsSt.seed = fsSeed0 + Math.floor(fsRecompN) * 419 + 11; fsSt.recompStart = nowSec; }
+              if (fsCenterN > fsSt.lastCenter) { fsSt.lastCenter = fsCenterN; fsSt.centerStart = nowSec; }
               const fsGustT = nowSec - fsSt.gustStart;
               const fsGustP = fsGustT >= 0 && fsGustT < 1.5 ? fsGustT / 1.5 : -1;
-              const fsRecompT = nowSec - fsSt.recompStart;
-              const fsRecompMix = fsRecompT >= 0 && fsRecompT < 1.4 ? fsRecompT / 1.4 : 1;
+              const fsCenterT = nowSec - fsSt.centerStart;
+              const fsCenterEnv = fsCenterT >= 0 && fsCenterT < 2.2 ? Math.sin(Math.PI * Math.min(1, fsCenterT / 2.2)) : 0;
 
-              const fsField = (x: number, y: number, s: number) => {
+              const fsField = (x: number, y: number) => {
                   const u = x / fsScale, v = y / fsScale;
-                  return Math.sin(u + s * 0.3) * 1.7 + Math.cos(v * 1.3 - s * 0.21) * 1.3 + Math.sin((u + v) * 0.7 + nowSec * fsCurl * 0.6) * 1.1;
+                  return Math.sin(u + fsSeed0 * 0.3) * 1.7 + Math.cos(v * 1.3 - fsSeed0 * 0.21) * 1.3 + Math.sin((u + v) * 0.7 + nowSec * fsCurl * 0.6) * 1.1;
               };
               ctx.fillStyle = fsBg; ctx.fillRect(0, 0, targetW, targetH);
               ctx.strokeStyle = fsLines; ctx.lineCap = 'round';
               const fsGx = targetW / fsGrid, fsGy = targetH / fsGrid;
               ctx.lineWidth = Math.max(0.6, Math.min(fsGx, fsGy) * 0.12);
               const fsL = fsLen * Math.min(targetW, targetH) / 700;
+              const fsCx = targetW / 2, fsCy = targetH / 2;
               for (let r = 0; r <= fsGrid; r++) {
                   for (let c = 0; c <= fsGrid; c++) {
                       const px = c * fsGx, py = r * fsGy;
-                      const aA = fsField(px, py, fsSt.prevSeed);
-                      const aB = fsField(px, py, fsSt.seed);
-                      let ang = aA + (aB - aA) * fsRecompMix;
+                      let ang = fsField(px, py);
+                      if (fsCenterEnv > 0) {
+                          // rotate each stroke toward pointing at the canvas centre (shortest path)
+                          const toC = Math.atan2(fsCy - py, fsCx - px);
+                          let d = toC - ang;
+                          d = Math.atan2(Math.sin(d), Math.cos(d));
+                          ang += d * fsCenterEnv;
+                      }
                       if (fsGustP >= 0) {
                           const front = fsGustP * targetW * 1.2;
                           const behind = front - px;
@@ -8537,17 +8573,16 @@ export default function App() {
               const dmFloodC = resolvedGenerativeColors['flood'] || '#eb556b';
 
               const dm = modifiedSettings;
-              const dmCols = Math.max(8, Math.min(40, Math.round(dm.cols ?? 18)));
-              const dmRows = Math.max(10, Math.min(48, Math.round(dm.rows ?? 22)));
+              const dmCols = Math.max(8, Math.min(40, Math.round(dm.columns ?? 18)));
+              const dmRows = dmCols;
               const dmLineW = Math.max(0.1, Math.min(1, dm.line_width ?? 0.3));
               const dmNoiseScale = Math.max(0.005, Math.min(0.1, dm.noise_scale ?? 0.036));
               const dmDensity = Math.max(0, Math.min(1, dm.density ?? 0.6));
-              const dmSeed = Math.floor(dm.seed ?? 5);
 
               let dmSt = deltaMazeStateRef.current[layer.id];
-              if (!dmSt) dmSt = deltaMazeStateRef.current[layer.id] = { lastCarve: 0, carveStart: -99, seed: dmSeed, lastFlood: 0, floodStart: -99 };
+              if (!dmSt) dmSt = deltaMazeStateRef.current[layer.id] = { lastCarve: 0, carveStart: -99, seed: 777, lastFlood: 0, floodStart: -99 };
               const dmCarveN = Number(dm.carve ?? 0), dmFloodN = Number(dm.flood ?? 0);
-              if (dmCarveN > dmSt.lastCarve) { dmSt.lastCarve = dmCarveN; dmSt.seed = dmSeed + Math.floor(dmCarveN) * 331 + 1; dmSt.carveStart = nowSec; }
+              if (dmCarveN > dmSt.lastCarve) { dmSt.lastCarve = dmCarveN; dmSt.seed = 777 + Math.floor(dmCarveN) * 331 + 1; dmSt.carveStart = nowSec; }
               if (dmFloodN > dmSt.lastFlood) { dmSt.lastFlood = dmFloodN; dmSt.floodStart = nowSec; }
               const dmCarveT = nowSec - dmSt.carveStart;
               const dmCarveP = dmCarveT >= 0 && dmCarveT < 1.6 ? dmCarveT / 1.6 : 1;
@@ -8600,8 +8635,8 @@ export default function App() {
               const tnMinR = Math.max(20, Math.min(200, tn.min_radius ?? 100));
               const tnWobble = Math.max(0, Math.min(0.5, tn.wobble ?? 0.185));
               const tnWeight = Math.max(0.3, Math.min(3, tn.line_weight ?? 1));
-              const tnSeed = Math.floor(tn.seed ?? 11);
-              const tnRnd = (n: number) => { const x = Math.sin(n * 127.1 + 311.7 + tnSeed * 0.19) * 43758.5453; return x - Math.floor(x); };
+              const tnCenter = Math.max(0, Math.min(1, tn.center ?? 0.2));
+              const tnRnd = (n: number) => { const x = Math.sin(n * 127.1 + 311.7 + 11 * 0.19) * 43758.5453; return x - Math.floor(x); };
 
               let tnSt = threadNestStateRef.current[layer.id];
               if (!tnSt) tnSt = threadNestStateRef.current[layer.id] = { lastTighten: 0, tightenStart: -99, lastUnspool: 0, unspoolStart: -99 };
@@ -8618,9 +8653,9 @@ export default function App() {
               const tnSc = Math.min(targetW, targetH) / 520;
               ctx.strokeStyle = tnLines; ctx.lineWidth = tnWeight * tnSc * 0.7; ctx.lineJoin = 'round';
               for (let i = 0; i < tnCount; i++) {
-                  const baseR = (tnMinR + tnRnd(i * 1.7) * tnMinR * 1.3) * tnSc * (1 - tnTightEnv * 0.55);
-                  const jx = (tnRnd(i * 3.3) - 0.5) * tnMinR * 0.8 * tnSc * (1 - tnTightEnv);
-                  const jy = (tnRnd(i * 5.1) - 0.5) * tnMinR * 0.8 * tnSc * (1 - tnTightEnv);
+                  const baseR = (tnMinR + tnRnd(i * 1.7) * tnMinR * 1.3 * (1 - tnCenter * 0.6)) * tnSc * (1 - tnTightEnv * 0.55);
+                  const jx = (tnRnd(i * 3.3) - 0.5) * tnMinR * 0.8 * tnSc * (1 - tnTightEnv) * (1 - tnCenter);
+                  const jy = (tnRnd(i * 5.1) - 0.5) * tnMinR * 0.8 * tnSc * (1 - tnTightEnv) * (1 - tnCenter);
                   const ox = tnCx + jx, oy = tnCy + jy;
                   const ph = tnRnd(i * 7.9) * 10;
                   const rotW = nowSec * (0.1 + tnRnd(i * 2.1) * 0.3) * (i % 2 ? 1 : -1);
@@ -8710,77 +8745,6 @@ export default function App() {
                       ctx.beginPath();
                       ctx.moveTo(x, y - ibS); ctx.lineTo(x + ibS, y - ibS * 0.5); ctx.lineTo(x, y); ctx.lineTo(x - ibS, y - ibS * 0.5);
                       ctx.closePath(); ctx.fill();
-                  }
-              }
-              ctx.globalAlpha = 1;
-              element = canvas;
-          } else if (def.uuid === 'letter-storm-1') {
-              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
-              const canvas = sphereCanvasRef.current[layer.id];
-              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
-              const ctx = canvas.getContext('2d')!;
-
-              const lsBg = resolvedGenerativeColors['background'] || '#000000';
-              const lsLetters = resolvedGenerativeColors['letters'] || '#ffffff';
-
-              const ls = modifiedSettings;
-              const lsDim = Math.max(6, Math.min(40, Math.round(ls.grid_dimension ?? 27)));
-              const lsSeed = Math.floor(ls.seed ?? 100);
-              const lsScaleVar = Math.max(0, Math.min(1, ls.scale_var ?? 0.6));
-              const lsRotVar = Math.max(0, Math.min(1, ls.rotation_var ?? 0.3));
-              const lsWordRaw = String((ls as any).word ?? 'SHARP');
-              const lsWord = (lsWordRaw.length ? lsWordRaw : 'SHARP').toUpperCase();
-
-              let lsSt = letterStormStateRef.current[layer.id];
-              if (!lsSt) lsSt = letterStormStateRef.current[layer.id] = { lastScramble: 0, scrambleStart: -99, lastSpell: 0, spellStart: -99, salt: 0 };
-              const lsScrN = Number(ls.scramble ?? 0), lsSpN = Number(ls.spell ?? 0);
-              if (lsScrN > lsSt.lastScramble) { lsSt.lastScramble = lsScrN; lsSt.scrambleStart = nowSec; lsSt.salt += 1; }
-              if (lsSpN > lsSt.lastSpell) { lsSt.lastSpell = lsSpN; lsSt.spellStart = nowSec; }
-              const lsScrT = nowSec - lsSt.scrambleStart;
-              const lsScrEnv = lsScrT >= 0 && lsScrT < 2.0 ? Math.sin(Math.PI * Math.min(1, lsScrT / 2.0)) : 0;
-              const lsSpT = nowSec - lsSt.spellStart;
-              const lsSpEnv = lsSpT >= 0 && lsSpT < 2.4 ? Math.sin(Math.PI * Math.min(1, lsSpT / 2.4)) : 0;
-
-              const lsRnd = (n: number) => { const x = Math.sin(n * 127.1 + 311.7 + (lsSeed + lsSt.salt) * 0.37) * 43758.5453; return x - Math.floor(x); };
-
-              ctx.fillStyle = lsBg; ctx.fillRect(0, 0, targetW, targetH);
-              ctx.fillStyle = lsLetters;
-              ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-              const lsCell = Math.min(targetW, targetH) / lsDim;
-              const lsNx = Math.ceil(targetW / lsCell), lsNy = Math.ceil(targetH / lsCell);
-              const lsCx = targetW / 2, lsCy = targetH / 2;
-              const lsSpellSize = Math.min(targetW / (lsWord.length + 1), targetH * 0.5);
-              for (let gy = 0; gy < lsNy; gy++) {
-                  for (let gx = 0; gx < lsNx; gx++) {
-                      const i = gy * lsNx + gx;
-                      let bx = gx * lsCell + lsCell / 2;
-                      let by = gy * lsCell + lsCell / 2;
-                      let li = Math.floor(lsRnd(i * 1.3) * lsWord.length) % lsWord.length;
-                      let sizeF = 0.6 + lsRnd(i * 2.7) * (0.6 + lsScaleVar * 2.4);
-                      let rot = (lsRnd(i * 4.1) - 0.5) * lsRotVar * Math.PI;
-                      if (lsScrEnv > 0) {
-                          const ang = Math.atan2(by - lsCy, bx - lsCx) + lsScrEnv * 6 + i * 0.02;
-                          const rad = Math.hypot(bx - lsCx, by - lsCy) * (1 - lsScrEnv * 0.3) + lsScrEnv * 40 * Math.sin(i + nowSec * 3);
-                          bx = bx + (lsCx + Math.cos(ang) * rad - bx) * lsScrEnv;
-                          by = by + (lsCy + Math.sin(ang) * rad - by) * lsScrEnv;
-                          rot += lsScrEnv * 4;
-                      }
-                      if (lsSpEnv > 0) {
-                          const wi = i % lsWord.length;
-                          const tx = lsCx + (wi - (lsWord.length - 1) / 2) * lsSpellSize;
-                          bx = bx + (tx - bx) * lsSpEnv;
-                          by = by + (lsCy - by) * lsSpEnv;
-                          rot *= (1 - lsSpEnv);
-                          sizeF = sizeF + (lsSpellSize / lsCell * 0.9 - sizeF) * lsSpEnv;
-                          li = lsSpEnv > 0.5 ? wi : li;
-                      }
-                      ctx.save();
-                      ctx.translate(bx, by);
-                      ctx.rotate(rot);
-                      ctx.font = `900 ${Math.max(6, lsCell * sizeF)}px Arial, sans-serif`;
-                      ctx.globalAlpha = 0.55 + 0.45 * lsRnd(i * 8.8);
-                      ctx.fillText(lsWord[li] || '?', 0, 0);
-                      ctx.restore();
                   }
               }
               ctx.globalAlpha = 1;
@@ -14476,7 +14440,6 @@ return (
                                    if (uuid === 'floating-gem-canvas-1') return '💎';
                                    if (uuid === 'confetti-scatter-canvas-1') return '🎊';
                                    if (uuid === 'woven-hex-blocks-1') return '⬡';
-                                   if (uuid === 'triangle-decay-1') return '🔻';
                                    if (uuid === 'circuit-routes-1') return '🔌';
                                    if (uuid === 'spiral-shells-1') return '🐚';
                                    if (uuid === 'polar-checker-1') return '🎯';
@@ -14487,7 +14450,6 @@ return (
                                    if (uuid === 'delta-maze-1') return '🔺';
                                    if (uuid === 'thread-nest-1') return '🧶';
                                    if (uuid === 'iso-bar-wave-1') return '📊';
-                                   if (uuid === 'letter-storm-1') return '🔤';
                                    if (uuid === 'bubble-spheres-1') return '🫧';
                                    if (uuid === 'dancing-cubes-canvas-1') return '🎲';
                                    return '✨';

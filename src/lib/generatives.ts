@@ -1682,7 +1682,7 @@ void main(void) {
   },
   {
     header: `/*{
-  "description": "Woven Hex Blocks",
+  "description": "Woven Blocks",
   "category": "Geometric",
   "color": "black",
   "movement": true,
@@ -1693,7 +1693,7 @@ void main(void) {
     { "name": "taper",      "min": -1.0, "max": 1.0,  "default": -0.9, "type": "number" },
     { "name": "band_ratio", "min": 0.05, "max": 0.6,  "default": 0.25, "type": "number" },
     { "name": "spread",     "min": 0.35, "max": 1.6,  "default": 0.9,  "type": "number" },
-    { "name": "seed",       "min": 0.0,  "max": 999.0,"default": 43.0, "type": "number" },
+    { "name": "size",       "min": 0.3,  "max": 2.0,  "default": 1.0,  "type": "number" },
     { "name": "reweave",  "default": 0, "type": "action" },
     { "name": "collapse", "default": 0, "type": "action" }
   ],
@@ -1708,43 +1708,17 @@ void main(void) {
   },
   {
     header: `/*{
-  "description": "Triangle Decay",
-  "category": "Geometric",
-  "color": "black",
-  "movement": true,
-  "defaultPaletteId": "monochrome_duo",
-  "parameters": [
-    { "name": "cols",        "min": 10.0, "max": 80.0, "default": 57.0, "type": "number" },
-    { "name": "rows",        "min": 6.0,  "max": 48.0, "default": 29.0, "type": "number" },
-    { "name": "decay_start", "min": 0.0,  "max": 1.0,  "default": 0.24, "type": "number" },
-    { "name": "chaos",       "min": 0.0,  "max": 1.0,  "default": 0.6,  "type": "number" },
-    { "name": "seed",        "min": 0.0,  "max": 999.0,"default": 42.0, "type": "number" },
-    { "name": "avalanche", "default": 0, "type": "action" },
-    { "name": "reseed",    "default": 0, "type": "action" }
-  ],
-  "elements": [
-    { "id": "background", "name": "Background", "defaultColor": "#000000" },
-    { "id": "fill", "name": "Triangle Fill", "defaultColor": "#ffffff" },
-    { "id": "accent", "name": "Fault Line", "defaultColor": "#eb556b" }
-  ],
-  "uuid": "triangle-decay-1"
-}*/`,
-    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
-  },
-  {
-    header: `/*{
   "description": "Circuit Routes",
   "category": "Retro",
   "color": "black",
   "movement": true,
   "defaultPaletteId": "acid_matrix",
   "parameters": [
-    { "name": "cols",          "min": 8.0,  "max": 40.0, "default": 19.0, "type": "number" },
-    { "name": "rows",          "min": 8.0,  "max": 40.0, "default": 20.0, "type": "number" },
+    { "name": "columns",       "min": 8.0,  "max": 40.0, "default": 19.0, "type": "number" },
     { "name": "node_size",     "min": 1.0,  "max": 10.0, "default": 5.0,  "type": "number" },
     { "name": "route_density", "min": 0.0,  "max": 0.5,  "default": 0.13, "type": "number" },
     { "name": "jitter",        "min": 0.0,  "max": 30.0, "default": 0.0,  "type": "number" },
-    { "name": "seed",          "min": 0.0,  "max": 999.0,"default": 90.0, "type": "number" },
+    { "name": "roamers",       "min": 0.0,  "max": 24.0, "default": 5.0,  "type": "number" },
     { "name": "pulse_route", "default": 0, "type": "action" },
     { "name": "rewire",      "default": 0, "type": "action" }
   ],
@@ -1768,7 +1742,7 @@ void main(void) {
   "parameters": [
     { "name": "sides",     "min": 3.0,  "max": 12.0, "default": 8.0,  "type": "number" },
     { "name": "rings",     "min": 3.0,  "max": 44.0, "default": 20.0, "type": "number" },
-    { "name": "morph",     "min": 0.0,  "max": 1.0,  "default": 1.0,  "type": "number" },
+    { "name": "size",      "min": 0.3,  "max": 2.0,  "default": 1.0,  "type": "number" },
     { "name": "turns",     "min": 0.0,  "max": 10.0, "default": 5.5,  "type": "number" },
     { "name": "radius",    "min": 50.0, "max": 400.0,"default": 300.0,"type": "number" },
     { "name": "noise_amt", "min": 0.0,  "max": 1.0,  "default": 0.37, "type": "number" },
@@ -1819,17 +1793,16 @@ void main(void) {
   "defaultPaletteId": "monochrome_duo",
   "parameters": [
     { "name": "arc_count", "min": 2.0,  "max": 12.0,   "default": 6.0,    "type": "number" },
-    { "name": "cols",      "min": 4.0,  "max": 20.0,   "default": 10.0,   "type": "number" },
-    { "name": "rows",      "min": 4.0,  "max": 20.0,   "default": 10.0,   "type": "number" },
+    { "name": "columns",   "min": 4.0,  "max": 20.0,   "default": 10.0,   "type": "number" },
     { "name": "seed",      "min": 0.0,  "max": 9999.0, "default": 6051.0, "type": "number" },
     { "name": "arc_ratio", "min": 0.1,  "max": 0.5,    "default": 0.2955, "type": "number" },
     { "name": "reflow", "default": 0, "type": "action" },
-    { "name": "trace",  "default": 0, "type": "action" }
+    { "name": "pop",    "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#000000" },
     { "id": "lines", "name": "Arcs", "defaultColor": "#ffffff" },
-    { "id": "accent", "name": "Trace Dot", "defaultColor": "#eb556b" }
+    { "id": "accent", "name": "Popped Tiles", "defaultColor": "#eb556b" }
   ],
   "uuid": "truchet-arcs-1"
 }*/`,
@@ -1874,8 +1847,8 @@ void main(void) {
     { "name": "stroke_length", "min": 2.0,  "max": 30.0,  "default": 11.54,  "type": "number" },
     { "name": "curl",          "min": 0.0,  "max": 1.0,   "default": 0.3,    "type": "number" },
     { "name": "seed",          "min": 0.0,  "max": 999.0, "default": 7.0,    "type": "number" },
-    { "name": "gust",      "default": 0, "type": "action" },
-    { "name": "recompute", "default": 0, "type": "action" }
+    { "name": "gust",   "default": 0, "type": "action" },
+    { "name": "center", "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#000000" },
@@ -1919,12 +1892,10 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "monochrome_duo",
   "parameters": [
-    { "name": "cols",        "min": 8.0,   "max": 40.0,  "default": 18.0,  "type": "number" },
-    { "name": "rows",        "min": 10.0,  "max": 48.0,  "default": 22.0,  "type": "number" },
+    { "name": "columns",     "min": 8.0,   "max": 40.0,  "default": 18.0,  "type": "number" },
     { "name": "line_width",  "min": 0.1,   "max": 1.0,   "default": 0.3,   "type": "number" },
     { "name": "noise_scale", "min": 0.005, "max": 0.1,   "default": 0.036, "type": "number" },
     { "name": "density",     "min": 0.0,   "max": 1.0,   "default": 0.6,   "type": "number" },
-    { "name": "seed",        "min": 0.0,   "max": 999.0, "default": 5.0,   "type": "number" },
     { "name": "carve", "default": 0, "type": "action" },
     { "name": "flood", "default": 0, "type": "action" }
   ],
@@ -1950,7 +1921,7 @@ void main(void) {
     { "name": "min_radius",  "min": 20.0, "max": 200.0, "default": 100.0, "type": "number" },
     { "name": "wobble",      "min": 0.0,  "max": 0.5,   "default": 0.185, "type": "number" },
     { "name": "line_weight", "min": 0.3,  "max": 3.0,   "default": 1.0,   "type": "number" },
-    { "name": "seed",        "min": 0.0,  "max": 999.0, "default": 11.0,  "type": "number" },
+    { "name": "center",      "min": 0.0,  "max": 1.0,   "default": 0.2,   "type": "number" },
     { "name": "tighten", "default": 0, "type": "action" },
     { "name": "unspool", "default": 0, "type": "action" }
   ],
@@ -1987,30 +1958,6 @@ void main(void) {
   "uuid": "iso-bar-wave-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
-  },
-  {
-    header: `/*{
-  "description": "Letter Storm",
-  "category": "Text",
-  "color": "black",
-  "movement": true,
-  "defaultPaletteId": "monochrome_duo",
-  "parameters": [
-    { "name": "grid_dimension", "min": 6.0, "max": 40.0,  "default": 27.0, "type": "number" },
-    { "name": "seed",           "min": 0.0, "max": 999.0, "default": 100.0,"type": "number" },
-    { "name": "scale_var",      "min": 0.0, "max": 1.0,   "default": 0.6,  "type": "number" },
-    { "name": "rotation_var",   "min": 0.0, "max": 1.0,   "default": 0.3,  "type": "number" },
-    { "name": "word", "default": "SHARP", "type": "string" },
-    { "name": "scramble", "default": 0, "type": "action" },
-    { "name": "spell",    "default": 0, "type": "action" }
-  ],
-  "elements": [
-    { "id": "background", "name": "Background", "defaultColor": "#000000" },
-    { "id": "letters", "name": "Letters", "defaultColor": "#ffffff" }
-  ],
-  "uuid": "letter-storm-1"
-}*/`,
-    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   }
 ];
 
@@ -2030,7 +1977,6 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'floating-gem-canvas-1': 'Geometric',
   'confetti-scatter-canvas-1': 'Geometric',
   'woven-hex-blocks-1': 'Geometric',
-  'triangle-decay-1': 'Geometric',
   'spiral-shells-1': 'Geometric',
   'polar-checker-1': 'Geometric',
   'voxel-cross-1': 'Geometric',
@@ -2052,7 +1998,6 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'text-boat-sea-canvas-1': 'Text',
   'dragon-text-mask-canvas-1': 'Text',
   'number-paths-canvas-1': 'Text',
-  'letter-storm-1': 'Text',
   // Lines & Terrain
   'vein-labyrinth-canvas-1': 'Lines & Terrain',
   'terrain-lines-canvas-1': 'Lines & Terrain',
