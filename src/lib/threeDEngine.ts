@@ -761,14 +761,15 @@ export class ThreeDEngine {
     // the last rendered canvas without touching THREE at all. This is what keeps
     // an idle 3D layer (esp. a heavy splat) from pegging the main thread.
     const c = st.camera;
+    const r2 = (n: number) => n.toFixed(2); // round params so sub-perceptual easing tails don't bust the cache
     const frameKey = [
-      c.pitch.toFixed(3), c.yaw.toFixed(3), c.roll.toFixed(3), c.radius.toFixed(4),
-      c.anchor.x.toFixed(3), c.anchor.y.toFixed(3), c.anchor.z.toFixed(3),
-      params.fov, params.bg,
-      params.pos_x, params.pos_y, params.pos_z, params.rot_x, params.rot_y, params.rot_z,
-      params.glitch, params.reconstruction, params.point_cloud,
-      params.clipMode, params.clip_radius, params.clip_w, params.clip_h, params.clip_d,
-      st.showAnchor ? 1 : 0, st.boundingRadius.toFixed(4), w, h,
+      c.pitch.toFixed(2), c.yaw.toFixed(2), c.roll.toFixed(2), c.radius.toFixed(3),
+      c.anchor.x.toFixed(2), c.anchor.y.toFixed(2), c.anchor.z.toFixed(2),
+      r2(params.fov), params.bg.toFixed(3),
+      r2(params.pos_x), r2(params.pos_y), r2(params.pos_z), r2(params.rot_x), r2(params.rot_y), r2(params.rot_z),
+      r2(params.glitch), r2(params.reconstruction), r2(params.point_cloud),
+      params.clipMode, r2(params.clip_radius), r2(params.clip_w), r2(params.clip_h), r2(params.clip_d),
+      st.showAnchor ? 1 : 0, st.boundingRadius.toFixed(3), w, h,
       animating ? Math.floor(t * 60) : 0,
     ].join('|');
     if (st.renderCache && st.renderCacheKey === frameKey) return st.renderCache;

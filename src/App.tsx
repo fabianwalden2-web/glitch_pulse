@@ -54,7 +54,8 @@ import {
   Webcam,
   Move3d,
   Crosshair,
-  Focus
+  Focus,
+  ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition, BUILTIN_PALETTES, GenerativeElement, ColorPalettePreset, GENERATIVE_CATEGORY_ORDER } from './lib/generatives';
@@ -1872,6 +1873,9 @@ export default function App() {
   }, []);
   const imageRefs = useRef<Record<string, HTMLImageElement | null>>({});
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Detached "pop-out" window that mirrors the main render canvas (drag to another screen).
+  const popoutWinRef = useRef<Window | null>(null);
+  const popoutCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const prevFrameRef = useRef<Record<string, Uint8ClampedArray>>({});
   const echoBufferRef = useRef<Uint8ClampedArray[]>([]);
   const lastFrameTimeRef = useRef<number>(0);
@@ -8030,25 +8034,35 @@ export default function App() {
                   }
               }
 
+              const range = (p.max ?? 1) - (p.min ?? 0);
+              // Rotation params loop through the full circle when triggered past an
+              // end (350 + 30 -> 20) instead of clamping. pitch stays clamped (gimbal).
+              const isAngular = p.name === 'yaw' || p.name === 'roll' || p.name === 'rot_x' || p.name === 'rot_y' || p.name === 'rot_z';
+              const isNavParam = p.name === 'pitch' || p.name === 'zoom' || isAngular;
+
               let targetVal = baseVal;
               if (isTriggerActive) {
                   const amount = layer.threeDTriggerAmount?.[p.name] ?? 0;
-                  const range = (p.max ?? 1) - (p.min ?? 0);
-                  targetVal = Math.max(p.min ?? 0, Math.min(p.max ?? 1, baseVal + amount * range * activeMagnitude));
+                  const raw = baseVal + amount * range * activeMagnitude;
+                  if (isAngular) {
+                      const span = range || 360;
+                      targetVal = (((raw - (p.min ?? 0)) % span) + span) % span + (p.min ?? 0);
+                  } else {
+                      targetVal = Math.max(p.min ?? 0, Math.min(p.max ?? 1, raw));
+                  }
               }
 
               const easeKey = '3d-' + layer.id + '-' + p.name;
-              // Camera-nav params (orbit + zoom) are also driven by direct mouse
-              // drag in the canvas -- easing them would fight the drag and cause a
-              // "snap back then slide" after release. Apply those immediately;
-              // keep the easing ref synced so it's correct if a trigger later rides on top.
-              const isNavParam = p.name === 'pitch' || p.name === 'yaw' || p.name === 'roll' || p.name === 'zoom';
               let finalVal: number;
-              if (isNavParam) {
+              if (isNavParam || !isTriggerActive) {
+                // No easing: orbit/rotation triggers + plain knob edits land at once.
+                // An untriggered param settling in one frame is also what lets the
+                // engine's render cache go cold instead of re-rendering for ~40 frames.
                 finalVal = targetVal;
               } else {
                 const currentEased = parameterEasingRef.current[easeKey] !== undefined ? parameterEasingRef.current[easeKey] : baseVal;
                 finalVal = (currentEased as number) + (targetVal - (currentEased as number)) * 0.15;
+                if (Math.abs(targetVal - finalVal) < (range || 1) * 0.0015) finalVal = targetVal; // snap so easing terminates
               }
               parameterEasingRef.current[easeKey] = finalVal;
               modifiedThreeD[p.name] = finalVal;
@@ -8167,7 +8181,19 @@ export default function App() {
                    }
                    paramEnv = state.currentEnvValue * (state.velocity / 127);
                 }
-                return base + amt * 100 * paramEnv;
+                const modVal = base + amt * 100 * paramEnv;
+                // Live-drive the transform knob dial so the trigger is visible.
+                const _kId = `layer-${layer.id}-param-${paramName}`;
+                const _ln = document.getElementById(`knob-line-${_kId}`);
+                const _ci = document.getElementById(`knob-circle-${_kId}`);
+                if (_ln && _ci) {
+                   const _min = paramName === 'posX' || paramName === 'posY' ? -100 : 0;
+                   const _max = paramName === 'size' ? 200 : paramName === 'rotation' ? 360 : paramName === 'speed' ? 2 : 100;
+                   const _pct = ((modVal - _min) / ((_max - _min) || 1)) * 100;
+                   (_ci as any).style.strokeDashoffset = String(251.2 - (_pct / 100) * 188.4);
+                   _ln.setAttribute('transform', `rotate(${(_pct / 100) * 270 - 135} 50 50)`);
+                }
+                return modVal;
             }
             return base;
         };
@@ -8459,6 +8485,16 @@ export default function App() {
                    const clamped = Math.max(p.min, Math.min(p.max, calculatedVal));
                    modSettings[p.name] = clamped;
                    modSettings[p.id] = clamped;
+
+                   // Live-drive the knob dial so the trigger's effect is visible on the control.
+                   const _kId = `layer-${layer.id}-param-${p.name}`;
+                   const _ln = document.getElementById(`knob-line-${_kId}`);
+                   const _ci = document.getElementById(`knob-circle-${_kId}`);
+                   if (_ln && _ci && range) {
+                      const _pct = ((clamped - p.min) / range) * 100;
+                      (_ci as any).style.strokeDashoffset = String(251.2 - (_pct / 100) * 188.4);
+                      _ln.setAttribute('transform', `rotate(${(_pct / 100) * 270 - 135} 50 50)`);
+                   }
                 }
              }
           }
@@ -9598,6 +9634,20 @@ export default function App() {
       }
     });
 
+    // Mirror the finished frame into the pop-out window, if one is open.
+    const pop = popoutCanvasRef.current;
+    if (pop && popoutWinRef.current && !popoutWinRef.current.closed) {
+      if (pop.width !== mainCanvas.width || pop.height !== mainCanvas.height) {
+        pop.width = mainCanvas.width;
+        pop.height = mainCanvas.height;
+      }
+      const pctx = pop.getContext('2d');
+      if (pctx) pctx.drawImage(mainCanvas, 0, 0);
+    } else if (pop && popoutWinRef.current?.closed) {
+      popoutWinRef.current = null;
+      popoutCanvasRef.current = null;
+    }
+
     requestRef.current = requestAnimationFrame(processFrame);
   }, [layers, resolutionScale, compositionLayout, aspectRatioValue]);
 
@@ -9949,6 +9999,28 @@ export default function App() {
       }
     }
   };
+
+  // Open (or focus) a separate window that mirrors the render canvas. Useful for
+  // watching the output on a second screen while tweaking parameters here.
+  const toggleCanvasPopout = () => {
+    if (popoutWinRef.current && !popoutWinRef.current.closed) {
+      popoutWinRef.current.focus();
+      return;
+    }
+    const win = window.open('', 'glitchpulse_canvas', 'width=1280,height=720');
+    if (!win) return;
+    win.document.title = 'Glitch Pulse — Canvas';
+    win.document.body.style.cssText = 'margin:0;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center;height:100vh';
+    const cv = win.document.createElement('canvas');
+    cv.style.cssText = 'max-width:100vw;max-height:100vh;width:100%;height:100%;object-fit:contain;image-rendering:auto';
+    win.document.body.appendChild(cv);
+    popoutWinRef.current = win;
+    popoutCanvasRef.current = cv;
+    const cleanup = () => { popoutWinRef.current = null; popoutCanvasRef.current = null; };
+    win.addEventListener('beforeunload', cleanup);
+  };
+
+  useEffect(() => () => { try { popoutWinRef.current?.close(); } catch {} }, []);
 
   // ---- Reusable panel bodies (placed in sidebars / hamburger drawer) ----
   const audioSourcesPanel = (
@@ -11061,6 +11133,9 @@ export default function App() {
               <button onClick={toggleFullScreen} className="p-3 rounded-none border transition-colors border-white/20 hover:border-white hover:bg-white hover:text-black">
                 <Maximize size={18} />
               </button>
+              <button onClick={toggleCanvasPopout} title="Open canvas in a separate window" className="p-3 rounded-none border transition-colors border-white/20 hover:border-white hover:bg-white hover:text-black">
+                <ExternalLink size={18} />
+              </button>
             </div>
           </div>
         </main>
@@ -11419,6 +11494,7 @@ return (
                         {/* Center: Knob */}
                         <div className="flex-1 flex justify-center mt-1">
                           <Knob
+                             id={`layer-${layerTarget.id}-param-${p.name}`}
                              value={family === '3d' ? Number(layerTarget.threeDSettings?.[p.name] ?? p.default) : isGen ? (layerTarget.generativeSettings?.[p.name] ?? (p.id ? layerTarget.generativeSettings?.[p.id] : undefined) ?? p.default) : ((p.id ? m.settings?.[p.id] : undefined) ?? m.settings?.[p.name] ?? p.default ?? p.min)}
                              min={p.min}
                              max={p.max}
@@ -11895,6 +11971,7 @@ return (
 
                                   <div className="flex-1 flex justify-center mt-1">
                                     <Knob
+                                       id={`layer-${activeLayer.id}-param-${paramName}`}
                                        value={currentVal}
                                        min={min}
                                        max={max}
