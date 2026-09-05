@@ -29,6 +29,9 @@ export const THREE_D_PARAMETERS: GenerativeParameter[] = [
   { name: 'rot_y', min: -180, max: 180, default: 0, type: 'number', group: 'position' },
   { name: 'rot_z', min: -180, max: 180, default: 0, type: 'number', group: 'position' },
   { name: 'glitch', min: 0, max: 100, default: 0, type: 'number', group: 'object' },
+  // "reconstruction": progressively drops splats/verts so the scene falls apart.
+  { name: 'reconstruction', min: 0, max: 100, default: 0, type: 'number', group: 'object' },
+  // "point_cloud": renders the splat as flat points so the underlying structure shows.
   { name: 'point_cloud', min: 0, max: 100, default: 0, type: 'number', group: 'object' },
   { name: 'clip_radius', min: 10, max: 150, default: 100, type: 'number', group: 'object' },
   { name: 'clip_w', min: 10, max: 150, default: 100, type: 'number', group: 'object' },
@@ -48,7 +51,7 @@ export type ClipMode = 'off' | 'sphere' | 'box';
 export interface ThreeDRenderParams {
   pitch: number; yaw: number; roll: number; zoom: number; fov: number; bg: number;
   pos_x: number; pos_y: number; pos_z: number; rot_x: number; rot_y: number; rot_z: number;
-  glitch: number; point_cloud: number;
+  glitch: number; reconstruction: number; point_cloud: number;
   clip_radius: number; clip_w: number; clip_h: number; clip_d: number;
   clipMode: ClipMode;
 }
@@ -103,10 +106,14 @@ interface LayerState {
   // param is only pushed into st.camera when a knob/trigger actually changed it
   // -- otherwise live mouse-drag nav would be overwritten every frame.
   lastCamParams: { pitch: number; yaw: number; roll: number; zoom: number } | null;
-  // Splat CPU-sort throttle: only re-run viewer.update() (the depth sort) when
-  // the view changed, with a periodic safety refresh.
-  splatSortTick: number;
-  splatLastView: string;
+  // Rendered-frame cache: renderLayer() returns this canvas untouched on frames
+  // where nothing that affects the output changed, so an idle 3D layer costs ~0.
+  renderCache: HTMLCanvasElement | null;
+  renderCacheKey: string;
+  // Splat sphere/box clip: uniforms injected into the splat material via
+  // onBeforeCompile (the library's shader has no native clip support).
+  splatClipUniforms: { mode: { value: number }; center: { value: THREE.Vector3 }; radius: { value: number }; box: { value: THREE.Vector3 } } | null;
+  splatClipInjected: boolean;
   raycastSamples: Float32Array | null; // world-space xyz triples, capped ~6000 points
   glitchSeed: number;
   // mesh-only
@@ -275,6 +282,7 @@ export class ThreeDEngine {
       this.renderer.setSize(w, h, false);
       this.camera.aspect = h > 0 ? w / h : 1;
       this.camera.updateProjectionMatrix();
+      for (const st of this.layers.values()) st.renderCacheKey = ''; // force re-render at new size
     }
   }
 
@@ -317,7 +325,8 @@ export class ThreeDEngine {
         camera: { pitch: 10, yaw: 0, roll: 0, radius: 3, anchor: new THREE.Vector3() },
         showAnchor: false,
         lastCamParams: null,
-        splatSortTick: 0, splatLastView: '',
+        renderCache: null, renderCacheKey: '',
+        splatClipUniforms: null, splatClipInjected: false,
         raycastSamples: null, glitchSeed: Math.random() * 1000,
         meshNodes: [], meshPointCloud: null,
         kinectGeometry: null, kinectMaterial: null, kinectPoints: null,
@@ -397,6 +406,7 @@ export class ThreeDEngine {
     const meshNodes: THREE.Mesh[] = [];
     group.traverse((o: any) => { if (o.isMesh) meshNodes.push(o); });
     st.meshNodes = meshNodes;
+    st.renderCacheKey = '';
     this.computeMeshBounds(st);
   }
 
@@ -481,6 +491,10 @@ export class ThreeDEngine {
     st.splatViewer = viewer;
     const splatMesh = viewer.getSplatMesh();
     st.content = splatMesh;
+    // Fresh material -> re-inject the clip shader on next renderLayer; drop stale cache.
+    st.splatClipInjected = false;
+    st.splatClipUniforms = null;
+    st.renderCacheKey = '';
 
     // Sample splat centers for bounding radius + anchor raycasting (guide's 75th-percentile technique)
     const total = splatMesh?.getSplatCount ? splatMesh.getSplatCount() : 0;
@@ -549,6 +563,7 @@ export class ThreeDEngine {
     st.kinectPoints = points;
     st.content = points;
     st.kinectPointCount = positions.length / 3;
+    st.renderCacheKey = ''; // new geometry -> invalidate cached frame
   }
 
   // --- Kinect live connection --------------------------------------------------
@@ -738,6 +753,27 @@ export class ThreeDEngine {
     if (!lcp || lcp.zoom !== params.zoom) st.camera.radius = Math.max(0.01, st.boundingRadius * 2.6 * params.zoom);
     st.lastCamParams = { pitch: params.pitch, yaw: params.yaw, roll: params.roll, zoom: params.zoom };
 
+    const t = this.clock.getElapsedTime();
+    const w = this.renderer.domElement.width, h = this.renderer.domElement.height;
+    const animating = params.glitch > 0.01;
+
+    // Rendered-frame cache: if nothing that affects the output changed, return
+    // the last rendered canvas without touching THREE at all. This is what keeps
+    // an idle 3D layer (esp. a heavy splat) from pegging the main thread.
+    const c = st.camera;
+    const frameKey = [
+      c.pitch.toFixed(3), c.yaw.toFixed(3), c.roll.toFixed(3), c.radius.toFixed(4),
+      c.anchor.x.toFixed(3), c.anchor.y.toFixed(3), c.anchor.z.toFixed(3),
+      params.fov, params.bg,
+      params.pos_x, params.pos_y, params.pos_z, params.rot_x, params.rot_y, params.rot_z,
+      params.glitch, params.reconstruction, params.point_cloud,
+      params.clipMode, params.clip_radius, params.clip_w, params.clip_h, params.clip_d,
+      st.showAnchor ? 1 : 0, st.boundingRadius.toFixed(4), w, h,
+      animating ? Math.floor(t * 60) : 0,
+    ].join('|');
+    if (st.renderCache && st.renderCacheKey === frameKey) return st.renderCache;
+
+    // ---- heavy path (something changed) ----
     this.camera.fov = params.fov;
     this.camera.updateProjectionMatrix();
     this.applySpherical(st);
@@ -754,14 +790,16 @@ export class ThreeDEngine {
       st.content.visible = true;
     }
 
-    const t = this.clock.getElapsedTime();
     const clipCenter = st.camera.anchor;
     const clipScale = st.boundingRadius / 100;
+    // mesh/kinect have a single "points" look -- either the Reconstruction or the
+    // Point Cloud knob drives it (whichever is higher). Splats keep them distinct.
+    const pointsAmt = Math.max(params.reconstruction, params.point_cloud);
 
     if (st.kind === 'kinect' && st.kinectMaterial) {
       st.kinectMaterial.uniforms.uGlitch.value = (params.glitch / 100) * st.boundingRadius * 0.08;
       st.kinectMaterial.uniforms.uTime.value = t;
-      st.kinectMaterial.uniforms.uPointSize.value = 1.0 + (params.point_cloud / 100) * 10.0;
+      st.kinectMaterial.uniforms.uPointSize.value = 1.0 + (pointsAmt / 100) * 10.0;
       st.kinectMaterial.uniforms.uClipMode.value = params.clipMode === 'sphere' ? 1 : params.clipMode === 'box' ? 2 : 0;
       st.kinectMaterial.uniforms.uClipCenter.value.copy(clipCenter);
       st.kinectMaterial.uniforms.uClipRadius.value = params.clip_radius * clipScale;
@@ -777,7 +815,7 @@ export class ThreeDEngine {
         st.content.rotation.x += Math.sin(t * 9 + st.glitchSeed) * (params.glitch / 100) * 0.05;
         st.content.rotation.y += Math.sin(t * 7 + st.glitchSeed * 1.7) * (params.glitch / 100) * 0.05;
       }
-      this.applyMeshPointCloudBlend(st, params.point_cloud);
+      this.applyMeshPointCloudBlend(st, pointsAmt);
       this.applyMeshClip(st, params.clipMode, clipCenter, params.clip_w * clipScale, params.clip_h * clipScale, params.clip_d * clipScale);
     }
 
@@ -788,10 +826,9 @@ export class ThreeDEngine {
         st.content.position.y += Math.sin(t * 17 + st.glitchSeed * 1.3) * g;
         st.content.position.z += Math.sin(t * 11 + st.glitchSeed * 0.7) * g;
       }
-      this.applySplatPointCloud(st, params.point_cloud);
-      // Clip Region is a documented no-op for splat this pass (see plan notes) --
-      // the library's shader isn't authored with clipping-plane support and we
-      // deliberately avoid runtime shader-patching for splats in this pass.
+      this.applySplatReconstruction(st, params.reconstruction);
+      this.applySplatPointCloudMode(st, params.point_cloud);
+      this.applySplatClip(st, params.clipMode, clipCenter, params.clip_radius * clipScale, new THREE.Vector3(params.clip_w * clipScale, params.clip_h * clipScale, params.clip_d * clipScale));
     }
 
     // Clear transparent when bg is 0 so the 3D render composites cleanly over/under
@@ -803,16 +840,7 @@ export class ThreeDEngine {
 
     if (st.kind === 'splat' && st.splatViewer) {
       this.renderer.clippingPlanes = [];
-      // viewer.update() runs the CPU depth sort + a pile of uniform recompute;
-      // it's only needed when the view (or the splat's own transform) changed.
-      // Skip it on static frames, with a periodic refresh as a safety net.
-      const p = this.camera.position, q = this.camera.quaternion, cp = st.content?.position;
-      const view = `${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)},${q.x.toFixed(4)},${q.y.toFixed(4)},${q.z.toFixed(4)},${q.w.toFixed(4)},${cp ? cp.x.toFixed(3) + ',' + cp.y.toFixed(3) + ',' + cp.z.toFixed(3) : ''}`;
-      if (view !== st.splatLastView || st.splatSortTick % 45 === 0) {
-        st.splatLastView = view;
-        st.splatViewer.update();
-      }
-      st.splatSortTick++;
+      st.splatViewer.update();
       st.splatViewer.render();
     } else {
       this.renderer.clippingPlanes = (st.kind === 'mesh' ? this.getMeshClipPlanes(st) : []);
@@ -828,7 +856,13 @@ export class ThreeDEngine {
       this.renderer.render(this.overlayScene, this.camera);
     }
 
-    return this.renderer.domElement;
+    // Blit the freshly rendered GL frame into the per-layer cache and return that.
+    if (!st.renderCache) st.renderCache = document.createElement('canvas');
+    if (st.renderCache.width !== w || st.renderCache.height !== h) { st.renderCache.width = w; st.renderCache.height = h; }
+    const cctx = st.renderCache.getContext('2d');
+    if (cctx) { cctx.clearRect(0, 0, w, h); cctx.drawImage(this.renderer.domElement, 0, 0); }
+    st.renderCacheKey = frameKey;
+    return st.renderCache;
   }
 
   // --- mesh-only effects -----------------------------------------------------
@@ -890,28 +924,88 @@ export class ThreeDEngine {
     (st as any)._clipPlanes = planes;
   }
 
-  // --- splat-only reduced-scope point-cloud blend -----------------------------
+  // --- splat-only effects ---------------------------------------------------
 
-  // pointCloud 0..100: 0 = normal full gaussian render; ramps toward a sparse
-  // dotted point-cloud look as it rises, with library point-cloud mode above 50.
-  private applySplatPointCloud(st: LayerState, pointCloud: number) {
+  // "Reconstruction" 0..100: progressively drops splats off the sorted render
+  // list so the scene visibly falls apart (0 = full render).
+  private applySplatReconstruction(st: LayerState, amount: number) {
     const mesh: any = st.content;
-    if (!mesh) return;
+    const viewer = st.splatViewer;
+    if (!mesh?.geometry || !viewer) return;
     try {
-      if (typeof mesh.setPointCloudModeEnabled === 'function') {
-        mesh.setPointCloudModeEnabled(pointCloud > 50);
-      }
-      const viewer = st.splatViewer;
-      if (mesh.geometry && viewer) {
-        const full = typeof viewer.splatRenderCount === 'number' && viewer.splatRenderCount > 0
-          ? viewer.splatRenderCount : mesh.geometry.instanceCount;
-        if (pointCloud > 5) {
-          const frac = Math.max(0.02, 1 - (pointCloud / 100) * 0.9); // 0->full, 100->10%
-          mesh.geometry.instanceCount = Math.max(1, Math.floor(full * frac));
-        } else {
-          mesh.geometry.instanceCount = full;
-        }
+      const full = typeof viewer.splatRenderCount === 'number' && viewer.splatRenderCount > 0
+        ? viewer.splatRenderCount : mesh.geometry.instanceCount;
+      if (amount > 5) {
+        const frac = Math.max(0.02, 1 - (amount / 100) * 0.9); // 0->full, 100->~10%
+        mesh.geometry.instanceCount = Math.max(1, Math.floor(full * frac));
+      } else {
+        mesh.geometry.instanceCount = full;
       }
     } catch { /* library API surface can vary; degrade silently */ }
+  }
+
+  // "Point Cloud" 0..100: renders every splat as a small flat disc (library
+  // pointCloudModeEnabled uniform) and shrinks them as the value rises, so the
+  // underlying point structure of the capture shows through.
+  private applySplatPointCloudMode(st: LayerState, amount: number) {
+    const mesh: any = st.content;
+    const u = mesh?.material?.uniforms;
+    if (!u) return;
+    const on = amount > 0.5;
+    if (u.pointCloudModeEnabled) u.pointCloudModeEnabled.value = on ? 1 : 0;
+    if (u.splatScale) u.splatScale.value = on ? Math.max(0.15, 1.4 - (amount / 100) * 1.25) : 1.0;
+    mesh.material.uniformsNeedUpdate = true;
+  }
+
+  // Sphere / box clip for splats. The library shader has no clip support, so we
+  // splice a discard test into it via onBeforeCompile (guarded: if the anchor
+  // string ever moves in a library update, clipping just silently no-ops).
+  private ensureSplatClipInjection(st: LayerState) {
+    if (st.splatClipInjected) return;
+    const mesh: any = st.content;
+    const mat: any = mesh?.material;
+    if (!mat || !mat.uniforms) return;
+    const u = {
+      mode: { value: 0 },
+      center: { value: new THREE.Vector3() },
+      radius: { value: 1e9 },
+      box: { value: new THREE.Vector3(1e9, 1e9, 1e9) },
+    };
+    st.splatClipUniforms = u;
+    mat.uniforms.gpClipMode = u.mode;
+    mat.uniforms.gpClipCenter = u.center;
+    mat.uniforms.gpClipRadius = u.radius;
+    mat.uniforms.gpClipBox = u.box;
+    const prev = mat.onBeforeCompile;
+    mat.onBeforeCompile = (shader: any, renderer: any) => {
+      if (typeof prev === 'function') prev(shader, renderer);
+      shader.uniforms.gpClipMode = u.mode;
+      shader.uniforms.gpClipCenter = u.center;
+      shader.uniforms.gpClipRadius = u.radius;
+      shader.uniforms.gpClipBox = u.box;
+      const anchor = 'vColor = uintToRGBAVec(sampledCenterColor.r);';
+      if (typeof shader.vertexShader === 'string' && shader.vertexShader.indexOf(anchor) !== -1) {
+        shader.vertexShader = shader.vertexShader
+          .replace('void main () {', 'uniform int gpClipMode;\nuniform vec3 gpClipCenter;\nuniform float gpClipRadius;\nuniform vec3 gpClipBox;\nvoid main () {')
+          .replace(anchor, anchor + '\n' +
+            'if (gpClipMode == 1) { if (length(splatCenter - gpClipCenter) > gpClipRadius) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; } }\n' +
+            'else if (gpClipMode == 2) { vec3 gpd = abs(splatCenter - gpClipCenter); if (gpd.x > gpClipBox.x || gpd.y > gpClipBox.y || gpd.z > gpClipBox.z) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; } }\n');
+      }
+    };
+    mat.needsUpdate = true;
+    st.splatClipInjected = true;
+  }
+
+  private applySplatClip(st: LayerState, mode: ClipMode, centerWorld: THREE.Vector3, radius: number, box: THREE.Vector3) {
+    this.ensureSplatClipInjection(st);
+    const u = st.splatClipUniforms;
+    if (!u) return;
+    u.mode.value = mode === 'sphere' ? 1 : mode === 'box' ? 2 : 0;
+    if (mode !== 'off' && st.content) {
+      (st.content as THREE.Object3D).updateMatrixWorld(true);
+      u.center.value.copy((st.content as THREE.Object3D).worldToLocal(centerWorld.clone()));
+      u.radius.value = radius;
+      u.box.value.copy(box);
+    }
   }
 }

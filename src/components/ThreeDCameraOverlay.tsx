@@ -19,6 +19,7 @@ export function ThreeDCameraOverlay({
 }: ThreeDCameraOverlayProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
   const dragState = useRef<{ mode: 'orbit' | 'pan'; lastX: number; lastY: number } | null>(null);
+  const wheelFlush = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const getLetterbox = useCallback(() => {
     const canvas = canvasRef.current;
@@ -92,10 +93,17 @@ export function ThreeDCameraOverlay({
       e.preventDefault();
       e.stopPropagation();
       onZoom(1 + e.deltaY * 0.0015);
-      onDragEnd();
+      // Flush the final zoom back into layer state once the gesture settles --
+      // calling onDragEnd() (a setLayers) on every wheel tick re-renders the
+      // whole app and makes scroll-zoom crawl.
+      if (wheelFlush.current) clearTimeout(wheelFlush.current);
+      wheelFlush.current = setTimeout(() => { wheelFlush.current = null; onDragEnd(); }, 140);
     };
     el.addEventListener('wheel', onWheelNative, { passive: false });
-    return () => el.removeEventListener('wheel', onWheelNative);
+    return () => {
+      el.removeEventListener('wheel', onWheelNative);
+      if (wheelFlush.current) { clearTimeout(wheelFlush.current); wheelFlush.current = null; }
+    };
   }, [active, onZoom, onDragEnd]);
 
   const handleDoubleClick = useCallback((e: React.MouseEvent) => {

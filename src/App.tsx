@@ -8079,7 +8079,7 @@ export default function App() {
               zoom: modifiedThreeD.zoom, fov: modifiedThreeD.fov, bg: modifiedThreeD.bg,
               pos_x: modifiedThreeD.pos_x, pos_y: modifiedThreeD.pos_y, pos_z: modifiedThreeD.pos_z,
               rot_x: modifiedThreeD.rot_x, rot_y: modifiedThreeD.rot_y, rot_z: modifiedThreeD.rot_z,
-              glitch: modifiedThreeD.glitch, point_cloud: modifiedThreeD.point_cloud,
+              glitch: modifiedThreeD.glitch, reconstruction: modifiedThreeD.reconstruction, point_cloud: modifiedThreeD.point_cloud,
               clip_radius: modifiedThreeD.clip_radius, clip_w: modifiedThreeD.clip_w,
               clip_h: modifiedThreeD.clip_h, clip_d: modifiedThreeD.clip_d,
               clipMode,
@@ -11496,40 +11496,50 @@ return (
                             {threeDEngineRef.current.getLoadError(activeLayer.id)}
                           </div>
                         )}
-                        {THREE_D_PARAM_GROUPS.map(group => {
-                          const groupParams = sortParamsForDisplay(THREE_D_PARAMETERS.filter(p => p.group === group.id));
-                          if (groupParams.length === 0) return null;
-                          return (
-                            <div key={group.id} className="space-y-3">
-                              <label className="text-[10px] font-bold uppercase tracking-widest text-white/40">{group.label}</label>
-                              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
-                                {groupParams.map(p => {
-                                  const mapping = activeLayer.threeDMappings?.find(m => m.id === p.name) || { id: p.name, name: p.name, active: false };
-                                  return renderKnob(p, mapping, activeLayer, '3d');
-                                })}
-                              </div>
-                            </div>
-                          );
-                        })}
+                        {(() => {
+                          const clipMode = (activeLayer.threeDSettings?.clipMode as string) || 'off';
+                          const isClipParam = (name: string) => name === 'clip_radius' || name === 'clip_w' || name === 'clip_h' || name === 'clip_d';
+                          const knobFor = (p: any) => {
+                            const mapping = activeLayer.threeDMappings?.find(m => m.id === p.name) || { id: p.name, name: p.name, active: false };
+                            return renderKnob(p, mapping, activeLayer, '3d');
+                          };
+                          return (<>
+                            {THREE_D_PARAM_GROUPS.map(group => {
+                              // Clip knobs are rendered separately, gated on the Clip Region mode.
+                              const groupParams = sortParamsForDisplay(THREE_D_PARAMETERS.filter(p => p.group === group.id && !isClipParam(p.name)));
+                              if (groupParams.length === 0) return null;
+                              return (
+                                <div key={group.id} className="space-y-3">
+                                  <label className="text-[10px] font-bold uppercase tracking-widest text-white/40">{group.label}</label>
+                                  <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
+                                    {groupParams.map(knobFor)}
+                                  </div>
+                                </div>
+                              );
+                            })}
 
-                        <div className="space-y-2 pt-4 border-t border-white/5">
-                          <label className="text-[10px] uppercase tracking-widest opacity-40">Clip Region</label>
-                          <CustomSelect
-                            value={(activeLayer.threeDSettings?.clipMode as string) || 'off'}
-                            onChange={(v) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, threeDSettings: { ...(l.threeDSettings || {}), clipMode: v } } : l))}
-                            buttonClassName="w-full flex items-center justify-between gap-2 bg-black/40 border border-white/10 hover:border-white/25 rounded p-2 text-[10px] uppercase tracking-widest outline-none text-left text-white transition-colors"
-                            options={[
-                              { value: 'off', label: 'Off' },
-                              { value: 'sphere', label: `Sphere${activeLayer.threeDKind === 'splat' ? ' (not available for Splats)' : ''}` },
-                              { value: 'box', label: 'Box' },
-                            ]}
-                          />
-                          {activeLayer.threeDKind === 'splat' && (activeLayer.threeDSettings?.clipMode as string || 'off') !== 'off' && (
-                            <p className="text-[8px] uppercase tracking-widest text-white/30 leading-relaxed">
-                              Clip Region isn't applied to Gaussian Splats yet — Glitch and Point Cloud still work.
-                            </p>
-                          )}
-                        </div>
+                            <div className="space-y-2 pt-4 border-t border-white/5">
+                              <label className="text-[10px] uppercase tracking-widest opacity-40">Clip Region</label>
+                              <CustomSelect
+                                value={clipMode}
+                                onChange={(v) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, threeDSettings: { ...(l.threeDSettings || {}), clipMode: v } } : l))}
+                                buttonClassName="w-full flex items-center justify-between gap-2 bg-black/40 border border-white/10 hover:border-white/25 rounded p-2 text-[10px] uppercase tracking-widest outline-none text-left text-white transition-colors"
+                                options={[
+                                  { value: 'off', label: 'Off' },
+                                  { value: 'sphere', label: 'Sphere' },
+                                  { value: 'box', label: 'Box' },
+                                ]}
+                              />
+                              {clipMode !== 'off' && (
+                                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4 pt-2">
+                                  {clipMode === 'sphere'
+                                    ? THREE_D_PARAMETERS.filter(p => p.name === 'clip_radius').map(knobFor)
+                                    : THREE_D_PARAMETERS.filter(p => p.name === 'clip_w' || p.name === 'clip_h' || p.name === 'clip_d').map(knobFor)}
+                                </div>
+                              )}
+                            </div>
+                          </>);
+                        })()}
 
                         {activeLayer.threeDKind === 'kinect' && (
                           <div className="space-y-2 pt-4 border-t border-white/5">
