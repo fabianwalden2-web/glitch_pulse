@@ -1971,7 +1971,9 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   // Detached "pop-out" window that mirrors the main render canvas (drag to another screen).
   const popoutWinRef = useRef<Window | null>(null);
-  const popoutCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const popoutStreamRef = useRef<MediaStream | null>(null);
+  // Tracks each video layer's src so stale frame buffers can be wiped on change.
+  const lastVideoSrcRef = useRef<Record<string, string | null | undefined>>({});
   const prevFrameRef = useRef<Record<string, Uint8ClampedArray>>({});
   const echoBufferRef = useRef<Uint8ClampedArray[]>([]);
   const lastFrameTimeRef = useRef<number>(0);
@@ -7893,6 +7895,22 @@ export default function App() {
         }
       } else if (layer.type === 'video') {
          element = videoRefs.current[layer.id];
+         // A new clip loaded into this layer -> drop every stale per-layer frame
+         // buffer so Frame Accumulator / Boomerang / Rewind start clean.
+         if (!layer.isLive && lastVideoSrcRef.current[layer.id] !== layer.src) {
+           lastVideoSrcRef.current[layer.id] = layer.src;
+           delete frameAccBgRef.current[layer.id];
+           frameAccCutoutsRef.current[layer.id] = [];
+           frameAccumulatorSnapshotsRef.current[layer.id] = [];
+           const s = stutterStateRef.current[layer.id];
+           if (s) { s.clearBuffer = true; s.medianBg = null; s.setBg = false; s.triggerStamp = false; s.wasActive = false; }
+           delete referenceFrameRef.current[layer.id];
+           delete boomerangStartFrameRef.current[layer.id];
+           delete boomerangLastSnapRef.current[layer.id];
+           rewindFramesBufferRef.current[layer.id] = [];
+           delete videoInitialSeekDoneRef.current[layer.id];
+           delete prevFrameRef.current[layer.id];
+         }
          if (element && layer.isLive) {
            const vid = element as HTMLVideoElement;
            if (isPlaying && vid.paused && vid.srcObject) {
@@ -9843,23 +9861,13 @@ export default function App() {
       }
     });
 
-    // Mirror the finished frame into the pop-out window, if one is open.
-    const pop = popoutCanvasRef.current;
-    if (pop && popoutWinRef.current && !popoutWinRef.current.closed) {
-      if (pop.width !== mainCanvas.width || pop.height !== mainCanvas.height) {
-        pop.width = mainCanvas.width;
-        pop.height = mainCanvas.height;
-      }
-      const pctx = pop.getContext('2d');
-      if (pctx) {
-        // Clear first -- frames with a transparent background would otherwise
-        // stack on top of each other and smear.
-        pctx.clearRect(0, 0, pop.width, pop.height);
-        pctx.drawImage(mainCanvas, 0, 0);
-      }
-    } else if (pop && popoutWinRef.current?.closed) {
+    // Pop-out window mirrors the canvas via captureStream() -> <video>, so there
+    // is no per-frame pixel copy here (a cross-window drawImage forces a GPU
+    // readback and lags playback). Just tidy refs if the window was closed.
+    if (popoutWinRef.current?.closed) {
+      popoutStreamRef.current?.getTracks().forEach(t => t.stop());
+      popoutStreamRef.current = null;
       popoutWinRef.current = null;
-      popoutCanvasRef.current = null;
     }
 
     requestRef.current = requestAnimationFrame(processFrame);
@@ -9944,7 +9952,8 @@ export default function App() {
           isLive: false,
           type: firstIsVideo ? 'video' : 'image',
           name: firstFile.name,
-          videoTriggerMode: 'continuous' as const,
+          // keep the layer's video mode when swapping the clip (e.g. Frame Accumulator)
+          videoTriggerMode: (firstIsVideo ? (l.videoTriggerMode || 'continuous') : 'continuous') as any,
           triggerMapping: l.triggerMapping || { ...DEFAULT_TRIGGER_MAPPING, channels: Array.from({length: 16}, (_, i) => i), noteSettings: { ...DEFAULT_NOTE_SETTINGS } },
           rhythmMapping: l.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor' as const, bpm: 120, customPattern: Array(16).fill(false) },
           mappings: [],
@@ -10214,27 +10223,46 @@ export default function App() {
     }
   };
 
-  // Open (or focus) a separate window that mirrors the render canvas. Useful for
-  // watching the output on a second screen while tweaking parameters here.
+  // Open (or focus) a separate window that mirrors the render canvas. It streams
+  // the canvas with captureStream() into a <video>, so mirroring costs nothing
+  // per frame (no cross-window pixel copy). Useful for a second screen.
   const toggleCanvasPopout = () => {
     if (popoutWinRef.current && !popoutWinRef.current.closed) {
       popoutWinRef.current.focus();
       return;
     }
+    const src = canvasRef.current as HTMLCanvasElement | null;
+    if (!src) return;
     const win = window.open('', 'glitchpulse_canvas', 'width=1280,height=720');
     if (!win) return;
     win.document.title = 'Glitch Pulse — Canvas';
     win.document.body.style.cssText = 'margin:0;background:#000;overflow:hidden;display:flex;align-items:center;justify-content:center;height:100vh';
-    const cv = win.document.createElement('canvas');
-    cv.style.cssText = 'max-width:100vw;max-height:100vh;width:100%;height:100%;object-fit:contain;image-rendering:auto';
-    win.document.body.appendChild(cv);
+    const vid = win.document.createElement('video');
+    vid.autoplay = true;
+    vid.muted = true;
+    (vid as any).playsInline = true;
+    vid.style.cssText = 'max-width:100vw;max-height:100vh;width:100%;height:100%;object-fit:contain;background:#000';
+    win.document.body.appendChild(vid);
+    try {
+      const stream = (src as any).captureStream ? src.captureStream(30) : null;
+      if (stream) {
+        vid.srcObject = stream;
+        popoutStreamRef.current = stream;
+        vid.play().catch(() => {});
+      }
+    } catch { /* captureStream unsupported -> window still opens, just blank */ }
     popoutWinRef.current = win;
-    popoutCanvasRef.current = cv;
-    const cleanup = () => { popoutWinRef.current = null; popoutCanvasRef.current = null; };
-    win.addEventListener('beforeunload', cleanup);
+    win.addEventListener('beforeunload', () => {
+      popoutStreamRef.current?.getTracks().forEach(t => t.stop());
+      popoutStreamRef.current = null;
+      popoutWinRef.current = null;
+    });
   };
 
-  useEffect(() => () => { try { popoutWinRef.current?.close(); } catch {} }, []);
+  useEffect(() => () => {
+    try { popoutStreamRef.current?.getTracks().forEach(t => t.stop()); } catch {}
+    try { popoutWinRef.current?.close(); } catch {}
+  }, []);
 
   // ---- Reusable panel bodies (placed in sidebars / hamburger drawer) ----
   const audioSourcesPanel = (
