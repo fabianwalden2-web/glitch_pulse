@@ -1783,6 +1783,108 @@ void main(void) {
   "uuid": "spiral-shells-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Polar Checker",
+  "category": "Geometric",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo",
+  "parameters": [
+    { "name": "sectors",      "min": 6.0,  "max": 64.0,  "default": 52.0, "type": "number" },
+    { "name": "rings",        "min": 3.0,  "max": 20.0,  "default": 11.0, "type": "number" },
+    { "name": "inner_radius", "min": 10.0, "max": 220.0, "default": 64.0, "type": "number" },
+    { "name": "warp",         "min": 0.0,  "max": 1.0,   "default": 0.0,  "type": "number" },
+    { "name": "edge_noise",   "min": 0.0,  "max": 2.0,   "default": 0.0,  "type": "number" },
+    { "name": "fill_noise",   "min": 0.0,  "max": 100.0, "default": 45.3, "type": "number" },
+    { "name": "spin_rings", "default": 0, "type": "action" },
+    { "name": "invert",     "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "fill", "name": "Filled Cells", "defaultColor": "#ffffff" },
+    { "id": "grid", "name": "Grid Lines", "defaultColor": "#7599a4" }
+  ],
+  "uuid": "polar-checker-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Truchet Arcs",
+  "category": "Lines & Terrain",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo",
+  "parameters": [
+    { "name": "arc_count", "min": 2.0,  "max": 12.0,   "default": 6.0,    "type": "number" },
+    { "name": "cols",      "min": 4.0,  "max": 20.0,   "default": 10.0,   "type": "number" },
+    { "name": "rows",      "min": 4.0,  "max": 20.0,   "default": 10.0,   "type": "number" },
+    { "name": "seed",      "min": 0.0,  "max": 9999.0, "default": 6051.0, "type": "number" },
+    { "name": "arc_ratio", "min": 0.1,  "max": 0.5,    "default": 0.2955, "type": "number" },
+    { "name": "reflow", "default": 0, "type": "action" },
+    { "name": "trace",  "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "lines", "name": "Arcs", "defaultColor": "#ffffff" },
+    { "id": "accent", "name": "Trace Dot", "defaultColor": "#eb556b" }
+  ],
+  "uuid": "truchet-arcs-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Voxel Cross",
+  "category": "Geometric",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_brutalist",
+  "parameters": [
+    { "name": "resolution", "min": 2.0, "max": 6.0,   "default": 3.0,  "type": "number" },
+    { "name": "gap",        "min": 0.0, "max": 5.0,   "default": 2.1,  "type": "number" },
+    { "name": "spin",       "min": 0.0, "max": 2.0,   "default": 0.35, "type": "number" },
+    { "name": "fill",       "min": 0.2, "max": 1.0,   "default": 0.75, "type": "number" },
+    { "name": "seed",       "min": 0.0, "max": 999.0, "default": 20.0, "type": "number" },
+    { "name": "dissolve",    "default": 0, "type": "action" },
+    { "name": "rotate_step", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "top", "name": "Top Faces", "defaultColor": "#e5e5e5" },
+    { "id": "left", "name": "Left Faces", "defaultColor": "#888888" },
+    { "id": "right", "name": "Right Faces", "defaultColor": "#333333" }
+  ],
+  "uuid": "voxel-cross-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Flow Strokes",
+  "category": "Lines & Terrain",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_duo",
+  "parameters": [
+    { "name": "grid_size",     "min": 8.0,  "max": 48.0,  "default": 28.0,   "type": "number" },
+    { "name": "flow_scale",    "min": 10.0, "max": 150.0, "default": 79.313, "type": "number" },
+    { "name": "stroke_length", "min": 2.0,  "max": 30.0,  "default": 11.54,  "type": "number" },
+    { "name": "curl",          "min": 0.0,  "max": 1.0,   "default": 0.3,    "type": "number" },
+    { "name": "seed",          "min": 0.0,  "max": 999.0, "default": 7.0,    "type": "number" },
+    { "name": "gust",      "default": 0, "type": "action" },
+    { "name": "recompute", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "lines", "name": "Strokes", "defaultColor": "#ffffff" },
+    { "id": "accent", "name": "Gust Front", "defaultColor": "#7599a4" }
+  ],
+  "uuid": "flow-strokes-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   }
 ];
 
@@ -1804,6 +1906,8 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'woven-hex-blocks-1': 'Geometric',
   'triangle-decay-1': 'Geometric',
   'spiral-shells-1': 'Geometric',
+  'polar-checker-1': 'Geometric',
+  'voxel-cross-1': 'Geometric',
   // Psychedelic
   'shader-clouds-1': 'Psychedelic',
   'ferrofluid-1': 'Psychedelic',
@@ -1829,6 +1933,8 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'voronoi-cells-canvas-1': 'Lines & Terrain',
   'contour-lines-canvas-1': 'Lines & Terrain',
   'hatched-summit-canvas-1': 'Lines & Terrain',
+  'truchet-arcs-1': 'Lines & Terrain',
+  'flow-strokes-1': 'Lines & Terrain',
   // Retro
   'neon-labyrinth-canvas-1': 'Retro',
   'pixel-swarm-canvas-1': 'Retro',

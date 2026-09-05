@@ -2051,6 +2051,10 @@ export default function App() {
   const triangleDecayStateRef = useRef<Record<string, any>>({});
   const circuitRoutesStateRef = useRef<Record<string, any>>({});
   const spiralShellsStateRef = useRef<Record<string, any>>({});
+  const polarCheckerStateRef = useRef<Record<string, any>>({});
+  const truchetArcsStateRef = useRef<Record<string, any>>({});
+  const voxelCrossStateRef = useRef<Record<string, any>>({});
+  const flowStrokesStateRef = useRef<Record<string, any>>({});
   const dragonTextStateRef = useRef<Record<string, any>>({});
 
   // Accumulation Mode Refs
@@ -8184,6 +8188,264 @@ export default function App() {
               }
               ctx.globalAlpha = 1;
               element = canvas;
+          } else if (def.uuid === 'polar-checker-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const pcBg = resolvedGenerativeColors['background'] || '#000000';
+              const pcFill = resolvedGenerativeColors['fill'] || '#ffffff';
+              const pcGrid = resolvedGenerativeColors['grid'] || '#7599a4';
+
+              const pc = modifiedSettings;
+              const pcSectors = Math.max(6, Math.min(64, Math.round(pc.sectors ?? 52)));
+              const pcRings = Math.max(3, Math.min(20, Math.round(pc.rings ?? 11)));
+              const pcInner = Math.max(10, Math.min(220, pc.inner_radius ?? 64));
+              const pcWarp = Math.max(0, Math.min(1, pc.warp ?? 0));
+              const pcEdgeNoise = Math.max(0, Math.min(2, pc.edge_noise ?? 0));
+              const pcFillNoise = Math.max(0, Math.min(100, pc.fill_noise ?? 45.3)) / 100;
+
+              let pcSt = polarCheckerStateRef.current[layer.id];
+              if (!pcSt) pcSt = polarCheckerStateRef.current[layer.id] = { lastSpin: 0, spinStart: -99, lastInvert: 0, invertStart: -99, parity: 0 };
+              const pcSpinN = Number(pc.spin_rings ?? 0), pcInvN = Number(pc.invert ?? 0);
+              if (pcSpinN > pcSt.lastSpin) { pcSt.lastSpin = pcSpinN; pcSt.spinStart = nowSec; }
+              if (pcInvN > pcSt.lastInvert) { pcSt.lastInvert = pcInvN; pcSt.invertStart = nowSec; pcSt.parity = 1 - pcSt.parity; }
+              const pcSpinT = nowSec - pcSt.spinStart;
+              const pcSpinDecay = (pcSpinT >= 0 && pcSpinT < 2.2) ? (1 - pcSpinT / 2.2) : 0;
+              const pcInvT = nowSec - pcSt.invertStart;
+              const pcInvWipe = pcInvT >= 0 && pcInvT < 1.0 ? pcInvT / 1.0 : (pcInvT >= 1.0 ? 999 : -1);
+
+              ctx.fillStyle = pcBg; ctx.fillRect(0, 0, targetW, targetH);
+              const pcCx = targetW / 2, pcCy = targetH / 2;
+              const pcMaxR = Math.min(targetW, targetH) * 0.47;
+              const pcSc = pcMaxR / 320;
+              const pcInnerR = pcInner * pcSc;
+              const pcHash = (a: number) => { const x = Math.sin(a * 12.9898) * 43758.5453; return x - Math.floor(x); };
+
+              for (let ri = 0; ri < pcRings; ri++) {
+                  const r0raw = pcInnerR + (pcMaxR - pcInnerR) * (ri / pcRings);
+                  const r1raw = pcInnerR + (pcMaxR - pcInnerR) * ((ri + 1) / pcRings);
+                  const ringSpin = nowSec * 0.05 * (1 + ri * 0.15) + pcSpinDecay * Math.sin(ri * 1.3) * 6 * (ri + 1) / pcRings;
+                  for (let si = 0; si < pcSectors; si++) {
+                      const a0 = (si / pcSectors) * Math.PI * 2 + ringSpin;
+                      const a1 = ((si + 1) / pcSectors) * Math.PI * 2 + ringSpin;
+                      const warpJ = pcWarp * Math.sin(si * 0.7 + ri * 1.1 + nowSec) * (r1raw - r0raw) * 0.35;
+                      const r0 = r0raw + warpJ, r1 = r1raw + warpJ;
+                      const parity = (si + ri + pcSt.parity) % 2 === 0;
+                      const hv = pcHash(si * 3.1 + ri * 7.7 + 1);
+                      let filled = parity;
+                      if (pcFillNoise > 0.01) filled = hv < (0.5 + (parity ? 0.3 : -0.3)) * (0.4 + pcFillNoise);
+                      if (pcInvWipe >= 0 && pcInvWipe < 999) {
+                          const cellFrac = (r0 - pcInnerR) / (pcMaxR - pcInnerR);
+                          if (cellFrac < pcInvWipe) filled = !filled;
+                      }
+                      const en = pcEdgeNoise ? (pcHash(si * 5.3 + ri * 2.1) - 0.5) * pcEdgeNoise * 4 : 0;
+                      ctx.beginPath();
+                      ctx.arc(pcCx, pcCy, Math.max(1, r0 + en), a0, a1);
+                      ctx.arc(pcCx, pcCy, Math.max(1, r1 + en), a1, a0, true);
+                      ctx.closePath();
+                      if (filled) { ctx.fillStyle = pcFill; ctx.fill(); }
+                      ctx.strokeStyle = pcGrid; ctx.lineWidth = 1; ctx.globalAlpha = 0.35; ctx.stroke(); ctx.globalAlpha = 1;
+                  }
+              }
+              element = canvas;
+          } else if (def.uuid === 'truchet-arcs-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const taBg = resolvedGenerativeColors['background'] || '#000000';
+              const taLines = resolvedGenerativeColors['lines'] || '#ffffff';
+              const taAccent = resolvedGenerativeColors['accent'] || '#eb556b';
+
+              const ta = modifiedSettings;
+              const taArcCount = Math.max(2, Math.min(12, Math.round(ta.arc_count ?? 6)));
+              const taCols = Math.max(4, Math.min(20, Math.round(ta.cols ?? 10)));
+              const taRows = Math.max(4, Math.min(20, Math.round(ta.rows ?? 10)));
+              const taSeed0 = Math.floor(ta.seed ?? 6051);
+              const taArcRatio = Math.max(0.1, Math.min(0.5, ta.arc_ratio ?? 0.2955));
+
+              let taSt = truchetArcsStateRef.current[layer.id];
+              if (!taSt) taSt = truchetArcsStateRef.current[layer.id] = { lastReflow: 0, reflowStart: -99, seed: taSeed0, prevSeed: taSeed0, lastTrace: 0, traceStart: -99, traceRow: 0 };
+              const taReflowN = Number(ta.reflow ?? 0), taTraceN = Number(ta.trace ?? 0);
+              if (taReflowN > taSt.lastReflow) { taSt.lastReflow = taReflowN; taSt.prevSeed = taSt.seed; taSt.seed = taSeed0 + Math.floor(taReflowN) * 811 + 3; taSt.reflowStart = nowSec; }
+              if (taTraceN > taSt.lastTrace) { taSt.lastTrace = taTraceN; taSt.traceStart = nowSec; taSt.traceRow = Math.floor(Math.random() * taRows); }
+              const taReflowT = nowSec - taSt.reflowStart;
+              const taReflowP = taReflowT >= 0 && taReflowT < 1.2 ? taReflowT / 1.2 : 1;
+              const taTraceT = nowSec - taSt.traceStart;
+              const taTraceP = taTraceT >= 0 && taTraceT < 1.6 ? taTraceT / 1.6 : -1;
+              const taHash = (c: number, r: number, s: number) => { const x = Math.sin(c * 127.1 + r * 311.7 + s * 0.017) * 43758.5453; return x - Math.floor(x); };
+
+              ctx.fillStyle = taBg; ctx.fillRect(0, 0, targetW, targetH);
+              const taTw = targetW / taCols, taTh = targetH / taRows;
+              const taTile = Math.min(taTw, taTh);
+              ctx.lineCap = 'round';
+              ctx.strokeStyle = taLines;
+              for (let r = 0; r < taRows; r++) {
+                  for (let c = 0; c < taCols; c++) {
+                      const oNew = taHash(c, r, taSt.seed) > 0.5 ? 1 : 0;
+                      const oOld = taHash(c, r, taSt.prevSeed) > 0.5 ? 1 : 0;
+                      const dist = (c + r) / (taCols + taRows);
+                      const o = taReflowP >= 1 ? oNew : (dist < taReflowP ? oNew : oOld);
+                      const x0 = c * taTw + (taTw - taTile) / 2, y0 = r * taTh + (taTh - taTile) / 2;
+                      const corners = o === 0 ? [[0, 0], [1, 1]] : [[1, 0], [0, 1]];
+                      for (const cc of corners) {
+                          const cxU = cc[0], cyU = cc[1];
+                          const ccx = x0 + cxU * taTile, ccy = y0 + cyU * taTile;
+                          const quarter = cxU === cyU ? (cxU === 0 ? 0 : 2) : (cxU === 1 ? 1 : 3);
+                          const sa = quarter * Math.PI / 2, ea = sa + Math.PI / 2;
+                          for (let k = 1; k <= taArcCount; k++) {
+                              const rr = (k / (taArcCount + 0.001)) * taTile * 0.5;
+                              ctx.lineWidth = Math.max(0.5, taTile * 0.5 / taArcCount * taArcRatio * 2);
+                              ctx.beginPath();
+                              ctx.arc(ccx, ccy, rr, sa, ea);
+                              ctx.stroke();
+                          }
+                      }
+                  }
+              }
+              if (taTraceP >= 0) {
+                  const rowY = (taSt.traceRow + 0.5) * taTh;
+                  const x = taTraceP * targetW;
+                  const y = rowY + Math.sin(x / taTile * Math.PI) * taTile * 0.42;
+                  ctx.fillStyle = taAccent; ctx.shadowColor = taAccent; ctx.shadowBlur = 18;
+                  ctx.beginPath(); ctx.arc(x, y, taTile * 0.12, 0, Math.PI * 2); ctx.fill();
+                  ctx.shadowBlur = 0;
+              }
+              element = canvas;
+          } else if (def.uuid === 'voxel-cross-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const vcBg = resolvedGenerativeColors['background'] || '#000000';
+              const vcTop = resolvedGenerativeColors['top'] || '#e5e5e5';
+              const vcLeft = resolvedGenerativeColors['left'] || '#888888';
+              const vcRight = resolvedGenerativeColors['right'] || '#333333';
+
+              const vc = modifiedSettings;
+              const vcRes = Math.max(2, Math.min(6, Math.round(vc.resolution ?? 3)));
+              const vcGap = Math.max(0, Math.min(5, vc.gap ?? 2.1));
+              const vcSpin = Math.max(0, Math.min(2, vc.spin ?? 0.35));
+              const vcFill = Math.max(0.2, Math.min(1, vc.fill ?? 0.75));
+              const vcSeed = Math.floor(vc.seed ?? 20);
+              const vcHash = (a: number) => { const x = Math.sin(a * 12.9898 + vcSeed * 0.7) * 43758.5453; return x - Math.floor(x); };
+
+              let vcSt = voxelCrossStateRef.current[layer.id];
+              if (!vcSt) vcSt = voxelCrossStateRef.current[layer.id] = { lastDis: 0, disStart: -99, lastRot: 0, rotStart: -99, yawFrom: 0, yawTo: 0 };
+              const vcDisN = Number(vc.dissolve ?? 0), vcRotN = Number(vc.rotate_step ?? 0);
+              if (vcDisN > vcSt.lastDis) { vcSt.lastDis = vcDisN; vcSt.disStart = nowSec; }
+              if (vcRotN > vcSt.lastRot) { vcSt.lastRot = vcRotN; vcSt.rotStart = nowSec; vcSt.yawFrom = vcSt.yawTo; vcSt.yawTo = vcSt.yawTo + Math.PI / 2; }
+              const vcDisT = nowSec - vcSt.disStart;
+              const vcDisEnv = vcDisT >= 0 && vcDisT < 1.8 ? Math.sin(Math.PI * (vcDisT / 1.8)) : 0;
+              const vcRotT = nowSec - vcSt.rotStart;
+              const vcRotP = vcRotT >= 0 && vcRotT < 0.7 ? vcRotT / 0.7 : 1;
+              const vcRotEase = vcRotP < 1 ? (vcRotP < 0.5 ? 2 * vcRotP * vcRotP : 1 - Math.pow(-2 * vcRotP + 2, 2) / 2) : 1;
+              const vcYaw = (vcSt.yawFrom + (vcSt.yawTo - vcSt.yawFrom) * vcRotEase) + nowSec * vcSpin * 0.5;
+
+              const voxels: { i: number; j: number; k: number }[] = [];
+              for (let i = -vcRes; i <= vcRes; i++) for (let j = -vcRes; j <= vcRes; j++) for (let k = -vcRes; k <= vcRes; k++) {
+                  const onAxis = (i !== 0 ? 1 : 0) + (j !== 0 ? 1 : 0) + (k !== 0 ? 1 : 0);
+                  if (onAxis > 1) continue;
+                  if (onAxis === 1 && vcHash(i * 31 + j * 71 + k * 131 + 500) > vcFill) continue;
+                  voxels.push({ i, j, k });
+              }
+              ctx.fillStyle = vcBg; ctx.fillRect(0, 0, targetW, targetH);
+              const vcS = Math.min(targetW, targetH) / (vcRes * 4 + 6);
+              const vcStep = 1 + vcGap * 0.15;
+              const vcCx = targetW / 2, vcCy = targetH / 2;
+              const vcCosY = Math.cos(vcYaw), vcSinY = Math.sin(vcYaw);
+              const vcProj = (i: number, j: number, k: number) => {
+                  const x = i * vcStep, z = j * vcStep;
+                  const rx = x * vcCosY - z * vcSinY, rz = x * vcSinY + z * vcCosY;
+                  return { sx: vcCx + (rx - rz) * vcS, sy: vcCy + (rx + rz) * vcS * 0.5 - k * vcStep * vcS, depth: rx + rz + k };
+              };
+              voxels.sort((a, b) => vcProj(a.i, a.j, a.k).depth - vcProj(b.i, b.j, b.k).depth);
+              const vcSCube = vcS * 0.96;
+              for (const v of voxels) {
+                  const dist = Math.hypot(v.i, v.j, v.k) || 1;
+                  const push = vcDisEnv * (1.4 + dist * 0.6);
+                  const p = vcProj(v.i + v.i / dist * push, v.j + v.j / dist * push, v.k + v.k / dist * push);
+                  const S = vcSCube;
+                  ctx.fillStyle = vcTop;
+                  ctx.beginPath();
+                  ctx.moveTo(p.sx, p.sy - S); ctx.lineTo(p.sx + S, p.sy - S * 0.5); ctx.lineTo(p.sx, p.sy); ctx.lineTo(p.sx - S, p.sy - S * 0.5);
+                  ctx.closePath(); ctx.fill();
+                  ctx.fillStyle = vcLeft;
+                  ctx.beginPath();
+                  ctx.moveTo(p.sx - S, p.sy - S * 0.5); ctx.lineTo(p.sx, p.sy); ctx.lineTo(p.sx, p.sy + S); ctx.lineTo(p.sx - S, p.sy + S * 0.5);
+                  ctx.closePath(); ctx.fill();
+                  ctx.fillStyle = vcRight;
+                  ctx.beginPath();
+                  ctx.moveTo(p.sx + S, p.sy - S * 0.5); ctx.lineTo(p.sx, p.sy); ctx.lineTo(p.sx, p.sy + S); ctx.lineTo(p.sx + S, p.sy + S * 0.5);
+                  ctx.closePath(); ctx.fill();
+                  ctx.strokeStyle = vcBg; ctx.lineWidth = Math.max(0.5, S * 0.04); ctx.stroke();
+              }
+              element = canvas;
+          } else if (def.uuid === 'flow-strokes-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const fsBg = resolvedGenerativeColors['background'] || '#000000';
+              const fsLines = resolvedGenerativeColors['lines'] || '#ffffff';
+              const fsAccent = resolvedGenerativeColors['accent'] || '#7599a4';
+
+              const fs = modifiedSettings;
+              const fsGrid = Math.max(8, Math.min(48, Math.round(fs.grid_size ?? 28)));
+              const fsScale = Math.max(10, Math.min(150, fs.flow_scale ?? 79.313));
+              const fsLen = Math.max(2, Math.min(30, fs.stroke_length ?? 11.54));
+              const fsCurl = Math.max(0, Math.min(1, fs.curl ?? 0.3));
+              const fsSeed0 = Math.floor(fs.seed ?? 7);
+
+              let fsSt = flowStrokesStateRef.current[layer.id];
+              if (!fsSt) fsSt = flowStrokesStateRef.current[layer.id] = { lastGust: 0, gustStart: -99, lastRecomp: 0, recompStart: -99, seed: fsSeed0, prevSeed: fsSeed0 };
+              const fsGustN = Number(fs.gust ?? 0), fsRecompN = Number(fs.recompute ?? 0);
+              if (fsGustN > fsSt.lastGust) { fsSt.lastGust = fsGustN; fsSt.gustStart = nowSec; }
+              if (fsRecompN > fsSt.lastRecomp) { fsSt.lastRecomp = fsRecompN; fsSt.prevSeed = fsSt.seed; fsSt.seed = fsSeed0 + Math.floor(fsRecompN) * 419 + 11; fsSt.recompStart = nowSec; }
+              const fsGustT = nowSec - fsSt.gustStart;
+              const fsGustP = fsGustT >= 0 && fsGustT < 1.5 ? fsGustT / 1.5 : -1;
+              const fsRecompT = nowSec - fsSt.recompStart;
+              const fsRecompMix = fsRecompT >= 0 && fsRecompT < 1.4 ? fsRecompT / 1.4 : 1;
+
+              const fsField = (x: number, y: number, s: number) => {
+                  const u = x / fsScale, v = y / fsScale;
+                  return Math.sin(u + s * 0.3) * 1.7 + Math.cos(v * 1.3 - s * 0.21) * 1.3 + Math.sin((u + v) * 0.7 + nowSec * fsCurl * 0.6) * 1.1;
+              };
+              ctx.fillStyle = fsBg; ctx.fillRect(0, 0, targetW, targetH);
+              ctx.strokeStyle = fsLines; ctx.lineCap = 'round';
+              const fsGx = targetW / fsGrid, fsGy = targetH / fsGrid;
+              ctx.lineWidth = Math.max(0.6, Math.min(fsGx, fsGy) * 0.12);
+              const fsL = fsLen * Math.min(targetW, targetH) / 700;
+              for (let r = 0; r <= fsGrid; r++) {
+                  for (let c = 0; c <= fsGrid; c++) {
+                      const px = c * fsGx, py = r * fsGy;
+                      const aA = fsField(px, py, fsSt.prevSeed);
+                      const aB = fsField(px, py, fsSt.seed);
+                      let ang = aA + (aB - aA) * fsRecompMix;
+                      if (fsGustP >= 0) {
+                          const front = fsGustP * targetW * 1.2;
+                          const behind = front - px;
+                          if (behind > 0 && behind < targetW * 0.5) {
+                              const infl = (1 - behind / (targetW * 0.5)) * (1 - fsGustP) * 1.6;
+                              ang = ang * (1 - Math.min(1, infl));
+                          }
+                      }
+                      const dx = Math.cos(ang) * fsL, dy = Math.sin(ang) * fsL;
+                      ctx.beginPath(); ctx.moveTo(px - dx / 2, py - dy / 2); ctx.lineTo(px + dx / 2, py + dy / 2); ctx.stroke();
+                  }
+              }
+              if (fsGustP >= 0) {
+                  const front = fsGustP * targetW * 1.2;
+                  ctx.strokeStyle = fsAccent; ctx.globalAlpha = (1 - fsGustP) * 0.6; ctx.lineWidth = 3;
+                  ctx.beginPath(); ctx.moveTo(front, 0); ctx.lineTo(front, targetH); ctx.stroke();
+                  ctx.globalAlpha = 1;
+              }
+              element = canvas;
           } else {
               if (webglRendererRef.current.canvas.width !== targetW || webglRendererRef.current.canvas.height !== targetH) {
                   webglRendererRef.current.resize(targetW, targetH);
@@ -13878,6 +14140,10 @@ return (
                                    if (uuid === 'triangle-decay-1') return '🔻';
                                    if (uuid === 'circuit-routes-1') return '🔌';
                                    if (uuid === 'spiral-shells-1') return '🐚';
+                                   if (uuid === 'polar-checker-1') return '🎯';
+                                   if (uuid === 'truchet-arcs-1') return '🌀';
+                                   if (uuid === 'voxel-cross-1') return '🧊';
+                                   if (uuid === 'flow-strokes-1') return '💨';
                                    if (uuid === 'bubble-spheres-1') return '🫧';
                                    if (uuid === 'dancing-cubes-canvas-1') return '🎲';
                                    return '✨';
