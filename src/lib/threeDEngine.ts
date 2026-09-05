@@ -222,6 +222,8 @@ export class ThreeDEngine {
     this.renderer.getSize(size);
     if (size.x !== w || size.y !== h) {
       this.renderer.setSize(w, h, false);
+      this.camera.aspect = h > 0 ? w / h : 1;
+      this.camera.updateProjectionMatrix();
     }
   }
 
@@ -296,10 +298,10 @@ export class ThreeDEngine {
 
   // --- loading -----------------------------------------------------------------
 
-  async ensureLayer(layerId: string, kind: ThreeDKind, src: string | null): Promise<void> {
+  async ensureLayer(layerId: string, kind: ThreeDKind, src: string | null, splatFormat?: 'ply' | 'splat' | 'ksplat'): Promise<void> {
     const st = this.ensureLayerState(layerId);
     if (!src) return;
-    const cacheKey = `${kind}:${src}`;
+    const cacheKey = `${kind}:${src}:${splatFormat || ''}`;
     if ((st as any)._lastCacheKey === cacheKey && !st.loadError) return;
     (st as any)._lastCacheKey = cacheKey;
 
@@ -317,7 +319,7 @@ export class ThreeDEngine {
       if (kind === 'mesh') {
         await this.loadMesh(st, src, myToken);
       } else if (kind === 'splat') {
-        await this.loadSplat(st, src, myToken);
+        await this.loadSplat(st, src, myToken, splatFormat);
       } else {
         this.setupKinect(st, myToken);
       }
@@ -383,7 +385,7 @@ export class ThreeDEngine {
     st.camera.radius = st.boundingRadius * 2.6;
   }
 
-  private async loadSplat(st: LayerState, url: string, token: number) {
+  private async loadSplat(st: LayerState, url: string, token: number, splatFormat?: 'ply' | 'splat' | 'ksplat') {
     const viewer = new (GaussianSplats3D as any).Viewer({
       renderer: this.renderer,
       camera: this.camera,
@@ -392,8 +394,32 @@ export class ThreeDEngine {
       gpuAcceleratedSort: false,
       sharedMemoryForWorkers: typeof self !== 'undefined' && (self as any).crossOriginIsolated === true,
       dropInMode: false,
+      // The library's default progressive scene-reveal expands a "visible region"
+      // fade radius over many successive update() calls; until it converges the
+      // splat vertex shader multiplies every splat's alpha by ~0 (invisible).
+      // This engine drives update()/render() on demand rather than in a sustained
+      // rAF loop, so that convergence isn't guaranteed -- force the whole scene
+      // visible immediately.
+      sceneRevealMode: (GaussianSplats3D as any).SceneRevealMode.Instant,
     });
-    await viewer.addSplatScene(url, { showLoadingUI: false });
+    // The library infers format from the URL's file extension by default, which
+    // blob: URLs (from URL.createObjectURL) never have -- always pass it explicitly.
+    const formatMap: Record<string, number> = {
+      ply: (GaussianSplats3D as any).SceneFormat.Ply,
+      splat: (GaussianSplats3D as any).SceneFormat.Splat,
+      ksplat: (GaussianSplats3D as any).SceneFormat.KSplat,
+    };
+    // Our shared renderer canvas is detached from the DOM, so the library's
+    // default getRenderDimensions() (which reads rootElement.offsetWidth/Height)
+    // returns 0 -> focal length 0 -> splats project to zero size. Point it at
+    // the renderer's actual drawing-buffer size instead.
+    const sharedRenderer = this.renderer;
+    (viewer as any).getRenderDimensions = function (out: THREE.Vector2) {
+      sharedRenderer.getSize(out);
+    };
+
+    const format = splatFormat ? formatMap[splatFormat] : undefined;
+    await viewer.addSplatScene(url, { showLoadingUI: false, format });
     if (token !== st.loadToken) { try { viewer.dispose(); } catch {} return; }
     st.splatViewer = viewer;
     const splatMesh = viewer.getSplatMesh();
@@ -689,8 +715,10 @@ export class ThreeDEngine {
       // deliberately avoid runtime shader-patching for splats in this pass.
     }
 
+    // Clear transparent when bg is 0 so the 3D render composites cleanly over/under
+    // other layers; only fill an opaque background when the user dials bg up.
     const bg = params.bg;
-    this.renderer.setClearColor(new THREE.Color(bg, bg, bg), 1);
+    this.renderer.setClearColor(new THREE.Color(bg, bg, bg), bg > 0.001 ? 1 : 0);
     this.renderer.setScissorTest(false);
     this.renderer.clear();
 
@@ -768,6 +796,8 @@ export class ThreeDEngine {
 
   // --- splat-only reduced-scope point-cloud blend -----------------------------
 
+  // pointCloud 0..100: 0 = normal full gaussian render; ramps toward a sparse
+  // dotted point-cloud look as it rises, with library point-cloud mode above 50.
   private applySplatPointCloud(st: LayerState, pointCloud: number) {
     const mesh: any = st.content;
     if (!mesh) return;
@@ -776,11 +806,15 @@ export class ThreeDEngine {
         mesh.setPointCloudModeEnabled(pointCloud > 50);
       }
       const viewer = st.splatViewer;
-      if (viewer && mesh.geometry && typeof viewer.splatRenderCount === 'number' && pointCloud < 50) {
-        const frac = Math.max(0.02, pointCloud / 50);
-        mesh.geometry.instanceCount = Math.floor(viewer.splatRenderCount * frac);
-      } else if (mesh.geometry && viewer) {
-        mesh.geometry.instanceCount = viewer.splatRenderCount ?? mesh.geometry.instanceCount;
+      if (mesh.geometry && viewer) {
+        const full = typeof viewer.splatRenderCount === 'number' && viewer.splatRenderCount > 0
+          ? viewer.splatRenderCount : mesh.geometry.instanceCount;
+        if (pointCloud > 5) {
+          const frac = Math.max(0.02, 1 - (pointCloud / 100) * 0.9); // 0->full, 100->10%
+          mesh.geometry.instanceCount = Math.max(1, Math.floor(full * frac));
+        } else {
+          mesh.geometry.instanceCount = full;
+        }
       }
     } catch { /* library API surface can vary; degrade silently */ }
   }

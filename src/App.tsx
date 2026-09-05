@@ -147,6 +147,7 @@ interface Layer {
   isLive?: boolean;
   liveDeviceId?: string;
   threeDKind?: 'mesh' | 'splat' | 'kinect';
+  threeDFormat?: 'ply' | 'splat' | 'ksplat';
   threeDSrc?: string | null;
   threeDSettings?: Record<string, number | string>;
   threeDTriggerActive?: Record<string, boolean>;
@@ -8039,7 +8040,7 @@ export default function App() {
           }
 
           if (layer.threeDKind && layer.threeDKind !== 'kinect' && layer.threeDSrc) {
-            engine3d.ensureLayer(layer.id, layer.threeDKind, layer.threeDSrc).catch(() => {});
+            engine3d.ensureLayer(layer.id, layer.threeDKind, layer.threeDSrc, layer.threeDFormat).catch(() => {});
           } else if (layer.threeDKind === 'kinect') {
             engine3d.ensureLayer(layer.id, 'kinect', 'kinect').catch(() => {});
           }
@@ -12693,13 +12694,15 @@ return (
                                   const layerId = assetBrowserLayerTarget;
                                   const url = URL.createObjectURL(file);
                                   let kind = detectThreeDAssetKindByExt(file.name);
+                                  const ext = (file.name.split('.').pop() || '').toLowerCase();
                                   if (kind === 'ply-ambiguous') kind = await detectPlyKind(file);
                                   if (kind === 'unsupported-sog') {
                                     setKinectError(prev => ({ ...prev, [layerId]: '.sog splat files are not supported yet — export as .splat or .ksplat instead.' }));
                                     return;
                                   }
                                   if (!kind) return;
-                                  setLayers(prev => prev.map(l => l.id === layerId ? { ...l, name: file.name, threeDKind: kind as any, threeDSrc: url } : l));
+                                  const splatFormat = kind === 'splat' ? (ext === 'ply' ? 'ply' : ext === 'ksplat' ? 'ksplat' : 'splat') : undefined;
+                                  setLayers(prev => prev.map(l => l.id === layerId ? { ...l, name: file.name, threeDKind: kind as any, threeDFormat: splatFormat as any, threeDSrc: url } : l));
                                   setShowAssetBrowser(false);
                                 }}
                                 className="absolute inset-0 opacity-0 cursor-pointer z-10"
