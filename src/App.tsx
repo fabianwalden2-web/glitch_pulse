@@ -55,7 +55,8 @@ import {
   Move3d,
   Crosshair,
   Focus,
-  ExternalLink
+  ExternalLink,
+  Clapperboard
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition, BUILTIN_PALETTES, GenerativeElement, ColorPalettePreset, GENERATIVE_CATEGORY_ORDER } from './lib/generatives';
@@ -2248,6 +2249,7 @@ export default function App() {
   // Camera Sequence: rising-edge state per (layer, seq trigger) + current slot per layer.
   const seqEdgeRef = useRef<Record<string, boolean>>({});
   const seqCurRef = useRef<Record<string, number>>({});
+  const [anglesPanelOpen, setAnglesPanelOpen] = useState(false);
   // Keep the anchor-toggle button in sync with the (per-layer) engine state
   // when the active layer changes.
   useEffect(() => {
@@ -2441,27 +2443,17 @@ export default function App() {
         setLayers(prev => prev.map(l => {
           if (l.id !== midiLearnTarget.layerId) return l;
           if (midiLearnTarget.effectId) {
-            const hasEffect = l.mappings?.some(m => m.id === midiLearnTarget.effectId);
-            if (hasEffect) {
-              return {
-                ...l,
-                mappings: l.mappings.map(m => m.id === midiLearnTarget.effectId ? {
-                  ...m,
-                  channels: m.channels || Array.from({length: 16}, (_, i) => i),
-                  noteSettings: m.noteSettings || { ...DEFAULT_NOTE_SETTINGS },
-                  [midiLearnTarget.field]: note
-                } : m)
-              };
-            }
-            return {
-              ...l,
-              generativeMappings: (l.generativeMappings || []).map(m => m.id === midiLearnTarget.effectId ? {
-                ...m,
-                channels: m.channels || Array.from({length: 16}, (_, i) => i),
-                noteSettings: m.noteSettings || { ...DEFAULT_NOTE_SETTINGS },
-                [midiLearnTarget.field]: note
-              } : m)
-            };
+            const eid = midiLearnTarget.effectId;
+            const patchArr = (arr?: any[]) => (arr || []).map(m => m.id === eid ? {
+              ...m,
+              channels: m.channels || Array.from({ length: 16 }, (_, i) => i),
+              noteSettings: m.noteSettings || { ...DEFAULT_NOTE_SETTINGS },
+              [midiLearnTarget.field]: note,
+            } : m);
+            // The learn target can live in any of the three mapping families.
+            if (l.mappings?.some(m => m.id === eid)) return { ...l, mappings: patchArr(l.mappings) };
+            if (l.threeDMappings?.some(m => m.id === eid)) return { ...l, threeDMappings: patchArr(l.threeDMappings) };
+            return { ...l, generativeMappings: patchArr(l.generativeMappings) };
           }
           const baseTrigger = l.triggerMapping || DEFAULT_TRIGGER_MAPPING;
           return {
@@ -11119,7 +11111,22 @@ export default function App() {
                       <Move3d size={13} /> 3D Controls
                     </button>
 
-                    {threeDControlsActive && (
+                    {threeDControlsActive && (() => {
+                      const seqSlots3d: any[] = Array.isArray(l3d.threeDSettings?.seqSlots) ? (l3d.threeDSettings!.seqSlots as any[]) : [];
+                      const seqDur = Number(l3d.threeDSettings?.seqTransitionMs ?? 600);
+                      const seqEase = (l3d.threeDSettings?.seqEasing as string) || 'inout';
+                      const filledIdx = seqSlots3d.map((s, i) => (s ? i : -1)).filter(i => i >= 0);
+                      const writeSlots = (arr: any[]) => setLayers(prev => prev.map(l => {
+                        if (l.id !== l3d.id) return l;
+                        const patch: any = { ...(l.threeDSettings || {}), seqSlots: arr };
+                        if (((l.threeDSettings?.seqMode as string) || 'off') === 'off') patch.seqMode = 'manual';
+                        return { ...l, threeDSettings: patch };
+                      }));
+                      const setSlot3d = (i: number, val: any) => { const arr = [...seqSlots3d]; while (arr.length < SEQ_SLOT_COUNT) arr.push(null); arr[i] = val; writeSlots(arr); };
+                      const addAngle = () => { const idx = Array.from({ length: SEQ_SLOT_COUNT }).findIndex((_, i) => !seqSlots3d[i]); if (idx < 0) return; setSlot3d(idx, threeDEngineRef.current?.captureSeqSnapshot(l3d.id) ?? null); };
+                      const goAngle = (i: number) => { seqCurRef.current[l3d.id] = i; threeDEngineRef.current?.goToSeqSnapshot(l3d.id, seqSlots3d[i], seqDur, seqEase as any); };
+                      return (
+                      <>
                       <div className="absolute top-3 left-3 z-30 flex flex-col gap-2">
                         <button
                           onClick={() => {
@@ -11148,8 +11155,54 @@ export default function App() {
                         >
                           <Focus size={14} />
                         </button>
+                        <button
+                          onClick={() => setAnglesPanelOpen(v => !v)}
+                          className={`p-2 rounded-md border transition-colors relative ${anglesPanelOpen ? 'bg-red-600 border-red-500 text-white' : 'bg-black/60 border-white/15 text-white/70 hover:text-white hover:border-white/40'}`}
+                          title="Camera angles"
+                        >
+                          <Clapperboard size={14} />
+                          {filledIdx.length > 0 && (
+                            <span className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-0.5 rounded-full bg-white text-black text-[8px] font-bold flex items-center justify-center">{filledIdx.length}</span>
+                          )}
+                        </button>
                       </div>
-                    )}
+
+                      {anglesPanelOpen && (
+                        <div className="absolute top-3 left-[3.25rem] z-40 w-44 bg-black/85 backdrop-blur-sm border border-white/15 rounded-md p-2 shadow-2xl">
+                          <div className="text-[9px] font-bold uppercase tracking-widest text-white/50 mb-1.5 px-0.5">Camera Angles</div>
+                          <div className="flex flex-col gap-1 max-h-[220px] overflow-y-auto custom-scrollbar">
+                            {Array.from({ length: SEQ_SLOT_COUNT }).map((_, i) => {
+                              if (!seqSlots3d[i]) return null;
+                              return (
+                                <div key={i} className="flex items-center gap-1 bg-white/5 hover:bg-white/10 rounded px-1.5 py-1 transition-colors">
+                                  <button onClick={() => goAngle(i)} className="flex-1 text-left text-[10px] uppercase tracking-widest text-white/80 hover:text-white truncate" title="Go to this angle">
+                                    Angle {i + 1}
+                                  </button>
+                                  <button onClick={() => setSlot3d(i, threeDEngineRef.current?.captureSeqSnapshot(l3d.id) ?? null)} className="p-1 text-white/30 hover:text-white" title="Recapture from current view">
+                                    <RefreshCw size={10} />
+                                  </button>
+                                  <button onClick={() => setSlot3d(i, null)} className="p-1 text-white/30 hover:text-red-400" title="Remove angle">
+                                    <X size={10} />
+                                  </button>
+                                </div>
+                              );
+                            })}
+                            {filledIdx.length === 0 && (
+                              <div className="text-[9px] text-white/30 px-0.5 py-1 leading-relaxed">No angles yet. Frame a shot and add one.</div>
+                            )}
+                          </div>
+                          <button
+                            onClick={addAngle}
+                            disabled={filledIdx.length >= SEQ_SLOT_COUNT}
+                            className="mt-1.5 w-full flex items-center justify-center gap-1 text-[9px] uppercase tracking-widest px-2 py-1.5 rounded border border-white/15 text-white/70 hover:text-white hover:border-white/40 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                          >
+                            <Plus size={10} /> Add Angle
+                          </button>
+                        </div>
+                      )}
+                      </>
+                      );
+                    })()}
                   </>
                 );
               })()}
