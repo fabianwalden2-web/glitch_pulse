@@ -145,6 +145,14 @@ interface Layer {
   accumulateOpacity?: number;
   accumulateMaxFrames?: number;
   accumulateBlendMode?: GlobalCompositeOperation;
+  // Frame Accumulator "Isolate Motion" (multiplicity / chronophotography): each
+  // stamp keys out only the pixels that differ from a background reference and
+  // composites that cutout onto a persistent buffer over one clean background.
+  accumulateIsolateMotion?: boolean;
+  accumulateFeather?: number;          // 0..24 px soft-edge blur on the motion mask
+  accumulateBgAdaptive?: boolean;      // keep updating the background plate in still regions
+  accumulateShowLive?: boolean;        // also draw the live (current) subject cutout on top
+  accumulateSuppressShadows?: boolean; // drop pixels that only got darker (cast shadow)
   videoAdvanceUnit?: 'frames' | 'seconds';
   videoAdvanceAmount?: number;
   videoFrameRate?: number;
@@ -1700,6 +1708,93 @@ function buildSphereParticles(count: number): SphereParticle[] {
   return pts;
 }
 
+// --- Frame Accumulator "Isolate Motion" helpers ----------------------------
+// Background-subtraction chronophotography: given a background reference, key out
+// only the pixels of the current frame that changed, so repeated stamps build a
+// "multiplicity" image (one clean background, the subject frozen at each moment).
+const FA_DIFF_W = 640; // work width for the diff/mask (RGB stays full-res)
+const _faScratch: Record<string, HTMLCanvasElement> = {};
+function faScratch(key: string, w: number, h: number): HTMLCanvasElement {
+  let c = _faScratch[key];
+  if (!c) { c = document.createElement('canvas'); _faScratch[key] = c; }
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  return c;
+}
+function faMedian(frames: ImageData[]): ImageData {
+  const n = frames.length, w = frames[0].width, h = frames[0].height;
+  const out = new ImageData(w, h);
+  const buf = new Array<number>(n);
+  const px = w * h;
+  for (let p = 0; p < px; p++) {
+    const o = p * 4;
+    for (let ch = 0; ch < 3; ch++) {
+      for (let f = 0; f < n; f++) buf[f] = frames[f].data[o + ch];
+      buf.sort((a, b) => a - b);
+      out.data[o + ch] = buf[n >> 1];
+    }
+    out.data[o + 3] = 255;
+  }
+  return out;
+}
+// Returns a targetW x targetH canvas = current frame with alpha keyed to where
+// it differs from `bg` (feathered, speckle-cleaned). null if nothing moved.
+function faBuildCutout(
+  src: HTMLCanvasElement,
+  bg: CanvasImageSource,
+  opts: { threshold: number; feather: number; suppressShadows: boolean },
+): HTMLCanvasElement | null {
+  const W = src.width, H = src.height;
+  if (!W || !H) return null;
+  const dw = Math.min(W, FA_DIFF_W);
+  const dh = Math.max(1, Math.round((dw * H) / W));
+  const cur = faScratch('fa-cur', dw, dh);
+  const bgc = faScratch('fa-bg', dw, dh);
+  const cx = cur.getContext('2d')!;
+  const bx = bgc.getContext('2d')!;
+  cx.clearRect(0, 0, dw, dh); cx.filter = 'blur(1.2px)'; cx.drawImage(src, 0, 0, dw, dh); cx.filter = 'none';
+  bx.clearRect(0, 0, dw, dh); bx.filter = 'blur(1.2px)'; bx.drawImage(bg, 0, 0, dw, dh); bx.filter = 'none';
+  const cd = cx.getImageData(0, 0, dw, dh).data;
+  const bd = bx.getImageData(0, 0, dw, dh).data;
+  const thr = Math.max(2, opts.threshold);
+  const maskImg = new ImageData(dw, dh);
+  const md = maskImg.data;
+  let any = false;
+  for (let i = 0; i < cd.length; i += 4) {
+    const dr = cd[i] - bd[i], dg = cd[i + 1] - bd[i + 1], db = cd[i + 2] - bd[i + 2];
+    let d = Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db));
+    if (opts.suppressShadows && dr < 0 && dg < 0 && db < 0) {
+      const chroma = Math.abs(dr - dg) + Math.abs(dg - db) + Math.abs(dr - db);
+      if (chroma < thr * 1.3) d = 0; // uniform darkening + low chroma shift => shadow
+    }
+    const a = d <= thr ? 0 : d >= thr * 2 ? 255 : Math.round(((d - thr) / thr) * 255);
+    if (a > 0) any = true;
+    md[i] = 255; md[i + 1] = 255; md[i + 2] = 255; md[i + 3] = a;
+  }
+  if (!any) return null;
+  const maskC = faScratch('fa-mask', dw, dh);
+  const mctx = maskC.getContext('2d')!;
+  mctx.putImageData(maskImg, 0, 0);
+  // open (blur + re-threshold) to kill speckle and fill small holes
+  const clean = faScratch('fa-clean', dw, dh);
+  const clx = clean.getContext('2d')!;
+  clx.clearRect(0, 0, dw, dh);
+  clx.filter = 'blur(2.5px)'; clx.drawImage(maskC, 0, 0); clx.filter = 'none';
+  const cid = clx.getImageData(0, 0, dw, dh);
+  for (let i = 3; i < cid.data.length; i += 4) cid.data[i] = cid.data[i] > 110 ? 255 : 0;
+  clx.putImageData(cid, 0, 0);
+  const out = document.createElement('canvas');
+  out.width = W; out.height = H;
+  const octx = out.getContext('2d')!;
+  octx.drawImage(src, 0, 0);
+  octx.globalCompositeOperation = 'destination-in';
+  const f = Math.max(0, opts.feather || 0);
+  octx.filter = f > 0 ? `blur(${f}px)` : 'none';
+  octx.drawImage(clean, 0, 0, W, H);
+  octx.filter = 'none';
+  octx.globalCompositeOperation = 'source-over';
+  return out;
+}
+
 export default function App() {
   // State
   const [layers, setLayers] = useState<Layer[]>(() => {
@@ -1948,7 +2043,11 @@ export default function App() {
   const accumulateCanvasRef = useRef<Record<string, HTMLCanvasElement>>({});
   const referenceFrameRef = useRef<Record<string, HTMLCanvasElement>>({});
   const frameAccumulatorSnapshotsRef = useRef<Record<string, HTMLCanvasElement[]>>({});
-  const stutterStateRef = useRef<Record<string, { triggerStamp: boolean; clearBuffer: boolean; wasActive?: boolean; lastCaptureTime?: number }>>({});
+  const stutterStateRef = useRef<Record<string, { triggerStamp: boolean; clearBuffer: boolean; wasActive?: boolean; lastCaptureTime?: number; setBg?: boolean; medianBg?: { frames: ImageData[]; need: number } | null }>>({});
+  // "Isolate Motion" state: persistent composite buffer + background plate + cutout list per layer.
+  const frameAccBufRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const frameAccBgRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const frameAccCutoutsRef = useRef<Record<string, HTMLCanvasElement[]>>({});
   const stickinessCirclesRef = useRef<Record<string, { count: number, circles: any[] }>>({});
   const videoRewindStateRef = useRef<Record<string, { triggered?: boolean; rewinding: boolean; visible?: boolean; lastSeekTime?: number; virtualTime?: number; rewindStartTime?: number }>>({});
   const rewindFramesBufferRef = useRef<Record<string, HTMLCanvasElement[]>>({});
@@ -8344,10 +8443,13 @@ export default function App() {
           const snapshots = frameAccumulatorSnapshotsRef.current[layer.id];
           const stState = stutterStateRef.current[layer.id] || { triggerStamp: false, clearBuffer: false, wasActive: false, lastCaptureTime: 0 };
           stutterStateRef.current[layer.id] = stState;
+          const isolate = !!layer.accumulateIsolateMotion;
+          const cutouts = frameAccCutoutsRef.current[layer.id] || (frameAccCutoutsRef.current[layer.id] = []);
 
           // Clear Canvas if requested
           if (stState.clearBuffer) {
             snapshots.length = 0;
+            cutouts.length = 0;
             stState.clearBuffer = false;
           }
 
@@ -8362,46 +8464,114 @@ export default function App() {
             const trigState = triggerStatesRef.current[triggerKey];
             isTriggerDown = !!trigState?.isDown || (trigState?.phase === 'attack');
           }
-
-          if (isTriggerDown && !stState.wasActive) {
-            stState.triggerStamp = true;
-          }
+          if (isTriggerDown && !stState.wasActive) stState.triggerStamp = true;
           stState.wasActive = isTriggerDown;
 
-          // 2. On trigger stamp (rising edge of hit):
-          if (stState.triggerStamp) {
-            stState.triggerStamp = false;
+          const maxSnapshots = Math.max(2, Math.min(32, layer.accumulateMaxFrames || 16));
 
-            const snapCanvas = document.createElement('canvas');
-            snapCanvas.width = targetW;
-            snapCanvas.height = targetH;
-            const snapCtx = snapCanvas.getContext('2d')!;
-            snapCtx.drawImage(element, x, y, destW, destH);
+          if (isolate && element) {
+            // ---- Isolate Motion (multiplicity / chronophotography) ----
+            const cur = faScratch('fa-frame-' + layer.id, targetW, targetH);
+            const curCtx = cur.getContext('2d')!;
+            curCtx.clearRect(0, 0, targetW, targetH);
+            curCtx.drawImage(element, x, y, destW, destH);
 
-            snapshots.push(snapCanvas);
-            const maxSnapshots = Math.max(2, Math.min(32, layer.accumulateMaxFrames || 16));
-            while (snapshots.length > maxSnapshots) {
-              snapshots.shift();
+            let plate = frameAccBgRef.current[layer.id];
+
+            // Background plate: median collection in progress
+            if (stState.medianBg) {
+              const mw = Math.min(targetW, FA_DIFF_W);
+              const mh = Math.max(1, Math.round((mw * targetH) / targetW));
+              const s = faScratch('fa-med', mw, mh);
+              const sx = s.getContext('2d')!;
+              sx.clearRect(0, 0, mw, mh); sx.drawImage(cur, 0, 0, mw, mh);
+              stState.medianBg.frames.push(sx.getImageData(0, 0, mw, mh));
+              if (stState.medianBg.frames.length >= stState.medianBg.need) {
+                const med = faMedian(stState.medianBg.frames);
+                const pc = document.createElement('canvas'); pc.width = mw; pc.height = mh;
+                pc.getContext('2d')!.putImageData(med, 0, 0);
+                frameAccBgRef.current[layer.id] = pc;
+                plate = pc;
+                stState.medianBg = null;
+              }
             }
-          }
 
-          // 3. Render:
-          ctx.clearRect(0, 0, targetW, targetH);
+            // Background plate: explicit snapshot request, or first-run auto
+            if (stState.setBg || !plate) {
+              const pc = document.createElement('canvas'); pc.width = targetW; pc.height = targetH;
+              pc.getContext('2d')!.drawImage(cur, 0, 0);
+              frameAccBgRef.current[layer.id] = pc;
+              plate = pc;
+              stState.setBg = false;
+            }
 
-          // Draw the current live video frame as base
-          ctx.drawImage(element, x, y, destW, destH);
+            // Adaptive plate: slowly soak the current frame into the plate so it
+            // tracks lighting / small camera drift. Very low alpha so the moving
+            // subject only leaves a faint trail the threshold ignores.
+            if (layer.accumulateBgAdaptive && plate && !stState.medianBg) {
+              const pctx = plate.getContext('2d')!;
+              pctx.save();
+              pctx.globalAlpha = 0.035;
+              pctx.drawImage(cur, 0, 0, plate.width, plate.height);
+              pctx.restore();
+            }
 
-          // Overlay accumulated past frames on top with transparency & blend mode
-          if (snapshots.length > 0) {
-            const snapOpacity = layer.accumulateOpacity ?? 0.6;
-            const blendMode = layer.accumulateBlendMode || 'source-over';
+            const stampOpts = {
+              threshold: Math.max(2, Math.round(layer.accumulateThreshold ?? 22)),
+              feather: Math.max(0, Math.round(layer.accumulateFeather ?? 3)),
+              suppressShadows: !!layer.accumulateSuppressShadows,
+            };
 
-            for (let k = 0; k < snapshots.length; k++) {
+            if (stState.triggerStamp) {
+              stState.triggerStamp = false;
+              if (plate) {
+                const cutout = faBuildCutout(cur, plate, stampOpts);
+                if (cutout) {
+                  cutouts.push(cutout);
+                  while (cutouts.length > maxSnapshots) cutouts.shift();
+                }
+              }
+            }
+
+            // Render: one clean background + every frozen subject cutout
+            ctx.clearRect(0, 0, targetW, targetH);
+            if (plate) ctx.drawImage(plate, 0, 0, targetW, targetH);
+            else ctx.drawImage(cur, 0, 0);
+            const stampAlpha = layer.accumulateOpacity ?? 1;
+            for (let k = 0; k < cutouts.length; k++) {
               ctx.save();
-              ctx.globalAlpha = snapOpacity;
-              ctx.globalCompositeOperation = blendMode;
-              ctx.drawImage(snapshots[k], 0, 0);
+              ctx.globalAlpha = stampAlpha;
+              ctx.drawImage(cutouts[k], 0, 0);
               ctx.restore();
+            }
+            // Optionally show the live subject on top so the next moment is easy to time
+            if (layer.accumulateShowLive && plate) {
+              const live = faBuildCutout(cur, plate, stampOpts);
+              if (live) ctx.drawImage(live, 0, 0);
+            }
+          } else {
+            // ---- Overlay accumulation (original behaviour) ----
+            if (stState.triggerStamp) {
+              stState.triggerStamp = false;
+              const snapCanvas = document.createElement('canvas');
+              snapCanvas.width = targetW;
+              snapCanvas.height = targetH;
+              snapCanvas.getContext('2d')!.drawImage(element, x, y, destW, destH);
+              snapshots.push(snapCanvas);
+              while (snapshots.length > maxSnapshots) snapshots.shift();
+            }
+            ctx.clearRect(0, 0, targetW, targetH);
+            ctx.drawImage(element, x, y, destW, destH);
+            if (snapshots.length > 0) {
+              const snapOpacity = layer.accumulateOpacity ?? 0.6;
+              const blendMode = layer.accumulateBlendMode || 'source-over';
+              for (let k = 0; k < snapshots.length; k++) {
+                ctx.save();
+                ctx.globalAlpha = snapOpacity;
+                ctx.globalCompositeOperation = blendMode;
+                ctx.drawImage(snapshots[k], 0, 0);
+                ctx.restore();
+              }
             }
           }
 
@@ -12311,50 +12481,96 @@ return (
                                           </div>
                                        )}
 
-                                       {activeLayer.videoTriggerMode === 'frame-accumulator' && (
+                                       {activeLayer.videoTriggerMode === 'frame-accumulator' && (() => {
+                                          const setAcc = (patch: any) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, ...patch } : l));
+                                          const iso = !!activeLayer.accumulateIsolateMotion;
+                                          const stampNow = () => {
+                                            const s = stutterStateRef.current[activeLayer.id] || { triggerStamp: false, clearBuffer: false, wasActive: false };
+                                            s.triggerStamp = true; stutterStateRef.current[activeLayer.id] = s;
+                                          };
+                                          return (
                                           <div className="space-y-3 p-3 bg-black/30 border border-white/5 rounded mt-2">
                                             <div className="flex items-center justify-between">
                                               <label className="text-[8px] uppercase tracking-widest opacity-60 font-bold text-red-400">Accumulator Settings</label>
-                                              <button 
+                                              <button
                                                 onClick={() => {
-                                                  if (stutterStateRef.current[activeLayer.id]) {
-                                                    stutterStateRef.current[activeLayer.id].clearBuffer = true;
-                                                  }
-                                                  if (frameAccumulatorSnapshotsRef.current[activeLayer.id]) {
-                                                    frameAccumulatorSnapshotsRef.current[activeLayer.id] = [];
-                                                  }
+                                                  const s = stutterStateRef.current[activeLayer.id];
+                                                  if (s) s.clearBuffer = true;
+                                                  frameAccumulatorSnapshotsRef.current[activeLayer.id] = [];
+                                                  frameAccCutoutsRef.current[activeLayer.id] = [];
                                                 }}
                                                 className="px-2 py-0.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 text-[8px] font-bold uppercase rounded transition-colors"
                                               >
-                                                Clear Canvas
+                                                Clear Stamps
                                               </button>
                                             </div>
+
+                                            <button
+                                              onClick={() => setAcc({ accumulateIsolateMotion: !iso })}
+                                              className={`w-full flex items-center justify-between px-2 py-1.5 rounded border text-[9px] uppercase tracking-widest font-bold transition-colors ${iso ? 'bg-red-600 border-red-500 text-white' : 'bg-black/40 border-white/15 text-white/60 hover:text-white'}`}
+                                            >
+                                              <span>Isolate Motion</span>
+                                              <span className="opacity-70">{iso ? 'ON' : 'OFF'}</span>
+                                            </button>
+
+                                            {iso ? (
+                                              <>
+                                                <p className="text-[8px] text-white/30 leading-relaxed">Keeps one clean background and stamps only the moving subject at each trigger. Set a background first (Auto works from moving footage — no empty shot needed).</p>
+                                                <div className="grid grid-cols-2 gap-1.5">
+                                                  <button onClick={stampNow} className="px-2 py-1.5 rounded border border-white/15 hover:border-white/40 hover:text-white text-white/70 text-[8px] font-bold uppercase tracking-widest transition-colors">Stamp Now</button>
+                                                  <button onClick={() => { const s = stutterStateRef.current[activeLayer.id] || { triggerStamp: false, clearBuffer: false, wasActive: false }; s.setBg = true; stutterStateRef.current[activeLayer.id] = s; }} className="px-2 py-1.5 rounded border border-white/15 hover:border-white/40 hover:text-white text-white/70 text-[8px] font-bold uppercase tracking-widest transition-colors">Set BG (frame)</button>
+                                                  <button onClick={() => { const s = stutterStateRef.current[activeLayer.id] || { triggerStamp: false, clearBuffer: false, wasActive: false }; s.medianBg = { frames: [], need: 16 }; stutterStateRef.current[activeLayer.id] = s; }} className="col-span-2 px-2 py-1.5 rounded border border-white/15 hover:border-white/40 hover:text-white text-white/70 text-[8px] font-bold uppercase tracking-widest transition-colors">Set BG (auto · let the video play ~1s)</button>
+                                                </div>
+                                                <div className="space-y-2">
+                                                  <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Sensitivity</span><span>{activeLayer.accumulateThreshold ?? 22}</span></div>
+                                                  <input type="range" min="4" max="90" step="1" value={activeLayer.accumulateThreshold ?? 22} onChange={(e) => setAcc({ accumulateThreshold: parseInt(e.target.value) })} className="w-full accent-white h-1" />
+                                                </div>
+                                                <div className="space-y-2">
+                                                  <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Edge Feather</span><span>{activeLayer.accumulateFeather ?? 3}px</span></div>
+                                                  <input type="range" min="0" max="24" step="1" value={activeLayer.accumulateFeather ?? 3} onChange={(e) => setAcc({ accumulateFeather: parseInt(e.target.value) })} className="w-full accent-white h-1" />
+                                                </div>
+                                                <div className="space-y-2">
+                                                  <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Stamp Strength</span><span>{Math.round((activeLayer.accumulateOpacity ?? 1) * 100)}%</span></div>
+                                                  <input type="range" min="0.2" max="1" step="0.05" value={activeLayer.accumulateOpacity ?? 1} onChange={(e) => setAcc({ accumulateOpacity: parseFloat(e.target.value) })} className="w-full accent-white h-1" />
+                                                </div>
+                                                <div className="flex flex-wrap gap-1.5">
+                                                  {([['accumulateShowLive', 'Show Live'], ['accumulateSuppressShadows', 'Cut Shadows'], ['accumulateBgAdaptive', 'Adaptive BG']] as const).map(([key, lbl]) => (
+                                                    <button key={key} onClick={() => setAcc({ [key]: !(activeLayer as any)[key] })} className={`px-2 py-1 rounded border text-[8px] uppercase tracking-widest transition-colors ${(activeLayer as any)[key] ? 'bg-red-600 border-red-500 text-white' : 'bg-black/40 border-white/15 text-white/50 hover:text-white'}`}>{lbl}</button>
+                                                  ))}
+                                                </div>
+                                              </>
+                                            ) : (
+                                              <>
+                                                <div className="space-y-2">
+                                                  <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Stamp Opacity</span><span>{Math.round((activeLayer.accumulateOpacity ?? 0.6) * 100)}%</span></div>
+                                                  <input type="range" min="0.1" max="1" step="0.05" value={activeLayer.accumulateOpacity ?? 0.6} onChange={(e) => setAcc({ accumulateOpacity: parseFloat(e.target.value) })} className="w-full accent-white h-1" />
+                                                </div>
+                                                <div className="space-y-2">
+                                                  <label className="text-[8px] uppercase opacity-30 block">Blend Mode</label>
+                                                  <CustomSelect
+                                                    value={activeLayer.accumulateBlendMode || 'source-over'}
+                                                    onChange={(v) => setAcc({ accumulateBlendMode: v as GlobalCompositeOperation })}
+                                                    buttonClassName="w-full flex items-center justify-between gap-2 bg-black/60 border border-white/10 hover:border-white/25 rounded px-2 py-1 text-[9px] uppercase outline-none text-left text-white transition-colors"
+                                                    options={[
+                                                      { value: 'source-over', label: 'Normal (Source Over)' },
+                                                      { value: 'screen', label: 'Screen (Lighten)' },
+                                                      { value: 'lighten', label: 'Lighten' },
+                                                      { value: 'overlay', label: 'Overlay' },
+                                                      { value: 'difference', label: 'Difference' },
+                                                      { value: 'color-dodge', label: 'Color Dodge' },
+                                                    ]}
+                                                  />
+                                                </div>
+                                              </>
+                                            )}
+
                                             <div className="space-y-2">
-                                              <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Stamp Opacity</span><span>{Math.round((activeLayer.accumulateOpacity ?? 0.6) * 100)}%</span></div>
-                                              <input type="range" min="0.1" max="1" step="0.05" value={activeLayer.accumulateOpacity ?? 0.6} onChange={(e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, accumulateOpacity: parseFloat(e.target.value) } : l))} className="w-full accent-white h-1" />
-                                            </div>
-                                            <div className="space-y-2">
-                                              <label className="text-[8px] uppercase opacity-30 block">Blend Mode</label>
-                                              <CustomSelect
-                                                value={activeLayer.accumulateBlendMode || 'source-over'}
-                                                onChange={(v) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, accumulateBlendMode: v as GlobalCompositeOperation } : l))}
-                                                buttonClassName="w-full flex items-center justify-between gap-2 bg-black/60 border border-white/10 hover:border-white/25 rounded px-2 py-1 text-[9px] uppercase outline-none text-left text-white transition-colors"
-                                                options={[
-                                                  { value: 'source-over', label: 'Normal (Source Over)' },
-                                                  { value: 'screen', label: 'Screen (Lighten)' },
-                                                  { value: 'lighten', label: 'Lighten' },
-                                                  { value: 'overlay', label: 'Overlay' },
-                                                  { value: 'difference', label: 'Difference' },
-                                                  { value: 'color-dodge', label: 'Color Dodge' },
-                                                ]}
-                                              />
-                                            </div>
-                                            <div className="space-y-2">
-                                              <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Max Stamped Frames</span><span>{activeLayer.accumulateMaxFrames || 16}</span></div>
-                                              <input type="range" min="2" max="32" step="1" value={activeLayer.accumulateMaxFrames || 16} onChange={(e) => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, accumulateMaxFrames: parseInt(e.target.value) } : l))} className="w-full accent-white h-1" />
+                                              <div className="flex justify-between text-[8px] uppercase opacity-40"><span>Max Stamps</span><span>{activeLayer.accumulateMaxFrames || 16}</span></div>
+                                              <input type="range" min="2" max="32" step="1" value={activeLayer.accumulateMaxFrames || 16} onChange={(e) => setAcc({ accumulateMaxFrames: parseInt(e.target.value) })} className="w-full accent-white h-1" />
                                             </div>
                                           </div>
-                                       )}
+                                          );
+                                       })()}
                                      </div>
                                    )}
                                 </div>
