@@ -99,6 +99,14 @@ interface LayerState {
   boundingCenter: THREE.Vector3;
   camera: CameraOrbitState;
   showAnchor: boolean;
+  // Last camera-group param values applied from renderLayer(). Used to diff so a
+  // param is only pushed into st.camera when a knob/trigger actually changed it
+  // -- otherwise live mouse-drag nav would be overwritten every frame.
+  lastCamParams: { pitch: number; yaw: number; roll: number; zoom: number } | null;
+  // Splat CPU-sort throttle: only re-run viewer.update() (the depth sort) when
+  // the view changed, with a periodic safety refresh.
+  splatSortTick: number;
+  splatLastView: string;
   raycastSamples: Float32Array | null; // world-space xyz triples, capped ~6000 points
   glitchSeed: number;
   // mesh-only
@@ -308,6 +316,8 @@ export class ThreeDEngine {
         boundingRadius: 1, boundingCenter: new THREE.Vector3(),
         camera: { pitch: 10, yaw: 0, roll: 0, radius: 3, anchor: new THREE.Vector3() },
         showAnchor: false,
+        lastCamParams: null,
+        splatSortTick: 0, splatLastView: '',
         raycastSamples: null, glitchSeed: Math.random() * 1000,
         meshNodes: [], meshPointCloud: null,
         kinectGeometry: null, kinectMaterial: null, kinectPoints: null,
@@ -435,6 +445,9 @@ export class ThreeDEngine {
       camera: this.camera,
       selfDrivenMode: false,
       useBuiltInControls: false,
+      // GPU sort renders once then stalls under this manual update()/render()
+      // driving, so stay on the CPU-worker sort. Cost is bounded instead by
+      // only calling viewer.update() when the view actually changed (renderLayer).
       gpuAcceleratedSort: false,
       sharedMemoryForWorkers: typeof self !== 'undefined' && (self as any).crossOriginIsolated === true,
       dropInMode: false,
@@ -714,15 +727,16 @@ export class ThreeDEngine {
     const st = this.layers.get(layerId);
     if (!st || st.loading || st.loadError) return null;
 
-    // Camera: base orbit values come from the params (knobs / trigger-modulated),
-    // but manual mouse-drag nav (setCameraOrbit/panAnchor/moveAnchor) writes
-    // directly into st.camera -- knobs are the source of truth only while the
-    // user isn't actively dragging; App.tsx flushes drag results back into the
-    // layer's threeDSettings on pointer-up so both stay in sync.
-    st.camera.pitch = params.pitch;
-    st.camera.yaw = params.yaw;
-    st.camera.roll = params.roll;
-    st.camera.radius = Math.max(0.01, st.boundingRadius * 2.6 * params.zoom);
+    // Camera: knob/trigger params own the orbit, but manual mouse-drag nav
+    // (setCameraOrbit/panAnchor/moveAnchor) writes straight into st.camera. Only
+    // push a param into st.camera when it actually changed since last frame, so
+    // an in-progress drag isn't stomped every frame by an unchanged knob value.
+    const lcp = st.lastCamParams;
+    if (!lcp || lcp.pitch !== params.pitch) st.camera.pitch = params.pitch;
+    if (!lcp || lcp.yaw !== params.yaw) st.camera.yaw = params.yaw;
+    if (!lcp || lcp.roll !== params.roll) st.camera.roll = params.roll;
+    if (!lcp || lcp.zoom !== params.zoom) st.camera.radius = Math.max(0.01, st.boundingRadius * 2.6 * params.zoom);
+    st.lastCamParams = { pitch: params.pitch, yaw: params.yaw, roll: params.roll, zoom: params.zoom };
 
     this.camera.fov = params.fov;
     this.camera.updateProjectionMatrix();
@@ -789,7 +803,16 @@ export class ThreeDEngine {
 
     if (st.kind === 'splat' && st.splatViewer) {
       this.renderer.clippingPlanes = [];
-      st.splatViewer.update();
+      // viewer.update() runs the CPU depth sort + a pile of uniform recompute;
+      // it's only needed when the view (or the splat's own transform) changed.
+      // Skip it on static frames, with a periodic refresh as a safety net.
+      const p = this.camera.position, q = this.camera.quaternion, cp = st.content?.position;
+      const view = `${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)},${q.x.toFixed(4)},${q.y.toFixed(4)},${q.z.toFixed(4)},${q.w.toFixed(4)},${cp ? cp.x.toFixed(3) + ',' + cp.y.toFixed(3) + ',' + cp.z.toFixed(3) : ''}`;
+      if (view !== st.splatLastView || st.splatSortTick % 45 === 0) {
+        st.splatLastView = view;
+        st.splatViewer.update();
+      }
+      st.splatSortTick++;
       st.splatViewer.render();
     } else {
       this.renderer.clippingPlanes = (st.kind === 'mesh' ? this.getMeshClipPlanes(st) : []);

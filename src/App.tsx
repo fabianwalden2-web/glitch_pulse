@@ -2680,6 +2680,7 @@ export default function App() {
 
         layer.mappings.forEach(m => processMapping(m, 'effect'));
         layer.generativeMappings?.forEach(m => processMapping(m, 'gen'));
+        layer.threeDMappings?.forEach(m => processMapping(m, '3d'));
 
         ['size', 'rotation', 'posX', 'posY'].forEach(paramName => {
            if (layer.transformTriggerActive?.[paramName]) {
@@ -2743,6 +2744,9 @@ export default function App() {
                    } else if (paramId.startsWith('generative-')) {
                       const pName = paramId.replace('generative-', '');
                       newLayer.generativeSettings = { ...(newLayer.generativeSettings || {}), [pName]: mappedValue };
+                   } else if (paramId.startsWith('3d-')) {
+                      const pName = paramId.replace('3d-', '');
+                      newLayer.threeDSettings = { ...(newLayer.threeDSettings || {}), [pName]: mappedValue };
                    } else if (paramId.startsWith('effect-')) {
                       const parts = paramId.split('-');
                       const mappingId = parts[1];
@@ -8034,8 +8038,18 @@ export default function App() {
               }
 
               const easeKey = '3d-' + layer.id + '-' + p.name;
-              const currentEased = parameterEasingRef.current[easeKey] !== undefined ? parameterEasingRef.current[easeKey] : baseVal;
-              const finalVal = (currentEased as number) + (targetVal - (currentEased as number)) * 0.15;
+              // Camera-nav params (orbit + zoom) are also driven by direct mouse
+              // drag in the canvas -- easing them would fight the drag and cause a
+              // "snap back then slide" after release. Apply those immediately;
+              // keep the easing ref synced so it's correct if a trigger later rides on top.
+              const isNavParam = p.name === 'pitch' || p.name === 'yaw' || p.name === 'roll' || p.name === 'zoom';
+              let finalVal: number;
+              if (isNavParam) {
+                finalVal = targetVal;
+              } else {
+                const currentEased = parameterEasingRef.current[easeKey] !== undefined ? parameterEasingRef.current[easeKey] : baseVal;
+                finalVal = (currentEased as number) + (targetVal - (currentEased as number)) * 0.15;
+              }
               parameterEasingRef.current[easeKey] = finalVal;
               modifiedThreeD[p.name] = finalVal;
 

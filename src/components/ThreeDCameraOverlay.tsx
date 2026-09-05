@@ -57,6 +57,7 @@ export function ThreeDCameraOverlay({
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     if (!active) return;
     e.preventDefault();
+    e.stopPropagation();
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     dragState.current = { mode: e.button === 2 ? 'pan' : 'orbit', lastX: e.clientX, lastY: e.clientY };
   }, [active]);
@@ -67,11 +68,12 @@ export function ThreeDCameraOverlay({
     const dy = e.clientY - dragState.current.lastY;
     dragState.current.lastX = e.clientX;
     dragState.current.lastY = e.clientY;
-    const lb = getLetterbox();
-    const norm = lb ? Math.max(1, lb.renderedW) : 800;
     if (dragState.current.mode === 'orbit') {
-      onOrbit(-dy * (180 / norm), -dx * (270 / norm));
+      // Fixed degrees-per-pixel so the feel doesn't depend on canvas size.
+      onOrbit(-dy * 0.4, -dx * 0.4);
     } else {
+      const lb = getLetterbox();
+      const norm = lb ? Math.max(1, lb.renderedW) : 800;
       onPan(dx / norm, dy / norm);
     }
   }, [active, getLetterbox, onOrbit, onPan]);
@@ -80,11 +82,20 @@ export function ThreeDCameraOverlay({
     if (dragState.current) { dragState.current = null; onDragEnd(); }
   }, [onDragEnd]);
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    if (!active) return;
-    e.preventDefault();
-    onZoom(1 + e.deltaY * 0.0015);
-    onDragEnd();
+  // React attaches onWheel as a passive listener, so preventDefault() there is
+  // ignored and the page scrolls. Bind a non-passive native listener instead so
+  // scroll-to-zoom stays inside the canvas while 3D controls are active.
+  useEffect(() => {
+    const el = overlayRef.current;
+    if (!el || !active) return;
+    const onWheelNative = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onZoom(1 + e.deltaY * 0.0015);
+      onDragEnd();
+    };
+    el.addEventListener('wheel', onWheelNative, { passive: false });
+    return () => el.removeEventListener('wheel', onWheelNative);
   }, [active, onZoom, onDragEnd]);
 
   const handleDoubleClick = useCallback((e: React.MouseEvent) => {
@@ -115,13 +126,12 @@ export function ThreeDCameraOverlay({
     <div
       ref={overlayRef}
       className="absolute inset-0 z-20"
-      style={{ pointerEvents: active ? 'auto' : 'none', cursor: active ? 'grab' : 'default' }}
+      style={{ pointerEvents: active ? 'auto' : 'none', cursor: active ? 'grab' : 'default', touchAction: active ? 'none' : 'auto' }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={endDrag}
       onPointerLeave={endDrag}
       onPointerCancel={endDrag}
-      onWheel={handleWheel}
       onDoubleClick={handleDoubleClick}
       onContextMenu={(e) => { if (active) e.preventDefault(); }}
       title={active ? 'Drag to orbit, right-drag to pan, scroll to zoom, double-click to place anchor, arrow keys to move anchor' : undefined}
