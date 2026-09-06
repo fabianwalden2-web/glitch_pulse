@@ -9033,24 +9033,23 @@ export default function App() {
               const dbVeinRgb = hexToRgb(dbVein);
 
               const db = modifiedSettings;
-              const dbSpeed = Math.max(0, Math.min(3, db.speed ?? 1));
+              const dbSpeed = Math.max(0, Math.min(3, db.speed ?? 1));   // signal propagation speed
               const dbDetails = Math.max(1, Math.min(8, Math.round(db.details ?? 4)));
               const dbBlend = Math.max(0, Math.min(1, db.blend ?? 0.5));
               const dbDensity = Math.max(0, Math.min(1, db.density ?? 0.5));
               const dbMut = Math.max(0, Math.min(1, db.mutation ?? 0.3));
               const dbBlur = Math.max(0, Math.min(1, db.blur ?? 0.3));
-              const dbDist = Math.max(0, Math.min(1, db.distortion ?? 0));
               const dbSeed0 = Math.floor(db.seed ?? 7);
 
               let dbSt = dendriteBloomStateRef.current[layer.id];
               const dbFresh = !dbSt;
-              if (!dbSt) dbSt = dendriteBloomStateRef.current[layer.id] = { tips: [], segs: [], seed: dbSeed0 >>> 0, lastRegrow: 0, lastSurge: 0, surgeStart: -99 };
+              if (!dbSt) dbSt = dendriteBloomStateRef.current[layer.id] = { tips: [], segs: [], seed: dbSeed0 >>> 0, lastRegrow: 0, lastSurge: 0, surgeStart: -99, sig: 0 };
               const dbRnd = () => { dbSt.seed = (dbSt.seed * 1664525 + 1013904223) >>> 0; return dbSt.seed / 4294967296; };
               const dbSeedTips = () => {
-                  dbSt.segs = []; dbSt.tips = [];
+                  dbSt.segs = []; dbSt.tips = []; dbSt.sig = 0;
                   const n = 1 + Math.round(dbDensity * 5);
                   for (let i = 0; i < n; i++) {
-                      dbSt.tips.push({ x: targetW * (0.3 + dbRnd() * 0.4), y: targetH * (0.55 + dbRnd() * 0.35), ang: -Math.PI / 2 + (dbRnd() - 0.5) * 1.0, gen: 0, age: 0 });
+                      dbSt.tips.push({ x: targetW * (0.3 + dbRnd() * 0.4), y: targetH * (0.55 + dbRnd() * 0.35), ang: -Math.PI / 2 + (dbRnd() - 0.5) * 1.0, gen: 0, age: 0, d: 0 });
                   }
               };
               if (dbFresh || (dbSt.tips.length === 0 && dbSt.segs.length === 0)) dbSeedTips();
@@ -9058,70 +9057,70 @@ export default function App() {
               const dbRegrowN = Number(db.regrow ?? 0), dbSurgeN = Number(db.surge ?? 0);
               if (dbRegrowN > dbSt.lastRegrow) { dbSt.lastRegrow = dbRegrowN; dbSt.seed = (dbSeed0 + Math.floor(dbRegrowN) * 2654435761) >>> 0; dbSeedTips(); }
               if (dbSurgeN > dbSt.lastSurge) { dbSt.lastSurge = dbSurgeN; dbSt.surgeStart = nowSec; }
-              const dbSurgeT = nowSec - dbSt.surgeStart;
-              const dbSurgeP = (dbSurgeT >= 0 && dbSurgeT < 1.1) ? dbSurgeT / 1.1 : -1;
 
-              const dbSteps = Math.max(1, Math.round(dbSpeed * 2.4));
-              const dbMaxSegs = 3000;
+              const dbDt = Math.min(0.05, Math.max(0.004, deltaTime || 0.016));
+              const dbMaxSegs = 2200;
               const dbStep = Math.min(targetW, targetH) * 0.012;
-              for (let s = 0; s < dbSteps; s++) {
-                  const next: any[] = [];
-                  for (const tp of dbSt.tips) {
-                      tp.ang += (dbRnd() - 0.5) * dbMut * 0.9;
-                      const nx = tp.x + Math.cos(tp.ang) * dbStep;
-                      const ny = tp.y + Math.sin(tp.ang) * dbStep;
-                      dbSt.segs.push({ x1: tp.x, y1: tp.y, x2: nx, y2: ny, gen: tp.gen, born: nowSec });
-                      tp.x = nx; tp.y = ny; tp.age += 1;
-                      if (nx < -20 || nx > targetW + 20 || ny < -20 || ny > targetH + 20 || tp.age > 90) continue;
-                      if (tp.gen < dbDetails && dbRnd() < 0.02 + dbDensity * 0.06) {
-                          const off = 0.5 + dbRnd() * 0.8;
-                          next.push({ x: nx, y: ny, ang: tp.ang - off, gen: tp.gen + 1, age: 0 });
-                          next.push({ x: nx, y: ny, ang: tp.ang + off, gen: tp.gen + 1, age: 0 });
-                      } else next.push(tp);
+              // The dendrites grow in at a fixed modest pace, then hold; `speed`
+              // instead drives a signal that flows along them, root -> tip.
+              if (dbSt.segs.length < dbMaxSegs && dbSt.tips.length > 0) {
+                  for (let s = 0; s < 2; s++) {
+                      const next: any[] = [];
+                      for (const tp of dbSt.tips) {
+                          tp.ang += (dbRnd() - 0.5) * dbMut * 0.9;
+                          const nx = tp.x + Math.cos(tp.ang) * dbStep;
+                          const ny = tp.y + Math.sin(tp.ang) * dbStep;
+                          tp.d += 1;
+                          dbSt.segs.push({ x1: tp.x, y1: tp.y, x2: nx, y2: ny, gen: tp.gen, d: tp.d });
+                          tp.x = nx; tp.y = ny; tp.age += 1;
+                          if (nx < -20 || nx > targetW + 20 || ny < -20 || ny > targetH + 20 || tp.age > 120) continue;
+                          if (tp.gen < dbDetails && dbRnd() < 0.02 + dbDensity * 0.06) {
+                              const off = 0.5 + dbRnd() * 0.8;
+                              next.push({ x: nx, y: ny, ang: tp.ang - off, gen: tp.gen + 1, age: 0, d: tp.d });
+                              next.push({ x: nx, y: ny, ang: tp.ang + off, gen: tp.gen + 1, age: 0, d: tp.d });
+                          } else next.push(tp);
+                      }
+                      dbSt.tips = next.length > 400 ? next.slice(0, 400) : next;
+                      if (dbSt.segs.length >= dbMaxSegs) { dbSt.tips = []; break; }
                   }
-                  dbSt.tips = next.length > 400 ? next.slice(0, 400) : next;
-                  if (dbSt.segs.length > dbMaxSegs) dbSt.segs.splice(0, dbSt.segs.length - dbMaxSegs);
-                  if (dbSt.tips.length === 0) dbSeedTips();
               }
+
+              const DB_SPACING = 11;
+              dbSt.sig += dbSpeed * 15 * dbDt;
+              const dbSurgeT = nowSec - dbSt.surgeStart;
+              const dbSurgeFront = (dbSurgeT >= 0 && dbSurgeT < 1.2) ? dbSurgeT * 130 : -999;
 
               ctx.fillStyle = dbBg; ctx.fillRect(0, 0, targetW, targetH);
               if (dbBlend > 0.02) {
-                  ctx.save();
                   const bg = ctx.createRadialGradient(targetW * 0.5, targetH * 0.5, 0, targetW * 0.5, targetH * 0.5, Math.max(targetW, targetH) * 0.7);
                   bg.addColorStop(0, `rgba(${dbVeinRgb.r},${dbVeinRgb.g},${dbVeinRgb.b},${(dbBlend * 0.08).toFixed(3)})`);
                   bg.addColorStop(1, 'rgba(0,0,0,0)');
                   ctx.fillStyle = bg; ctx.fillRect(0, 0, targetW, targetH);
-                  ctx.restore();
               }
               ctx.globalCompositeOperation = 'lighter';
               ctx.lineCap = 'round';
-              const dbWarp = (x: number, y: number) => dbDist > 0.01
-                  ? { x: x + Math.sin(y * 0.02 + nowSec) * dbDist * 22, y: y + Math.cos(x * 0.02 - nowSec) * dbDist * 22 }
-                  : { x, y };
               const dbSc = Math.min(targetW, targetH) / 720;
               const dbPasses = dbBlur > 0.02 ? 2 : 1;
               for (let p = dbPasses - 1; p >= 0; p--) {
                   const wMul = 1 + p * (2 + dbBlur * 5);
                   const aMul = p === 0 ? 1 : (0.14 + dbBlur * 0.2);
                   for (const sg of dbSt.segs) {
-                      const a = dbWarp(sg.x1, sg.y1), b = dbWarp(sg.x2, sg.y2);
                       ctx.lineWidth = Math.max(0.5, 2.6 - sg.gen * 0.3) * wMul * dbSc;
-                      let col = dbVein;
-                      if (dbSurgeP >= 0) {
-                          const age = nowSec - sg.born;
-                          const front = dbSurgeP * 1.5;
-                          if (age < front && age > front - 0.3) col = '#ffffff';
-                      }
+                      let rel = (sg.d - dbSt.sig) % DB_SPACING; if (rel < 0) rel += DB_SPACING;
+                      const flow = rel < 1.7 ? (1 - rel / 1.7) : 0;
+                      const surge = Math.abs(sg.d - dbSurgeFront) < 3.5 ? 1 : 0;
+                      let col = dbVein, boost = 0;
+                      if (surge) { col = '#ffffff'; boost = 0.6; }
+                      else if (flow > 0) { col = dbTip; boost = flow * 0.5; }
                       ctx.strokeStyle = col;
-                      ctx.globalAlpha = Math.max(0.03, (0.5 - sg.gen * 0.045) * aMul);
-                      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+                      ctx.globalAlpha = Math.max(0.03, ((0.42 - sg.gen * 0.04) + boost) * aMul);
+                      ctx.beginPath(); ctx.moveTo(sg.x1, sg.y1); ctx.lineTo(sg.x2, sg.y2); ctx.stroke();
                   }
               }
               ctx.fillStyle = dbTip;
               for (const tp of dbSt.tips) {
-                  const w = dbWarp(tp.x, tp.y);
                   ctx.globalAlpha = 0.8;
-                  ctx.beginPath(); ctx.arc(w.x, w.y, 1.6 * dbSc, 0, Math.PI * 2); ctx.fill();
+                  ctx.beginPath(); ctx.arc(tp.x, tp.y, 1.6 * dbSc, 0, Math.PI * 2); ctx.fill();
               }
               ctx.globalAlpha = 1;
               ctx.globalCompositeOperation = 'source-over';
@@ -9139,10 +9138,9 @@ export default function App() {
               const ecDebRgb = hexToRgb(ecDebris);
 
               const ec = modifiedSettings;
-              const ecSpeed = Math.max(0, Math.min(3, ec.speed ?? 1));
-              const ecSize = Math.max(0.2, Math.min(2, ec.size ?? 1));
+              const ecSpeed = Math.max(0, Math.min(1.2, ec.speed ?? 0.4));
+              const ecSize = Math.max(0.3, Math.min(3, ec.size ?? 1));   // debris particle size
               const ecEdge = Math.max(0, Math.min(1, ec.edge ?? 0.5));
-              const ecCoreB = Math.max(0, Math.min(1, ec.core ?? 0.7));
               const ecDetail = Math.max(20, Math.min(600, Math.round(ec.detail ?? 240)));
               const ecForm = Math.max(0, Math.min(1, ec.form ?? 0.5));
               const ecSpread = Math.max(0.2, Math.min(2, ec.spread ?? 1));
@@ -9163,13 +9161,13 @@ export default function App() {
               const ecClEnv = (() => { const t = nowSec - ecSt.collapseStart; return (t >= 0 && t < 1.4) ? Math.sin(Math.PI * (t / 1.4)) : 0; })();
 
               const ecDt = Math.min(0.05, Math.max(0.004, deltaTime || 0.016));
-              ecSt.phase += ecSpeed * ecDt;
+              ecSt.phase += ecSpeed * ecDt * 0.6;
 
               ctx.fillStyle = ecBg; ctx.fillRect(0, 0, targetW, targetH);
               const ecCx = targetW / 2, ecCy = targetH / 2;
               const ecUnit = Math.min(targetW, targetH) * 0.5;
               const ecSc = Math.min(targetW, targetH) / 720;
-              const ecCoreR = ecUnit * 0.42 * ecSize * (1 + ecFlEnv * 0.5 - ecClEnv * 0.4);
+              const ecCoreR = ecUnit * 0.42 * (1 + ecFlEnv * 0.5 - ecClEnv * 0.4);
 
               ctx.save();
               ctx.globalCompositeOperation = 'lighter';
@@ -9184,14 +9182,14 @@ export default function App() {
                   const fade = Math.max(0, 1 - Math.abs(rr / ecUnit - 1) * 0.8);
                   ctx.globalAlpha = (0.1 + 0.5 * fade) * (0.5 + p.sz * 0.5);
                   if (ecForm < 0.5) {
-                      const len = (6 + p.sz * 22) * ecSc * (1 - ecForm * 1.4);
+                      const len = (6 + p.sz * 22) * ecSc * (1 - ecForm * 1.4) * ecSize;
                       ctx.save();
                       ctx.translate(x, y);
                       ctx.rotate(a + Math.PI / 2);
-                      ctx.fillRect(-len * 0.5, -1.2, len, 2.4 + p.sz * 1.5);
+                      ctx.fillRect(-len * 0.5, -1.2 * ecSize, len, (2.4 + p.sz * 1.5) * ecSize);
                       ctx.restore();
                   } else {
-                      const sz = (1.5 + p.sz * 5) * ecSc * (0.4 + ecForm);
+                      const sz = (1.5 + p.sz * 5) * ecSc * (0.4 + ecForm) * ecSize;
                       ctx.beginPath(); ctx.arc(x, y, sz, 0, Math.PI * 2); ctx.fill();
                   }
               }
@@ -9201,7 +9199,7 @@ export default function App() {
               ctx.globalCompositeOperation = 'lighter';
               const eg = ctx.createRadialGradient(ecCx, ecCy, 0, ecCx, ecCy, ecCoreR * 1.7);
               const hardStop = 0.14 + ecEdge * 0.55;
-              eg.addColorStop(0, `rgba(255,${Math.min(255, 130 + ecCoreB * 125) | 0},${Math.min(210, 60 + ecCoreB * 120) | 0},${(0.55 + ecCoreB * 0.45).toFixed(2)})`);
+              eg.addColorStop(0, 'rgba(255,230,156,0.9)');
               eg.addColorStop(hardStop, `rgba(${ecCoreRgb.r},${ecCoreRgb.g},${ecCoreRgb.b},${(0.5 * (1 - ecClEnv * 0.6)).toFixed(2)})`);
               eg.addColorStop(1, 'rgba(0,0,0,0)');
               ctx.fillStyle = eg;
@@ -9227,7 +9225,7 @@ export default function App() {
               const wcRoll = (wc.roll ?? 0) * Math.PI / 180;
               const wcDepth = Math.max(6, Math.min(30, Math.round(wc.depth ?? 16)));
               const wcRelief = Math.max(0, Math.min(1, wc.relief ?? 0.5));
-              const wcWidth = Math.max(6, Math.min(24, Math.round(wc.width ?? 12)));
+              const wcWidth = 14;
               const wcSeed = Math.floor(wc.seed ?? 3);
 
               let wcSt = wireCanyonStateRef.current[layer.id];
@@ -9316,11 +9314,11 @@ export default function App() {
               const rtAcc = resolvedGenerativeColors['accent'] || '#eaffea';
 
               const rt = modifiedSettings;
-              const rtSpeed = Math.max(0, Math.min(4, rt.speed ?? 1));
+              const rtSpeed = Math.max(0, Math.min(4, rt.speed ?? 0.3));
               const rtSize = Math.max(0.3, Math.min(3, rt.size ?? 1));
               const rtZoom = Math.max(0.3, Math.min(3, rt.zoom ?? 1));
               const rtWob = Math.max(0, Math.min(1, rt.wobble ?? 0.2));
-              const rtTwist = Math.max(-2, Math.min(2, rt.twist ?? 0.4));
+              const rtTwist = 0.15;   // gentle fixed drift
               const rtRings = Math.max(6, Math.min(40, Math.round(rt.rings ?? 20)));
               const rtThick = Math.max(0.2, Math.min(3, rt.thickness ?? 1));
 
