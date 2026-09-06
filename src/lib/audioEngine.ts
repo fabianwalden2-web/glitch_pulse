@@ -37,9 +37,6 @@ export class AudioEngine {
       // legacy per-stem analysers and the decoupled AnalysisEngine hear the same graph.
       this.ctx = audioGraph.context;
       this.freqDataArray = new Uint8Array(this.fftSize / 2);
-      this.recordTap = this.ctx.createGain();
-      this.recordDest = this.ctx.createMediaStreamDestination();
-      this.recordTap.connect(this.recordDest);
       // fire-and-forget: boot the worklet + analysis engine
       void audioModule.init();
     }
@@ -48,9 +45,32 @@ export class AudioEngine {
     }
   }
 
+  // Built lazily, only when a recording actually needs it — creating a
+  // MediaStreamAudioDestination at startup can make the whole AudioContext
+  // re-pick its output device and go silent when an ASIO/exclusive driver
+  // (Maschine, a DAW…) is holding the device.
+  private ensureRecordTap() {
+    if (!this.ctx || this.recordTap) return;
+    try {
+      this.recordTap = this.ctx.createGain();
+      this.recordDest = this.ctx.createMediaStreamDestination();
+      this.recordTap.connect(this.recordDest);
+      // wire in every source that already exists
+      for (const s of this.stems.values()) {
+        const out = s.gainNode || s.analyserNode || s.sourceNode;
+        try { out?.connect(this.recordTap); } catch { /* already connected */ }
+      }
+    } catch (e) {
+      console.warn('Record tap unavailable', e);
+      this.recordTap = null;
+      this.recordDest = null;
+    }
+  }
+
   /** MediaStream of the current audio mix, for muxing into a canvas recording. */
   getRecordStream(): MediaStream | null {
     this.init();
+    this.ensureRecordTap();
     return this.recordDest?.stream ?? null;
   }
 
