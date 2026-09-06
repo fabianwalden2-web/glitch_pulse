@@ -59,7 +59,9 @@ import {
   Clapperboard,
   HelpCircle,
   ArrowLeft,
-  ArrowRight
+  ArrowRight,
+  Undo2,
+  Redo2
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition, BUILTIN_PALETTES, GenerativeElement, ColorPalettePreset, GENERATIVE_CATEGORY_ORDER } from './lib/generatives';
@@ -2150,17 +2152,73 @@ export default function App() {
   const [aspectRatioValue, setAspectRatioValue] = useState<number>(() => { const p = new URLSearchParams(window.location.search); return p.get('gen') ? 50 : 60; });
   const [resolutionScale, setResolutionScale] = useState(1.0); // Default to 100% Quality
 
-  // Quick-start tour: opens automatically on first ever visit, and from the Help icon.
+  // Quick-start tour: never auto-opens. The Help button glows red for a few
+  // seconds at session start to draw the eye, then settles into a normal button.
+  const [helpGlow, setHelpGlow] = useState(true);
   useEffect(() => {
-    try { if (!localStorage.getItem('gp-tour-done')) { setTourStep(0); setShowTour(true); } } catch { /* private mode */ }
+    const t = setTimeout(() => setHelpGlow(false), 4500);
+    return () => clearTimeout(t);
   }, []);
-  const openTour = () => { setTourStep(0); setShowTour(true); };
-  const closeTour = () => { setShowTour(false); try { localStorage.setItem('gp-tour-done', '1'); } catch { /* ignore */ } };
+  const openTour = () => { setHelpGlow(false); setTourStep(0); setShowTour(true); };
+  const closeTour = () => { setShowTour(false); };
   const prepTourStep = (n: number) => {
     const k = TOUR_STEPS[n]?.key;
     if (k === 'visuals') { setLeftCollapsed(false); setExpandedSection('layers'); }
     else if (k === 'audio') { setRightCollapsed(false); setRightSection('audio'); }
   };
+
+  // ---- Undo / redo for the layer state -------------------------------------
+  // Snapshots are taken on a short debounce so a knob drag lands as one entry,
+  // and trigger-driven modulation (which never touches `layers`) is ignored.
+  const historyRef = useRef<{ stack: Layer[][]; index: number; skip: boolean }>({ stack: [], index: -1, skip: false });
+  const [histVer, setHistVer] = useState(0);
+  useEffect(() => {
+    const h = historyRef.current;
+    if (h.stack.length === 0) { h.stack = [layers]; h.index = 0; setHistVer(v => v + 1); }
+  }, []);
+  useEffect(() => {
+    const h = historyRef.current;
+    if (h.skip) { h.skip = false; return; }
+    const t = setTimeout(() => {
+      const cur = h.stack[h.index];
+      if (cur && cur === layers) return;
+      if (cur && JSON.stringify(cur) === JSON.stringify(layers)) return;
+      h.stack = h.stack.slice(0, h.index + 1);
+      h.stack.push(layers);
+      if (h.stack.length > 80) h.stack.shift();
+      h.index = h.stack.length - 1;
+      setHistVer(v => v + 1);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [layers]);
+  const undoLayers = useCallback(() => {
+    const h = historyRef.current;
+    if (h.index <= 0) return;
+    h.index -= 1; h.skip = true;
+    setLayers(h.stack[h.index]);
+    setHistVer(v => v + 1);
+  }, []);
+  const redoLayers = useCallback(() => {
+    const h = historyRef.current;
+    if (h.index >= h.stack.length - 1) return;
+    h.index += 1; h.skip = true;
+    setLayers(h.stack[h.index]);
+    setHistVer(v => v + 1);
+  }, []);
+  const canUndo = histVer >= 0 && historyRef.current.index > 0;
+  const canRedo = histVer >= 0 && historyRef.current.index < historyRef.current.stack.length - 1;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return;
+      const k = e.key.toLowerCase();
+      if (k === 'z' && !e.shiftKey) { e.preventDefault(); undoLayers(); }
+      else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redoLayers(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [undoLayers, redoLayers]);
   const [sidebarTab, setSidebarTab] = useState<'config' | 'triggers'>('config');
   const [belowPanel, setBelowPanel] = useState<'params' | 'colours' | 'fx'>('params');
   const [isRecording, setIsRecording] = useState(false);
@@ -11546,7 +11604,9 @@ export default function App() {
 
           <button
             onClick={openTour}
-            className="px-2.5 py-1 rounded-full border text-[8px] uppercase tracking-widest transition-all flex items-center gap-1.5 cursor-pointer bg-black/40 border-white/20 text-white/70 hover:text-white hover:border-white"
+            className={`px-2.5 py-1 rounded-full border text-[8px] uppercase tracking-widest transition-all flex items-center gap-1.5 cursor-pointer ${
+              helpGlow ? 'bg-red-600 border-red-500 text-white animate-pulse shadow-[0_0_15px_rgba(239,68,68,0.5)]' : 'bg-black/40 border-white/20 text-white/70 hover:text-white hover:border-white'
+            }`}
             title="Quick start — how to make your first visual"
           >
             <HelpCircle size={12} />
@@ -11563,6 +11623,25 @@ export default function App() {
             <Radio size={11} className={isMidiLearnMode ? 'animate-spin' : ''} />
             MIDI Learn {isMidiLearnMode ? 'ACTIVE' : ''}
           </button>
+
+          <div className="flex items-center gap-1 pl-2 border-l border-white/10">
+            <button
+              onClick={undoLayers}
+              disabled={!canUndo}
+              className="p-1.5 rounded border border-white/10 text-white/60 hover:text-white hover:border-white/30 transition-colors disabled:opacity-25 disabled:cursor-not-allowed disabled:hover:text-white/60 disabled:hover:border-white/10"
+              title="Undo layer edit  (Ctrl+Z)"
+            >
+              <Undo2 size={14} />
+            </button>
+            <button
+              onClick={redoLayers}
+              disabled={!canRedo}
+              className="p-1.5 rounded border border-white/10 text-white/60 hover:text-white hover:border-white/30 transition-colors disabled:opacity-25 disabled:cursor-not-allowed disabled:hover:text-white/60 disabled:hover:border-white/10"
+              title="Redo layer edit  (Ctrl+Shift+Z)"
+            >
+              <Redo2 size={14} />
+            </button>
+          </div>
         </div>
         
         <h1 className="text-xs font-light tracking-[0.5em] uppercase opacity-80 hidden xl:block absolute left-1/2 -translate-x-1/2 pointer-events-none">Glitch Pulse</h1>
