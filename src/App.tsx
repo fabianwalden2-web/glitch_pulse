@@ -2323,7 +2323,6 @@ export default function App() {
   const symbolPortraitStateRef = useRef<Record<string, any>>({});
   const inkBlotStateRef = useRef<Record<string, any>>({});
   const floatingGemStateRef = useRef<Record<string, any>>({});
-  const confettiScatterStateRef = useRef<Record<string, any>>({});
   const wovenHexStateRef = useRef<Record<string, any>>({});
   const circuitRoutesStateRef = useRef<Record<string, any>>({});
   const spiralShellsStateRef = useRef<Record<string, any>>({});
@@ -5234,10 +5233,10 @@ export default function App() {
               }
               const ctx = canvas.getContext('2d')!;
               ctx.clearRect(0, 0, targetW, targetH);
-              const cmBg = resolvedGenerativeColors['background'] || '#2e2117';
-              const cmColA = hexToRgb(resolvedGenerativeColors['cube_a'] || resolvedGenerativeColors['cubes'] || resolvedGenerativeColors['primary'] || '#cf7d2a');
-              const cmColB = hexToRgb(resolvedGenerativeColors['cube_b'] || '#4de8e0');
-              const cmColC = hexToRgb(resolvedGenerativeColors['cube_c'] || '#df9bf3');
+              const cmBg = resolvedGenerativeColors['background'] || '#f1faee';
+              const cmColA = hexToRgb(resolvedGenerativeColors['cube_a'] || resolvedGenerativeColors['cubes'] || resolvedGenerativeColors['primary'] || '#e63946');
+              const cmColB = hexToRgb(resolvedGenerativeColors['cube_b'] || '#1d3557');
+              const cmColC = hexToRgb(resolvedGenerativeColors['cube_c'] || '#457b9d');
               const cmPalette = [cmColA, cmColB, cmColC];
               if (!isTransparentColor(cmBg)) {
                   ctx.fillStyle = cmBg;
@@ -5262,10 +5261,12 @@ export default function App() {
               const shuf = cmSt.shuf;
               const cmRand = (s: number) => { const x = Math.sin(s * 12.9898 + 78.233 + shuf * 3.71) * 43758.5453; return x - Math.floor(x); };
 
-              // Standard Isometric angles (35.264 deg pitch, 45 deg yaw)
+              // Standard Isometric angles (35.264 deg pitch, 45 deg yaw).
+              // Negative pitch = looking DOWN onto the cubes (top faces visible),
+              // the classic iso-game view, rather than up from below.
               // `rotation` is a manual yaw offset that always applies (works with speed at 0);
               // `speed` adds a continuous auto-spin on top.
-              const rotX = 0.61548; // Math.atan(1 / Math.SQRT2)
+              const rotX = -0.61548; // -Math.atan(1 / Math.SQRT2)
               const rotY = (Math.PI / 4) + t * 0.6 + rotVal * (Math.PI * 2 / 5);
               const rotZ = 0.0;
               
@@ -8140,81 +8141,6 @@ export default function App() {
               ctx.beginPath();
               for (const [a, b] of fgEdges) { ctx.moveTo(proj[a].x, proj[a].y); ctx.lineTo(proj[b].x, proj[b].y); }
               ctx.stroke();
-
-              element = canvas;
-          } else if (def.uuid === 'confetti-scatter-canvas-1') {
-              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
-              const canvas = sphereCanvasRef.current[layer.id];
-              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
-              const ctx = canvas.getContext('2d')!;
-
-              const csBg = resolvedGenerativeColors['background'] || '#ffffff';
-              const csA = resolvedGenerativeColors['shape_a'] || '#e63946';
-              const csB = resolvedGenerativeColors['shape_b'] || '#1d3557';
-
-              let csSt = confettiScatterStateRef.current[layer.id];
-              if (!csSt) { csSt = { parts: [], lastBurst: 0 }; confettiScatterStateRef.current[layer.id] = csSt; }
-
-              const cs = modifiedSettings;
-              const density = Math.max(10, Math.min(500, Math.round(cs.density ?? 160)));
-              const gravity = Math.max(0, cs.gravity ?? 0.6);
-              const spin = Math.max(0, cs.spin ?? 1.2);
-              const sizeMul = Math.max(0.1, cs.size ?? 1);
-              const turb = Math.max(0, cs.turbulence ?? 0.5);
-              const burstCount = Number(cs.burst ?? 0);
-              const freezeCount = Number(cs.freeze ?? 0);
-              const frozen = Math.floor(freezeCount) % 2 === 1;
-
-              const csKinds = ['tri', 'circle', 'dash', 'rect'] as const;
-              const spawn = (seeded: boolean) => {
-                  const s = (4 + Math.random() * 14) * sizeMul * (Math.min(targetW, targetH) / 700);
-                  return {
-                      x: Math.random() * targetW, y: seeded ? Math.random() * targetH : -Math.random() * targetH * 0.4,
-                      vx: 0, vy: 0,
-                      rot: Math.random() * Math.PI * 2, rotSpeed: (Math.random() - 0.5) * spin * 4,
-                      kind: csKinds[Math.floor(Math.random() * csKinds.length)],
-                      colorA: Math.random() < 0.5, size: s, ph: Math.random() * 10,
-                  };
-              };
-              while (csSt.parts.length < density) csSt.parts.push(spawn(true));
-              if (csSt.parts.length > density) csSt.parts.length = density;
-
-              if (burstCount > csSt.lastBurst) {
-                  csSt.lastBurst = burstCount;
-                  for (const p of csSt.parts) {
-                      const a = Math.atan2(p.y - targetH / 2, p.x - targetW / 2) + (Math.random() - 0.5) * 0.6;
-                      const v = 5 + Math.random() * 10;
-                      p.x = targetW / 2; p.y = targetH / 2;
-                      p.vx = Math.cos(a) * v; p.vy = Math.sin(a) * v;
-                  }
-              }
-
-              if (!frozen) {
-                  for (const p of csSt.parts) {
-                      p.vy += gravity * 0.12;
-                      p.vx += Math.sin(nowSec * 0.8 + p.ph) * turb * 0.08;
-                      p.vx *= 0.985; p.vy *= 0.995;
-                      p.x += p.vx; p.y += p.vy;
-                      p.rot += p.rotSpeed * deltaTime;
-                      if (p.y - p.size > targetH) { p.y = -p.size; p.x = Math.random() * targetW; p.vx = 0; p.vy = 0; }
-                      if (p.x < -20) p.x = targetW + 20;
-                      if (p.x > targetW + 20) p.x = -20;
-                  }
-              }
-
-              ctx.fillStyle = csBg; ctx.fillRect(0, 0, targetW, targetH);
-              for (const p of csSt.parts) {
-                  ctx.save();
-                  ctx.translate(p.x, p.y);
-                  ctx.rotate(p.rot);
-                  ctx.fillStyle = p.colorA ? csA : csB;
-                  const s = p.size;
-                  if (p.kind === 'tri') { ctx.beginPath(); ctx.moveTo(0, -s * 0.6); ctx.lineTo(s * 0.55, s * 0.5); ctx.lineTo(-s * 0.55, s * 0.5); ctx.closePath(); ctx.fill(); }
-                  else if (p.kind === 'circle') { ctx.beginPath(); ctx.arc(0, 0, s * 0.42, 0, Math.PI * 2); ctx.fill(); }
-                  else if (p.kind === 'dash') { ctx.fillRect(-s * 0.6, -s * 0.09, s * 1.2, s * 0.18); }
-                  else { ctx.fillRect(-s * 0.35, -s * 0.35, s * 0.7, s * 0.7); }
-                  ctx.restore();
-              }
 
               element = canvas;
           } else if (def.uuid === 'woven-hex-blocks-1') {
@@ -15137,7 +15063,6 @@ return (
                                    if (uuid === 'symbol-portrait-canvas-1') return '👤';
                                    if (uuid === 'ink-blot-canvas-1') return '🖋️';
                                    if (uuid === 'floating-gem-canvas-1') return '💎';
-                                   if (uuid === 'confetti-scatter-canvas-1') return '🎊';
                                    if (uuid === 'woven-hex-blocks-1') return '⬡';
                                    if (uuid === 'circuit-routes-1') return '🔌';
                                    if (uuid === 'spiral-shells-1') return '🐚';

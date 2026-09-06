@@ -153,7 +153,7 @@ export const GENERATIVES_DATA = [
   "description": "3D Cubes Matrix",
   "color": "white",
   "movement": true,
-  "defaultPaletteId": "retro_amber",
+  "defaultPaletteId": "bauhaus_primary",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "rotation", "min": 0.0, "max": 5.0, "default": 0.0, "type": "number" },
@@ -165,10 +165,10 @@ export const GENERATIVES_DATA = [
     { "name": "reshuffle", "default": 0, "type": "action" }
   ],
   "elements": [
-    { "id": "background", "name": "Background", "defaultColor": "#2e2117" },
-    { "id": "cube_a", "name": "Cube Colour A", "defaultColor": "#cf7d2a" },
-    { "id": "cube_b", "name": "Cube Colour B", "defaultColor": "#4de8e0" },
-    { "id": "cube_c", "name": "Cube Colour C", "defaultColor": "#df9bf3" }
+    { "id": "background", "name": "Background", "defaultColor": "#f1faee" },
+    { "id": "cube_a", "name": "Cube Colour A", "defaultColor": "#e63946" },
+    { "id": "cube_b", "name": "Cube Colour B", "defaultColor": "#1d3557" },
+    { "id": "cube_c", "name": "Cube Colour C", "defaultColor": "#457b9d" }
   ],
   "uuid": "cubes-matrix-3d-1"
 }*/`,
@@ -415,9 +415,9 @@ void main() {
   {
     header: `/*{
   "description": "3D Debris Rocks",
-  "color": "black",
+  "color": "white",
   "movement": true,
-  "defaultPaletteId": "coral_reef",
+  "defaultPaletteId": "risograph_paper",
   "parameters": [
     { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
     { "name": "count", "min": 10.0, "max": 150.0, "default": 80.0, "type": "number" },
@@ -427,9 +427,9 @@ void main() {
     { "name": "gravity", "default": 0, "type": "action" }
   ],
   "elements": [
-    { "id": "background", "name": "Background", "defaultColor": "#e0560f" },
-    { "id": "debris", "name": "Flying Debris", "defaultColor": "#0a0a0a" },
-    { "id": "debris_alt", "name": "Debris Accent", "defaultColor": "#ffae5c" }
+    { "id": "background", "name": "Background", "defaultColor": "#f4f0e4" },
+    { "id": "debris", "name": "Flying Debris", "defaultColor": "#171717" },
+    { "id": "debris_alt", "name": "Debris Accent", "defaultColor": "#8a8578" }
   ],
   "uuid": "3d-debris-canvas-1"
 }*/`,
@@ -1633,9 +1633,9 @@ void main(void) {
     header: `/*{
   "description": "Floating Gem",
   "category": "Geometric",
-  "color": "white",
+  "color": "black",
   "movement": true,
-  "defaultPaletteId": "ember_glow",
+  "defaultPaletteId": "aurora_glow",
   "parameters": [
     { "name": "facets",         "min": 4.0, "max": 10.0, "default": 6.0,  "type": "number" },
     { "name": "rotation_speed", "min": 0.0, "max": 3.0,  "default": 0.6,  "type": "number" },
@@ -1646,37 +1646,12 @@ void main(void) {
     { "name": "shatter", "default": 0, "type": "action" }
   ],
   "elements": [
-    { "id": "background", "name": "Sky", "defaultColor": "#1b2140" },
-    { "id": "gem", "name": "Gem Facets", "defaultColor": "#ffcf5c" },
-    { "id": "beam", "name": "Light Beam", "defaultColor": "#ff7a2e" },
+    { "id": "background", "name": "Sky", "defaultColor": "#0a0a12" },
+    { "id": "gem", "name": "Gem Facets", "defaultColor": "#8b6cf0" },
+    { "id": "beam", "name": "Light Beam", "defaultColor": "#f0a0d8" },
     { "id": "dust", "name": "Dust Motes", "defaultColor": "#ffffff" }
   ],
   "uuid": "floating-gem-canvas-1"
-}*/`,
-    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
-  },
-  {
-    header: `/*{
-  "description": "Confetti Scatter",
-  "category": "Geometric",
-  "color": "black",
-  "movement": true,
-  "defaultPaletteId": "bauhaus_primary",
-  "parameters": [
-    { "name": "density",     "min": 40.0, "max": 400.0, "default": 160.0, "type": "number" },
-    { "name": "gravity",     "min": 0.0,  "max": 3.0,   "default": 0.6,   "type": "number" },
-    { "name": "spin",        "min": 0.0,  "max": 4.0,   "default": 1.2,   "type": "number" },
-    { "name": "size",        "min": 0.4,  "max": 2.5,   "default": 1.0,   "type": "number" },
-    { "name": "turbulence",  "min": 0.0,  "max": 2.0,   "default": 0.5,   "type": "number" },
-    { "name": "burst",  "default": 0, "type": "action" },
-    { "name": "freeze", "default": 0, "type": "action" }
-  ],
-  "elements": [
-    { "id": "background", "name": "Background", "defaultColor": "#ffffff" },
-    { "id": "shape_a", "name": "Shape Colour A", "defaultColor": "#e63946" },
-    { "id": "shape_b", "name": "Shape Colour B", "defaultColor": "#1d3557" }
-  ],
-  "uuid": "confetti-scatter-canvas-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   },
@@ -2079,7 +2054,6 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'orb-cluster-canvas-1': 'Geometric',
   'symbol-portrait-canvas-1': 'Geometric',
   'floating-gem-canvas-1': 'Geometric',
-  'confetti-scatter-canvas-1': 'Geometric',
   'woven-hex-blocks-1': 'Geometric',
   'spiral-shells-1': 'Geometric',
   'polar-checker-1': 'Geometric',
