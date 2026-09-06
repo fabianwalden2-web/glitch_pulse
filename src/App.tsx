@@ -2145,7 +2145,7 @@ export default function App() {
   const [settingsSection, setSettingsSection] = useState<string | null>('midi-devices');
   const [showTour, setShowTour] = useState(false);
   const [tourStep, setTourStep] = useState(0);
-  const [rightSection, setRightSection] = useState<string | null>('triggers');
+  const [rightSection, setRightSection] = useState<string | null>('audio');
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [compositionLayout, setCompositionLayout] = useState<'stack' | 'split-vertical' | 'split-horizontal' | 'grid-2x2' | 'grid-3x3' | 'grid-4x4'>('stack');
