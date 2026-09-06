@@ -56,7 +56,10 @@ import {
   Crosshair,
   Focus,
   ExternalLink,
-  Clapperboard
+  Clapperboard,
+  HelpCircle,
+  ArrowLeft,
+  ArrowRight
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
 import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition, BUILTIN_PALETTES, GenerativeElement, ColorPalettePreset, GENERATIVE_CATEGORY_ORDER } from './lib/generatives';
@@ -1803,6 +1806,206 @@ function faBuildCutout(
   return out;
 }
 
+// ---- First-run quick-start tour --------------------------------------------
+const TOUR_STEPS = [
+  {
+    key: 'intro',
+    kicker: 'Quick start',
+    title: 'Your first visual in 30 seconds',
+    body: 'Three moves make a live, audio-reactive show: pick a visual, point it at a sound, then shape it with the knobs. Hit Next to see where each one lives.',
+    anchor: null as string | null,
+    place: 'center' as 'center' | 'right' | 'left' | 'top',
+  },
+  {
+    key: 'visuals',
+    kicker: 'Step 1',
+    title: 'Pick a visual',
+    body: "In Visuals, open a layer's source and choose a Generative script — they're grouped Geometric, Retro, Text and more. Or drop in a video, image or 3D file.",
+    anchor: 'tour-visuals',
+    place: 'right' as const,
+  },
+  {
+    key: 'audio',
+    kicker: 'Step 2',
+    title: 'Choose the sound',
+    body: 'Open Audio and press Load Audio to add a track — or hit the mic for live input. This is the signal your visuals react to; the big button plays it.',
+    anchor: 'tour-audio',
+    place: 'left' as const,
+  },
+  {
+    key: 'params',
+    kicker: 'Step 3',
+    title: 'Make it react, then tweak',
+    body: "Click the ⚡ on any knob to link it to the beat, then drag knobs and fire the action buttons to dial in the look. That's the whole loop.",
+    anchor: 'tour-params',
+    place: 'top' as const,
+  },
+];
+
+function TourMock({ kind }: { kind: string }) {
+  if (kind === 'visuals') return (
+    <div className="w-full space-y-1.5">
+      <div className="text-[8px] uppercase tracking-widest text-white/30 mb-1">Visuals</div>
+      {['Generative', 'Video', '3D Asset'].map((t, i) => (
+        <div key={t} className={`flex items-center gap-2 px-2 py-1.5 rounded border text-[9px] uppercase tracking-widest ${i === 0 ? 'border-red-500/60 bg-red-500/10 text-white' : 'border-white/10 text-white/35'}`}>
+          <Sparkles size={10} className="opacity-60" /> {t}
+        </div>
+      ))}
+    </div>
+  );
+  if (kind === 'audio') return (
+    <div className="w-full flex items-center gap-3">
+      <div className="w-10 h-10 rounded-full bg-white text-black grid place-items-center shrink-0"><Play size={15} fill="currentColor" className="ml-0.5" /></div>
+      <div className="flex-1 space-y-2">
+        <div className="flex gap-2 text-white/40"><Volume2 size={12} /><Repeat size={12} /></div>
+        <div className="h-1 rounded-full bg-white/15 overflow-hidden"><div className="h-full w-1/3 bg-red-500" /></div>
+      </div>
+    </div>
+  );
+  if (kind === 'params') return (
+    <div className="w-full grid grid-cols-4 gap-3 px-2">
+      {[0, 1, 2, 3].map(i => (
+        <div key={i} className="flex flex-col items-center gap-1.5">
+          <div className="w-8 h-8 rounded-full border border-white/25 grid place-items-center">
+            <span className="w-[2px] h-3 bg-white/70 rounded" style={{ transform: `rotate(${-45 + i * 30}deg)` }} />
+          </div>
+          {i === 0 ? <Zap size={10} className="text-red-500" /> : <span className="h-[10px]" />}
+        </div>
+      ))}
+    </div>
+  );
+  return (
+    <div className="flex items-center gap-2.5 text-white/45 text-[9px] uppercase tracking-[0.2em]">
+      <span className="flex items-center gap-1"><Sparkles size={13} className="text-red-400" /> Pick</span>
+      <span className="opacity-30">/</span>
+      <span className="flex items-center gap-1"><Activity size={13} className="text-red-400" /> Sync</span>
+      <span className="opacity-30">/</span>
+      <span className="flex items-center gap-1"><Sliders size={13} className="text-red-400" /> Tweak</span>
+    </div>
+  );
+}
+
+function TutorialOverlay({ open, step, onStep, onClose, onPrepStep }: {
+  open: boolean;
+  step: number;
+  onStep: (n: number) => void;
+  onClose: () => void;
+  onPrepStep: (n: number) => void;
+}) {
+  const [rect, setRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const clamped = Math.max(0, Math.min(TOUR_STEPS.length - 1, step));
+  const s = TOUR_STEPS[clamped];
+  const last = clamped >= TOUR_STEPS.length - 1;
+
+  useEffect(() => {
+    if (!open) return;
+    onPrepStep(clamped);
+    const isDesktop = window.innerWidth >= 1024;
+    const measure = () => {
+      if (!s.anchor || !isDesktop) { setRect(null); return; }
+      const el = document.getElementById(s.anchor);
+      if (!el) { setRect(null); return; }
+      const r = el.getBoundingClientRect();
+      setRect({ left: r.left, top: r.top, width: r.width, height: r.height });
+    };
+    let r1 = requestAnimationFrame(() => { requestAnimationFrame(measure); });
+    const iv = window.setInterval(measure, 400);
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, true);
+    return () => {
+      cancelAnimationFrame(r1);
+      window.clearInterval(iv);
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, clamped]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+      else if (e.key === 'ArrowRight') { last ? onClose() : onStep(clamped + 1); }
+      else if (e.key === 'ArrowLeft' && clamped > 0) onStep(clamped - 1);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, clamped, last]);
+
+  if (!open) return null;
+
+  const P = 10;
+  const spot = rect ? {
+    left: Math.max(4, rect.left - P),
+    top: Math.max(4, rect.top - P),
+    width: rect.width + P * 2,
+    height: rect.height + P * 2,
+  } : null;
+
+  const CARD_W = 360;
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+  let cardStyle: React.CSSProperties = { left: '50%', top: '50%', transform: 'translate(-50%,-50%)' };
+  if (spot) {
+    if (s.place === 'right') cardStyle = { left: Math.min(vw - CARD_W - 16, spot.left + spot.width + 18), top: Math.max(16, Math.min(vh - 360, spot.top)) };
+    else if (s.place === 'left') cardStyle = { left: Math.max(16, spot.left - CARD_W - 18), top: Math.max(16, Math.min(vh - 360, spot.top)) };
+    else if (s.place === 'top') cardStyle = { left: Math.max(16, Math.min(vw - CARD_W - 16, spot.left + spot.width / 2 - CARD_W / 2)), top: Math.max(16, spot.top - 344) };
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 z-[200] font-sans" role="dialog" aria-modal="true" aria-label="Quick start tutorial">
+      {spot ? (
+        <div
+          className="absolute rounded-lg pointer-events-none transition-all duration-200"
+          style={{ ...spot, boxShadow: '0 0 0 9999px rgba(0,0,0,0.76), 0 0 0 2px rgba(239,68,68,0.9), 0 0 26px 3px rgba(239,68,68,0.35)' }}
+        />
+      ) : (
+        <div className="absolute inset-0 bg-black/76" />
+      )}
+
+      <div
+        className="absolute w-[min(360px,calc(100vw-32px))] bg-[#0c0c0f] border border-white/15 rounded-xl shadow-2xl p-5 text-white transition-all duration-200"
+        style={cardStyle}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex gap-1.5 items-center">
+            {TOUR_STEPS.map((_, i) => (
+              <span key={i} className={`h-1.5 rounded-full transition-all ${i === clamped ? 'w-5 bg-red-500' : 'w-1.5 bg-white/25'}`} />
+            ))}
+          </div>
+          <button onClick={onClose} className="text-white/40 hover:text-white transition-colors" aria-label="Close tutorial"><X size={16} /></button>
+        </div>
+
+        <div className="rounded-lg border border-white/10 bg-black/40 p-4 mb-4 grid place-items-center min-h-[124px]">
+          <TourMock kind={s.key} />
+        </div>
+
+        <div className="text-[9px] uppercase tracking-[0.25em] text-red-400/80 font-bold mb-1.5">{s.kicker}</div>
+        <h3 className="text-[15px] font-bold tracking-tight mb-1.5">{s.title}</h3>
+        <p className="text-[12px] leading-relaxed text-white/55">{s.body}</p>
+
+        <div className="flex items-center justify-between mt-5">
+          <button
+            onClick={() => clamped > 0 && onStep(clamped - 1)}
+            disabled={clamped === 0}
+            className="px-3 py-2 rounded-lg border border-white/15 text-[10px] uppercase tracking-widest flex items-center gap-1.5 transition-colors disabled:opacity-20 disabled:cursor-not-allowed enabled:hover:bg-white/10"
+          >
+            <ArrowLeft size={13} /> Back
+          </button>
+          <span className="text-[10px] font-mono text-white/35 tabular-nums">{clamped + 1} / {TOUR_STEPS.length}</span>
+          <button
+            onClick={() => last ? onClose() : onStep(clamped + 1)}
+            className="px-3 py-2 rounded-lg bg-white text-black text-[10px] uppercase tracking-widest font-bold flex items-center gap-1.5 hover:bg-white/90 transition-colors"
+          >
+            {last ? 'Start' : 'Next'}{!last && <ArrowRight size={13} />}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 export default function App() {
   // State
   const [layers, setLayers] = useState<Layer[]>(() => {
@@ -1938,12 +2141,26 @@ export default function App() {
   const [showSidebar, setShowSidebar] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsSection, setSettingsSection] = useState<string | null>('midi-devices');
+  const [showTour, setShowTour] = useState(false);
+  const [tourStep, setTourStep] = useState(0);
   const [rightSection, setRightSection] = useState<string | null>('triggers');
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [compositionLayout, setCompositionLayout] = useState<'stack' | 'split-vertical' | 'split-horizontal' | 'grid-2x2' | 'grid-3x3' | 'grid-4x4'>('stack');
   const [aspectRatioValue, setAspectRatioValue] = useState<number>(() => { const p = new URLSearchParams(window.location.search); return p.get('gen') ? 50 : 60; });
   const [resolutionScale, setResolutionScale] = useState(1.0); // Default to 100% Quality
+
+  // Quick-start tour: opens automatically on first ever visit, and from the Help icon.
+  useEffect(() => {
+    try { if (!localStorage.getItem('gp-tour-done')) { setTourStep(0); setShowTour(true); } } catch { /* private mode */ }
+  }, []);
+  const openTour = () => { setTourStep(0); setShowTour(true); };
+  const closeTour = () => { setShowTour(false); try { localStorage.setItem('gp-tour-done', '1'); } catch { /* ignore */ } };
+  const prepTourStep = (n: number) => {
+    const k = TOUR_STEPS[n]?.key;
+    if (k === 'visuals') { setLeftCollapsed(false); setExpandedSection('layers'); }
+    else if (k === 'audio') { setRightCollapsed(false); setRightSection('audio'); }
+  };
   const [sidebarTab, setSidebarTab] = useState<'config' | 'triggers'>('config');
   const [belowPanel, setBelowPanel] = useState<'params' | 'colours' | 'fx'>('params');
   const [isRecording, setIsRecording] = useState(false);
@@ -2081,13 +2298,6 @@ export default function App() {
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [audioMuted, setAudioMuted] = useState(false);
   const [audioLoop, setAudioLoop] = useState(true);
-  const [ytUrl, setYtUrl] = useState('');
-  const [ytVideoId, setYtVideoId] = useState<string | null>(null);
-  const [ytStatus, setYtStatus] = useState('');
-  const extractYouTubeId = (url: string): string | null => {
-    const m = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/);
-    return m ? m[1] : (/^[A-Za-z0-9_-]{11}$/.test(url.trim()) ? url.trim() : null);
-  };
   const [audioTime, setAudioTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
 
@@ -11170,29 +11380,67 @@ export default function App() {
   // ---- Reusable panel bodies (placed in sidebars / hamburger drawer) ----
   const audioSourcesPanel = (
     <div className="p-4 space-y-4">
-      <div className="flex gap-2">
-        <label className="flex-1 border border-white/10 p-3 rounded bg-transparent hover:border-white hover:bg-white hover:text-black transition-colors flex items-center justify-center gap-2 cursor-pointer">
-          <Upload size={14} className="opacity-50" />
-          <span className="text-[10px] uppercase tracking-widest font-bold">Load Stems</span>
-          <input type="file" multiple accept="audio/*" onChange={handleAddAudioStem} className="hidden" />
-        </label>
-        <button
-          onClick={async () => {
-            const id = 'live-mic';
-            await engine.addLiveInput(id, 'Live Mic/Line', selectedAudioDevice || undefined);
-            setAudioStems(prev => [...prev.filter(s => s.id !== id), { id, name: 'Live Mic/Line', fileUrl: 'live', isMuted: false, isSoloed: false }]);
-          }}
-          className="px-4 border border-white/10 rounded bg-transparent hover:border-white hover:bg-white hover:text-black transition-colors flex items-center justify-center"
-          title="Use Live Microphone / Audio Interface"
-        >
-          <Mic size={14} />
-        </button>
-        <button
-          onClick={toggleAudioPlay}
-          className={`px-4 rounded flex items-center justify-center transition-colors ${audioPlaying ? 'bg-red-600 text-white' : 'border border-white/20 hover:bg-white hover:text-black'}`}
-        >
-          {audioPlaying ? <Pause size={14} /> : <Play size={14} />}
-        </button>
+      {/* Music player — moved here from under the canvas */}
+      {audioStems.length > 0 && (
+        <div className="rounded-xl border border-white/10 bg-black/30 p-3.5 space-y-3">
+          <div className="flex items-center gap-3.5">
+            <button
+              onClick={toggleAudioPlay}
+              className="w-12 h-12 shrink-0 rounded-full bg-white text-black grid place-items-center hover:scale-105 active:scale-95 transition-transform shadow-lg"
+              title={audioPlaying ? 'Pause' : 'Play'}
+              aria-label={audioPlaying ? 'Pause' : 'Play'}
+            >
+              {audioPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
+            </button>
+            <div className="min-w-0 flex-1">
+              <div className="text-[9px] uppercase tracking-widest opacity-45 truncate">
+                {audioStems.length === 1 ? audioStems[0].name : `${audioStems.length} sources`}
+              </div>
+              <div className="flex items-center gap-2 mt-1.5">
+                <button onClick={toggleAudioMute} title={audioMuted ? 'Unmute' : 'Mute'} aria-label={audioMuted ? 'Unmute' : 'Mute'} className={`transition-colors ${audioMuted ? 'text-red-500' : 'text-white/45 hover:text-white'}`}>
+                  {audioMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+                </button>
+                <button onClick={toggleAudioLoop} title={audioLoop ? 'Loop on' : 'Loop off'} aria-label="Toggle loop" className={`transition-colors ${audioLoop ? 'text-red-500' : 'text-white/30 hover:text-white'}`}>
+                  <Repeat size={15} />
+                </button>
+                <span className="ml-auto text-[9px] font-mono opacity-45 tabular-nums">{formatTime(audioTime)} / {formatTime(audioDuration)}</span>
+              </div>
+            </div>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={audioDuration || 1}
+            step={0.01}
+            value={Math.min(audioTime, audioDuration || 0)}
+            onChange={handleSeek}
+            className="w-full h-1 accent-red-600 cursor-pointer"
+            aria-label="Seek"
+          />
+        </div>
+      )}
+
+      {/* Source — load an audio file, or use live input */}
+      <div className="space-y-1.5">
+        <label className="text-[8px] uppercase tracking-widest opacity-40 block">{audioStems.length > 0 ? 'Change audio' : 'Audio source'}</label>
+        <div className="flex gap-2">
+          <label className="flex-1 border border-white/10 p-3 rounded bg-transparent hover:border-white hover:bg-white hover:text-black transition-colors flex items-center justify-center gap-2 cursor-pointer">
+            <Upload size={14} className="opacity-50" />
+            <span className="text-[10px] uppercase tracking-widest font-bold">Load Audio</span>
+            <input type="file" multiple accept="audio/*" onChange={handleAddAudioStem} className="hidden" />
+          </label>
+          <button
+            onClick={async () => {
+              const id = 'live-mic';
+              await engine.addLiveInput(id, 'Live Mic/Line', selectedAudioDevice || undefined);
+              setAudioStems(prev => [...prev.filter(s => s.id !== id), { id, name: 'Live Mic/Line', fileUrl: 'live', isMuted: false, isSoloed: false }]);
+            }}
+            className="px-4 border border-white/10 rounded bg-transparent hover:border-white hover:bg-white hover:text-black transition-colors flex items-center justify-center"
+            title="Use live microphone / audio interface"
+          >
+            <Mic size={14} />
+          </button>
+        </div>
       </div>
 
       <div className="space-y-1">
@@ -11208,63 +11456,20 @@ export default function App() {
         />
       </div>
 
-      <div className="space-y-1.5 pb-3 border-b border-white/5">
-        <label className="text-[8px] uppercase tracking-widest opacity-40 block">YouTube / Browser Audio</label>
-        <div className="flex gap-1">
-          <input
-            value={ytUrl}
-            onChange={(e) => setYtUrl(e.target.value)}
-            placeholder="Paste a YouTube link…"
-            className="flex-1 bg-black/40 border border-white/10 rounded p-1.5 text-[9px] outline-none font-mono min-w-0"
-          />
-          <button
-            onClick={() => { const id = extractYouTubeId(ytUrl); setYtVideoId(id); setYtStatus(id ? '' : 'Not a valid YouTube link'); }}
-            className="px-2 border border-white/10 rounded text-[9px] uppercase tracking-widest hover:bg-white hover:text-black transition-colors shrink-0"
-          >Load</button>
-        </div>
-        {ytVideoId && (
-          <>
-            <iframe
-              key={ytVideoId}
-              className="w-full rounded border border-white/10 mt-1"
-              style={{ aspectRatio: '16 / 9' }}
-              src={`https://www.youtube.com/embed/${ytVideoId}`}
-              allow="encrypted-media; picture-in-picture; fullscreen"
-              title="YouTube source"
-            />
-            <button
-              onClick={async () => {
-                setYtStatus('Connecting… choose this tab and enable "Share tab audio".');
-                const res = await engine.addTabAudio('yt-audio', 'YouTube');
-                if (res.ok) {
-                  setAudioStems(prev => [...prev.filter(s => s.id !== 'yt-audio'), { id: 'yt-audio', name: 'YouTube', fileUrl: 'youtube', isMuted: false, isSoloed: false }]);
-                  setYtStatus('✓ Connected. Press play on the video, then it drives your triggers.');
-                } else {
-                  setYtStatus(res.error || 'Could not connect audio.');
-                }
-              }}
-              className="w-full border border-white/10 rounded p-2 mt-1 text-[9px] uppercase tracking-widest hover:bg-white hover:text-black transition-colors"
-            >Connect this audio for reactivity</button>
-            <p className="text-[8px] opacity-30 leading-tight">Audio stays muted until you press play on the video and connect it here.</p>
-          </>
-        )}
-        {ytStatus && <p className="text-[8px] opacity-40 leading-tight">{ytStatus}</p>}
-      </div>
-
-      <div className="space-y-2">
-        {audioStems.length === 0 ? (
-          <div className="text-[9px] text-center opacity-40 uppercase tracking-widest py-4 border border-white/5 border-dashed rounded">No audio sources</div>
-        ) : audioStems.map(stem => (
-          <div key={stem.id} className="flex items-center justify-between p-2 rounded bg-transparent border border-white/5 text-[10px]">
-            <span className="truncate w-20 font-mono uppercase text-[9px] opacity-80">{stem.name}</span>
-            <div className="flex items-center gap-1">
-              <button onClick={() => toggleStemMute(stem.id)} className={`px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider transition-colors ${stem.isMuted ? 'bg-red-500/20 text-red-500 font-bold' : 'bg-transparent opacity-40 hover:opacity-100'}`}>M</button>
-              <button onClick={() => toggleStemSolo(stem.id)} className={`px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider transition-colors ${stem.isSoloed ? 'bg-white/20 text-white font-bold' : 'bg-transparent opacity-40 hover:opacity-100'}`}>S</button>
-              <button onClick={() => removeAudioStem(stem.id)} className="opacity-40 hover:opacity-100 hover:text-red-400 p-1 ml-1"><X size={10} /></button>
+      {audioStems.length > 0 && (
+        <div className="space-y-2 pt-1 border-t border-white/5">
+          {audioStems.map(stem => (
+            <div key={stem.id} className="flex items-center justify-between p-2 rounded bg-transparent border border-white/5 text-[10px]">
+              <span className="truncate w-20 font-mono uppercase text-[9px] opacity-80">{stem.name}</span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => toggleStemMute(stem.id)} className={`px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider transition-colors ${stem.isMuted ? 'bg-red-500/20 text-red-500 font-bold' : 'bg-transparent opacity-40 hover:opacity-100'}`}>M</button>
+                <button onClick={() => toggleStemSolo(stem.id)} className={`px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider transition-colors ${stem.isSoloed ? 'bg-white/20 text-white font-bold' : 'bg-transparent opacity-40 hover:opacity-100'}`}>S</button>
+                <button onClick={() => removeAudioStem(stem.id)} className="opacity-40 hover:opacity-100 hover:text-red-400 p-1 ml-1"><X size={10} /></button>
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 
@@ -11338,16 +11543,16 @@ export default function App() {
           >
             <Menu size={16} />
           </button>
-          <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-none ${isPlaying ? 'bg-red-500 animate-pulse' : 'bg-white/20'}`} />
-            <span className="text-[9px] font-mono tracking-widest opacity-40 uppercase">{status}</span>
-          </div>
-          
-          <div className="flex items-center gap-1.5 pl-3 border-l border-white/10" title={midiAccess ? 'MIDI Connected' : 'MIDI Offline'}>
-            <Activity size={12} className={midiAccess ? 'text-emerald-500' : 'text-red-500 opacity-50'} />
-            <span className="text-[9px] font-mono tracking-widest opacity-40 uppercase">MIDI IN</span>
-          </div>
-          
+
+          <button
+            onClick={openTour}
+            className="px-2.5 py-1 rounded-full border text-[8px] uppercase tracking-widest transition-all flex items-center gap-1.5 cursor-pointer bg-black/40 border-white/20 text-white/70 hover:text-white hover:border-white"
+            title="Quick start — how to make your first visual"
+          >
+            <HelpCircle size={12} />
+            Help
+          </button>
+
           <button
             onClick={() => setIsMidiLearnMode(!isMidiLearnMode)}
             className={`px-2.5 py-1 rounded-full border text-[8px] uppercase tracking-widest transition-all flex items-center gap-1 cursor-pointer ${
@@ -11568,7 +11773,8 @@ export default function App() {
             isExpanded={expandedSection === 'layers'} 
             onToggle={() => setExpandedSection(expandedSection === 'layers' ? null : 'layers')}
           >
-            <div 
+            <div
+              id="tour-visuals"
               className={`p-2 space-y-2 relative transition-all rounded ${isDraggingOverVisuals ? 'bg-red-950/20 ring-1 ring-red-500/50' : ''}`}
               onDragOver={(e) => {
                 e.preventDefault();
@@ -12344,54 +12550,8 @@ export default function App() {
           </div>
         </main>
 
-          {/* Audio Transport Bar */}
-          {audioStems.length > 0 && (
-            <div className="shrink-0 bg-[#0b0b0d] border-t border-white/10 px-3 sm:px-5 py-2 flex items-center gap-3 w-full relative z-40">
-              <button
-                onClick={toggleAudioMute}
-                title={audioMuted ? 'Unmute' : 'Mute'}
-                className={`p-1.5 shrink-0 transition-colors ${audioMuted ? 'text-red-500' : 'text-white/50 hover:text-white'}`}
-              >
-                {audioMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-              </button>
-
-              <button
-                onClick={toggleAudioPlay}
-                className="w-9 h-9 shrink-0 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-transform"
-                title={audioPlaying ? 'Pause' : 'Play'}
-              >
-                {audioPlaying ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" className="ml-0.5" />}
-              </button>
-
-              <span className="text-[10px] font-mono opacity-50 tabular-nums w-9 text-right shrink-0">{formatTime(audioTime)}</span>
-              <input
-                type="range"
-                min={0}
-                max={audioDuration || 1}
-                step={0.01}
-                value={Math.min(audioTime, audioDuration || 0)}
-                onChange={handleSeek}
-                className="flex-1 h-1 accent-red-600 cursor-pointer"
-                aria-label="Seek"
-              />
-              <span className="text-[10px] font-mono opacity-50 tabular-nums w-9 shrink-0">{formatTime(audioDuration)}</span>
-
-              <button
-                onClick={toggleAudioLoop}
-                title={audioLoop ? 'Loop on' : 'Loop off'}
-                className={`p-1.5 shrink-0 transition-colors ${audioLoop ? 'text-red-500' : 'text-white/35 hover:text-white'}`}
-              >
-                <Repeat size={16} />
-              </button>
-
-              <span className="text-[9px] uppercase tracking-widest opacity-40 truncate max-w-[110px] hidden xl:block shrink-0">
-                {audioStems.length === 1 ? audioStems[0].name : `${audioStems.length} stems`}
-              </span>
-            </div>
-          )}
-
-          {/* Bottom Parameter Panel */}
-          <div className="flex-1 min-h-[220px] bg-[#050505] border-t border-white/10 p-4 overflow-y-auto custom-scrollbar w-full relative z-40">
+          {/* Bottom Parameter Panel (music transport now lives under the Audio panel) */}
+          <div id="tour-params" className="flex-1 min-h-[220px] bg-[#050505] border-t border-white/10 p-4 overflow-y-auto custom-scrollbar w-full relative z-40">
              {(() => {
                 if (!activeLayerId) {
                   return (
@@ -13603,6 +13763,7 @@ return (
            </div>
            <div className="flex-1 custom-scrollbar overflow-y-auto pb-20">
 
+             <div id="tour-audio">
              <Section
                title="Audio"
                icon={<Activity size={16} />}
@@ -13611,6 +13772,7 @@ return (
              >
                {audioSourcesPanel}
              </Section>
+             </div>
 
              <Section
                title="Triggers"
@@ -14816,6 +14978,14 @@ return (
           );
         })()}
       </AnimatePresence>
+
+      <TutorialOverlay
+        open={showTour}
+        step={tourStep}
+        onStep={setTourStep}
+        onClose={closeTour}
+        onPrepStep={prepTourStep}
+      />
     </div>
   );
 }
