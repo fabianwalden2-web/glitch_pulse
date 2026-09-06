@@ -2333,6 +2333,10 @@ export default function App() {
   const deltaMazeStateRef = useRef<Record<string, any>>({});
   const threadNestStateRef = useRef<Record<string, any>>({});
   const isoBarWaveStateRef = useRef<Record<string, any>>({});
+  const dendriteBloomStateRef = useRef<Record<string, any>>({});
+  const emberCoreStateRef = useRef<Record<string, any>>({});
+  const wireCanyonStateRef = useRef<Record<string, any>>({});
+  const ringTunnelStateRef = useRef<Record<string, any>>({});
   const dragonTextStateRef = useRef<Record<string, any>>({});
 
   // Accumulation Mode Refs
@@ -9017,6 +9021,384 @@ export default function App() {
               }
               ctx.globalAlpha = 1;
               element = canvas;
+          } else if (def.uuid === 'dendrite-bloom-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const dbBg = resolvedGenerativeColors['background'] || '#0a0505';
+              const dbVein = resolvedGenerativeColors['veins'] || '#ff2a2a';
+              const dbTip = resolvedGenerativeColors['tips'] || '#ffb0a0';
+              const dbVeinRgb = hexToRgb(dbVein);
+
+              const db = modifiedSettings;
+              const dbSpeed = Math.max(0, Math.min(3, db.speed ?? 1));
+              const dbDetails = Math.max(1, Math.min(8, Math.round(db.details ?? 4)));
+              const dbBlend = Math.max(0, Math.min(1, db.blend ?? 0.5));
+              const dbDensity = Math.max(0, Math.min(1, db.density ?? 0.5));
+              const dbMut = Math.max(0, Math.min(1, db.mutation ?? 0.3));
+              const dbBlur = Math.max(0, Math.min(1, db.blur ?? 0.3));
+              const dbDist = Math.max(0, Math.min(1, db.distortion ?? 0));
+              const dbSeed0 = Math.floor(db.seed ?? 7);
+
+              let dbSt = dendriteBloomStateRef.current[layer.id];
+              const dbFresh = !dbSt;
+              if (!dbSt) dbSt = dendriteBloomStateRef.current[layer.id] = { tips: [], segs: [], seed: dbSeed0 >>> 0, lastRegrow: 0, lastSurge: 0, surgeStart: -99 };
+              const dbRnd = () => { dbSt.seed = (dbSt.seed * 1664525 + 1013904223) >>> 0; return dbSt.seed / 4294967296; };
+              const dbSeedTips = () => {
+                  dbSt.segs = []; dbSt.tips = [];
+                  const n = 1 + Math.round(dbDensity * 5);
+                  for (let i = 0; i < n; i++) {
+                      dbSt.tips.push({ x: targetW * (0.3 + dbRnd() * 0.4), y: targetH * (0.55 + dbRnd() * 0.35), ang: -Math.PI / 2 + (dbRnd() - 0.5) * 1.0, gen: 0, age: 0 });
+                  }
+              };
+              if (dbFresh || (dbSt.tips.length === 0 && dbSt.segs.length === 0)) dbSeedTips();
+
+              const dbRegrowN = Number(db.regrow ?? 0), dbSurgeN = Number(db.surge ?? 0);
+              if (dbRegrowN > dbSt.lastRegrow) { dbSt.lastRegrow = dbRegrowN; dbSt.seed = (dbSeed0 + Math.floor(dbRegrowN) * 2654435761) >>> 0; dbSeedTips(); }
+              if (dbSurgeN > dbSt.lastSurge) { dbSt.lastSurge = dbSurgeN; dbSt.surgeStart = nowSec; }
+              const dbSurgeT = nowSec - dbSt.surgeStart;
+              const dbSurgeP = (dbSurgeT >= 0 && dbSurgeT < 1.1) ? dbSurgeT / 1.1 : -1;
+
+              const dbSteps = Math.max(1, Math.round(dbSpeed * 2.4));
+              const dbMaxSegs = 3000;
+              const dbStep = Math.min(targetW, targetH) * 0.012;
+              for (let s = 0; s < dbSteps; s++) {
+                  const next: any[] = [];
+                  for (const tp of dbSt.tips) {
+                      tp.ang += (dbRnd() - 0.5) * dbMut * 0.9;
+                      const nx = tp.x + Math.cos(tp.ang) * dbStep;
+                      const ny = tp.y + Math.sin(tp.ang) * dbStep;
+                      dbSt.segs.push({ x1: tp.x, y1: tp.y, x2: nx, y2: ny, gen: tp.gen, born: nowSec });
+                      tp.x = nx; tp.y = ny; tp.age += 1;
+                      if (nx < -20 || nx > targetW + 20 || ny < -20 || ny > targetH + 20 || tp.age > 90) continue;
+                      if (tp.gen < dbDetails && dbRnd() < 0.02 + dbDensity * 0.06) {
+                          const off = 0.5 + dbRnd() * 0.8;
+                          next.push({ x: nx, y: ny, ang: tp.ang - off, gen: tp.gen + 1, age: 0 });
+                          next.push({ x: nx, y: ny, ang: tp.ang + off, gen: tp.gen + 1, age: 0 });
+                      } else next.push(tp);
+                  }
+                  dbSt.tips = next.length > 400 ? next.slice(0, 400) : next;
+                  if (dbSt.segs.length > dbMaxSegs) dbSt.segs.splice(0, dbSt.segs.length - dbMaxSegs);
+                  if (dbSt.tips.length === 0) dbSeedTips();
+              }
+
+              ctx.fillStyle = dbBg; ctx.fillRect(0, 0, targetW, targetH);
+              if (dbBlend > 0.02) {
+                  ctx.save();
+                  const bg = ctx.createRadialGradient(targetW * 0.5, targetH * 0.5, 0, targetW * 0.5, targetH * 0.5, Math.max(targetW, targetH) * 0.7);
+                  bg.addColorStop(0, `rgba(${dbVeinRgb.r},${dbVeinRgb.g},${dbVeinRgb.b},${(dbBlend * 0.08).toFixed(3)})`);
+                  bg.addColorStop(1, 'rgba(0,0,0,0)');
+                  ctx.fillStyle = bg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.restore();
+              }
+              ctx.globalCompositeOperation = 'lighter';
+              ctx.lineCap = 'round';
+              const dbWarp = (x: number, y: number) => dbDist > 0.01
+                  ? { x: x + Math.sin(y * 0.02 + nowSec) * dbDist * 22, y: y + Math.cos(x * 0.02 - nowSec) * dbDist * 22 }
+                  : { x, y };
+              const dbSc = Math.min(targetW, targetH) / 720;
+              const dbPasses = dbBlur > 0.02 ? 2 : 1;
+              for (let p = dbPasses - 1; p >= 0; p--) {
+                  const wMul = 1 + p * (2 + dbBlur * 5);
+                  const aMul = p === 0 ? 1 : (0.14 + dbBlur * 0.2);
+                  for (const sg of dbSt.segs) {
+                      const a = dbWarp(sg.x1, sg.y1), b = dbWarp(sg.x2, sg.y2);
+                      ctx.lineWidth = Math.max(0.5, 2.6 - sg.gen * 0.3) * wMul * dbSc;
+                      let col = dbVein;
+                      if (dbSurgeP >= 0) {
+                          const age = nowSec - sg.born;
+                          const front = dbSurgeP * 1.5;
+                          if (age < front && age > front - 0.3) col = '#ffffff';
+                      }
+                      ctx.strokeStyle = col;
+                      ctx.globalAlpha = Math.max(0.03, (0.5 - sg.gen * 0.045) * aMul);
+                      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+                  }
+              }
+              ctx.fillStyle = dbTip;
+              for (const tp of dbSt.tips) {
+                  const w = dbWarp(tp.x, tp.y);
+                  ctx.globalAlpha = 0.8;
+                  ctx.beginPath(); ctx.arc(w.x, w.y, 1.6 * dbSc, 0, Math.PI * 2); ctx.fill();
+              }
+              ctx.globalAlpha = 1;
+              ctx.globalCompositeOperation = 'source-over';
+              element = canvas;
+          } else if (def.uuid === 'ember-core-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const ecBg = resolvedGenerativeColors['background'] || '#0a0202';
+              const ecCoreC = resolvedGenerativeColors['core'] || '#ff3018';
+              const ecDebris = resolvedGenerativeColors['debris'] || '#8a1810';
+              const ecCoreRgb = hexToRgb(ecCoreC);
+              const ecDebRgb = hexToRgb(ecDebris);
+
+              const ec = modifiedSettings;
+              const ecSpeed = Math.max(0, Math.min(3, ec.speed ?? 1));
+              const ecSize = Math.max(0.2, Math.min(2, ec.size ?? 1));
+              const ecEdge = Math.max(0, Math.min(1, ec.edge ?? 0.5));
+              const ecCoreB = Math.max(0, Math.min(1, ec.core ?? 0.7));
+              const ecDetail = Math.max(20, Math.min(600, Math.round(ec.detail ?? 240)));
+              const ecForm = Math.max(0, Math.min(1, ec.form ?? 0.5));
+              const ecSpread = Math.max(0.2, Math.min(2, ec.spread ?? 1));
+
+              let ecSt = emberCoreStateRef.current[layer.id];
+              if (!ecSt) ecSt = emberCoreStateRef.current[layer.id] = { parts: [], lastFlare: 0, flareStart: -99, lastCollapse: 0, collapseStart: -99, phase: 0 };
+              const ecPRnd = (n: number) => { const x = Math.sin(n * 12.9898 + 78.233) * 43758.5453; return x - Math.floor(x); };
+              while (ecSt.parts.length < ecDetail) {
+                  const i = ecSt.parts.length;
+                  ecSt.parts.push({ ang: ecPRnd(i * 1.7) * Math.PI * 2, rad: 0.25 + ecPRnd(i * 3.1) * 0.9, sp: 0.4 + ecPRnd(i * 5.9) * 1.2, sz: 0.4 + ecPRnd(i * 7.3), ph: ecPRnd(i * 9.1) * 10 });
+              }
+              if (ecSt.parts.length > ecDetail) ecSt.parts.length = ecDetail;
+
+              const ecFlareN = Number(ec.flare ?? 0), ecCollN = Number(ec.collapse ?? 0);
+              if (ecFlareN > ecSt.lastFlare) { ecSt.lastFlare = ecFlareN; ecSt.flareStart = nowSec; }
+              if (ecCollN > ecSt.lastCollapse) { ecSt.lastCollapse = ecCollN; ecSt.collapseStart = nowSec; }
+              const ecFlEnv = (() => { const t = nowSec - ecSt.flareStart; return (t >= 0 && t < 1.0) ? Math.sin(Math.PI * t) : 0; })();
+              const ecClEnv = (() => { const t = nowSec - ecSt.collapseStart; return (t >= 0 && t < 1.4) ? Math.sin(Math.PI * (t / 1.4)) : 0; })();
+
+              const ecDt = Math.min(0.05, Math.max(0.004, deltaTime || 0.016));
+              ecSt.phase += ecSpeed * ecDt;
+
+              ctx.fillStyle = ecBg; ctx.fillRect(0, 0, targetW, targetH);
+              const ecCx = targetW / 2, ecCy = targetH / 2;
+              const ecUnit = Math.min(targetW, targetH) * 0.5;
+              const ecSc = Math.min(targetW, targetH) / 720;
+              const ecCoreR = ecUnit * 0.42 * ecSize * (1 + ecFlEnv * 0.5 - ecClEnv * 0.4);
+
+              ctx.save();
+              ctx.globalCompositeOperation = 'lighter';
+              ctx.fillStyle = `rgb(${ecDebRgb.r},${ecDebRgb.g},${ecDebRgb.b})`;
+              for (let i = 0; i < ecSt.parts.length; i++) {
+                  const p = ecSt.parts[i];
+                  const a = p.ang + ecSt.phase * p.sp + Math.sin(ecSt.phase + p.ph) * 0.2;
+                  let rr = (p.rad * ecSpread + Math.sin(ecSt.phase * 0.7 + p.ph) * 0.1) * ecUnit;
+                  rr = rr * (1 + ecFlEnv * 1.1) * (1 - ecClEnv * 0.7);
+                  const x = ecCx + Math.cos(a) * rr;
+                  const y = ecCy + Math.sin(a) * rr * 0.92;
+                  const fade = Math.max(0, 1 - Math.abs(rr / ecUnit - 1) * 0.8);
+                  ctx.globalAlpha = (0.1 + 0.5 * fade) * (0.5 + p.sz * 0.5);
+                  if (ecForm < 0.5) {
+                      const len = (6 + p.sz * 22) * ecSc * (1 - ecForm * 1.4);
+                      ctx.save();
+                      ctx.translate(x, y);
+                      ctx.rotate(a + Math.PI / 2);
+                      ctx.fillRect(-len * 0.5, -1.2, len, 2.4 + p.sz * 1.5);
+                      ctx.restore();
+                  } else {
+                      const sz = (1.5 + p.sz * 5) * ecSc * (0.4 + ecForm);
+                      ctx.beginPath(); ctx.arc(x, y, sz, 0, Math.PI * 2); ctx.fill();
+                  }
+              }
+              ctx.restore();
+
+              ctx.save();
+              ctx.globalCompositeOperation = 'lighter';
+              const eg = ctx.createRadialGradient(ecCx, ecCy, 0, ecCx, ecCy, ecCoreR * 1.7);
+              const hardStop = 0.14 + ecEdge * 0.55;
+              eg.addColorStop(0, `rgba(255,${Math.min(255, 130 + ecCoreB * 125) | 0},${Math.min(210, 60 + ecCoreB * 120) | 0},${(0.55 + ecCoreB * 0.45).toFixed(2)})`);
+              eg.addColorStop(hardStop, `rgba(${ecCoreRgb.r},${ecCoreRgb.g},${ecCoreRgb.b},${(0.5 * (1 - ecClEnv * 0.6)).toFixed(2)})`);
+              eg.addColorStop(1, 'rgba(0,0,0,0)');
+              ctx.fillStyle = eg;
+              ctx.beginPath(); ctx.arc(ecCx, ecCy, ecCoreR * 1.7, 0, Math.PI * 2); ctx.fill();
+              ctx.restore();
+
+              ctx.globalAlpha = 1;
+              element = canvas;
+          } else if (def.uuid === 'wire-canyon-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const wcBg = resolvedGenerativeColors['background'] || '#000000';
+              const wcGrid = resolvedGenerativeColors['grid'] || '#aadf1e';
+              const wcGlow = resolvedGenerativeColors['glow'] || '#eaff6a';
+
+              const wc = modifiedSettings;
+              const wcSpeed = Math.max(0, Math.min(4, wc.speed ?? 1));
+              const wcSx = Math.max(-1, Math.min(1, wc.steer_x ?? 0));
+              const wcSy = Math.max(-1, Math.min(1, wc.steer_y ?? 0));
+              const wcRoll = (wc.roll ?? 0) * Math.PI / 180;
+              const wcDepth = Math.max(6, Math.min(30, Math.round(wc.depth ?? 16)));
+              const wcRelief = Math.max(0, Math.min(1, wc.relief ?? 0.5));
+              const wcWidth = Math.max(6, Math.min(24, Math.round(wc.width ?? 12)));
+              const wcSeed = Math.floor(wc.seed ?? 3);
+
+              let wcSt = wireCanyonStateRef.current[layer.id];
+              if (!wcSt) wcSt = wireCanyonStateRef.current[layer.id] = { scroll: 0, lastWarp: 0, warpStart: -99, lastQuake: 0, quakeStart: -99 };
+              const wcWarpN = Number(wc.warp ?? 0), wcQuakeN = Number(wc.quake ?? 0);
+              if (wcWarpN > wcSt.lastWarp) { wcSt.lastWarp = wcWarpN; wcSt.warpStart = nowSec; }
+              if (wcQuakeN > wcSt.lastQuake) { wcSt.lastQuake = wcQuakeN; wcSt.quakeStart = nowSec; }
+              const wcWarpEnv = (() => { const t = nowSec - wcSt.warpStart; return (t >= 0 && t < 1.2) ? Math.sin(Math.PI * (t / 1.2)) : 0; })();
+              const wcQuakeEnv = (() => { const t = nowSec - wcSt.quakeStart; return (t >= 0 && t < 1.0) ? (1 - t) : 0; })();
+
+              const wcDt = Math.min(0.05, Math.max(0.004, deltaTime || 0.016));
+              wcSt.scroll += (wcSpeed * (1 + wcWarpEnv * 3)) * wcDt * 1.4;
+
+              const wcHn = (x: number, y: number) => { const s = Math.sin(x * 127.1 + y * 311.7 + wcSeed * 0.017) * 43758.5453; return s - Math.floor(s); };
+              const wcSn = (x: number, y: number) => {
+                  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+                  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+                  return wcHn(xi, yi) * (1 - u) * (1 - v) + wcHn(xi + 1, yi) * u * (1 - v) + wcHn(xi, yi + 1) * (1 - u) * v + wcHn(xi + 1, yi + 1) * u * v;
+              };
+
+              ctx.fillStyle = wcBg; ctx.fillRect(0, 0, targetW, targetH);
+              const wcCx = targetW / 2, wcCy = targetH * 0.5;
+              const wcFov = targetH * 0.95 * (1 + wcWarpEnv * 0.55);
+              const wcCamX = wcSx * wcWidth * 0.35;
+              const wcCamY = -0.3 + wcSy * 0.6;
+              const wcFrac = wcSt.scroll - Math.floor(wcSt.scroll);
+              const wcSc = Math.min(targetW, targetH) / 800;
+
+              const wcProject = (col: number, row: number) => {
+                  const wx = (col - wcWidth / 2) - wcCamX;
+                  const wz = (row + wcFrac) * 0.9 + 0.55;
+                  const edge = Math.abs((col - wcWidth / 2) / (wcWidth / 2));
+                  let h = Math.pow(edge, 2.4) * 1.7 * (0.35 + wcRelief);
+                  h += (wcSn(col * 0.35, (row + wcSt.scroll) * 0.35) - 0.5) * 1.3 * wcRelief;
+                  h += wcCamY;
+                  if (wcQuakeEnv > 0) h += (wcHn(col * 3.1 + row * 1.7, wcSt.scroll * 9) - 0.5) * wcQuakeEnv * 1.2;
+                  const persp = wcFov / wz;
+                  let sx = wcCx + wx * persp * 0.5;
+                  let sy = wcCy + (0.9 - h) * persp * 0.42;
+                  if (wcRoll) {
+                      const dx = sx - wcCx, dy = sy - wcCy;
+                      sx = wcCx + dx * Math.cos(wcRoll) - dy * Math.sin(wcRoll);
+                      sy = wcCy + dx * Math.sin(wcRoll) + dy * Math.cos(wcRoll);
+                  }
+                  return { sx, sy };
+              };
+
+              ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+              ctx.globalCompositeOperation = 'lighter';
+              const wcDrawPass = (col: string, wid: number, main: boolean) => {
+                  ctx.strokeStyle = col;
+                  for (let r = wcDepth; r >= 0; r--) {
+                      ctx.globalAlpha = (0.12 + 0.8 * (1 - r / wcDepth)) * (main ? 1 : 0.22);
+                      ctx.lineWidth = wid * wcSc;
+                      ctx.beginPath();
+                      for (let c = 0; c <= wcWidth; c++) {
+                          const p = wcProject(c, r);
+                          c === 0 ? ctx.moveTo(p.sx, p.sy) : ctx.lineTo(p.sx, p.sy);
+                      }
+                      ctx.stroke();
+                  }
+                  for (let c = 0; c <= wcWidth; c++) {
+                      ctx.globalAlpha = 0.45 * (main ? 1 : 0.22);
+                      ctx.lineWidth = wid * 0.8 * wcSc;
+                      ctx.beginPath();
+                      for (let r = 0; r <= wcDepth; r++) {
+                          const p = wcProject(c, r);
+                          r === 0 ? ctx.moveTo(p.sx, p.sy) : ctx.lineTo(p.sx, p.sy);
+                      }
+                      ctx.stroke();
+                  }
+              };
+              wcDrawPass(wcGlow, 5, false);
+              wcDrawPass(wcGrid, 1.5, true);
+              ctx.globalCompositeOperation = 'source-over';
+              ctx.globalAlpha = 1;
+              element = canvas;
+          } else if (def.uuid === 'ring-tunnel-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+
+              const rtBg = resolvedGenerativeColors['background'] || '#000000';
+              const rtRing = resolvedGenerativeColors['rings'] || '#2eff66';
+              const rtAcc = resolvedGenerativeColors['accent'] || '#eaffea';
+
+              const rt = modifiedSettings;
+              const rtSpeed = Math.max(0, Math.min(4, rt.speed ?? 1));
+              const rtSize = Math.max(0.3, Math.min(3, rt.size ?? 1));
+              const rtZoom = Math.max(0.3, Math.min(3, rt.zoom ?? 1));
+              const rtWob = Math.max(0, Math.min(1, rt.wobble ?? 0.2));
+              const rtTwist = Math.max(-2, Math.min(2, rt.twist ?? 0.4));
+              const rtRings = Math.max(6, Math.min(40, Math.round(rt.rings ?? 20)));
+              const rtThick = Math.max(0.2, Math.min(3, rt.thickness ?? 1));
+
+              let rtSt = ringTunnelStateRef.current[layer.id];
+              if (!rtSt) rtSt = ringTunnelStateRef.current[layer.id] = { phase: 0, lastJump: 0, jumpStart: -99, lastPulse: 0, pulseStart: -99 };
+              const rtJumpN = Number(rt.jump ?? 0), rtPulseN = Number(rt.pulse ?? 0);
+              if (rtJumpN > rtSt.lastJump) { rtSt.lastJump = rtJumpN; rtSt.jumpStart = nowSec; }
+              if (rtPulseN > rtSt.lastPulse) { rtSt.lastPulse = rtPulseN; rtSt.pulseStart = nowSec; }
+              const rtJumpEnv = (() => { const t = nowSec - rtSt.jumpStart; return (t >= 0 && t < 1.2) ? Math.sin(Math.PI * (t / 1.2)) : 0; })();
+              const rtPulseP = (() => { const t = nowSec - rtSt.pulseStart; return (t >= 0 && t < 1.0) ? (t / 1.0) : -1; })();
+
+              const rtDt = Math.min(0.05, Math.max(0.004, deltaTime || 0.016));
+              rtSt.phase += (rtSpeed * (1 + rtJumpEnv * 4)) * rtDt * 0.35;
+
+              ctx.fillStyle = rtBg; ctx.fillRect(0, 0, targetW, targetH);
+              const rtCx = targetW / 2, rtCy = targetH / 2;
+              const rtMaxR = Math.hypot(rtCx, rtCy) * 1.12 * rtSize;
+              const rtSc = Math.min(targetW, targetH) / 800;
+
+              ctx.save();
+              ctx.globalCompositeOperation = 'lighter';
+              ctx.lineJoin = 'round';
+              const RT_SEG = 60;
+              for (let i = rtRings - 1; i >= 0; i--) {
+                  let z = ((i / rtRings) + rtSt.phase) % 1;
+                  if (z < 0) z += 1;
+                  const R = rtMaxR / (z * 2.4 * rtZoom + 0.05);
+                  if (R > rtMaxR * 3.2) continue;
+                  const rot = z * rtTwist * Math.PI * 2 + nowSec * 0.1;
+                  const near = z < 0.06 ? z / 0.06 : 1;
+                  const far = 1 - z;
+                  const alpha = Math.max(0, near * far * far);
+                  if (alpha < 0.012) continue;
+
+                  if (rtJumpEnv > 0.12) {
+                      ctx.strokeStyle = z < 0.5 ? rtAcc : rtRing;
+                      ctx.globalAlpha = alpha * (0.4 + rtJumpEnv * 0.6);
+                      ctx.lineWidth = (1.4 + rtJumpEnv * 2.2) * rtThick * rtSc;
+                      const nS = 30, stretch = 1 + rtJumpEnv * 2.4;
+                      for (let k = 0; k < nS; k++) {
+                          const a = (k / nS) * Math.PI * 2 + rot;
+                          const r0 = R * (1 + Math.sin(a * 3 + rtSt.phase * 6 + i) * rtWob * 0.25);
+                          ctx.beginPath();
+                          ctx.moveTo(rtCx + Math.cos(a) * r0 * 0.9, rtCy + Math.sin(a) * r0 * 0.9);
+                          ctx.lineTo(rtCx + Math.cos(a) * r0 * stretch, rtCy + Math.sin(a) * r0 * stretch);
+                          ctx.stroke();
+                      }
+                      continue;
+                  }
+
+                  const isPulseRing = rtPulseP >= 0 && Math.abs(z - rtPulseP) < 0.06;
+                  for (const gp of [{ w: 8 * rtThick, a: 0.12 }, { w: 2.2 * rtThick, a: 0.9 }]) {
+                      ctx.strokeStyle = isPulseRing ? rtAcc : rtRing;
+                      ctx.globalAlpha = alpha * gp.a;
+                      ctx.lineWidth = gp.w * rtSc;
+                      ctx.beginPath();
+                      for (let k = 0; k <= RT_SEG; k++) {
+                          const a = (k / RT_SEG) * Math.PI * 2 + rot;
+                          const wob = 1 + Math.sin(a * 3 + rtSt.phase * 6 + i) * rtWob * 0.25;
+                          const rr = R * wob;
+                          const x = rtCx + Math.cos(a) * rr;
+                          const y = rtCy + Math.sin(a) * rr;
+                          k === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+                      }
+                      ctx.closePath();
+                      ctx.stroke();
+                  }
+              }
+              if (rtPulseP >= 0) {
+                  const R = rtMaxR / (rtPulseP * 2.4 * rtZoom + 0.05);
+                  ctx.strokeStyle = rtAcc;
+                  ctx.globalAlpha = (1 - rtPulseP) * 0.9;
+                  ctx.lineWidth = 4 * rtThick * rtSc;
+                  ctx.beginPath(); ctx.arc(rtCx, rtCy, Math.min(R, rtMaxR * 2.4), 0, Math.PI * 2); ctx.stroke();
+              }
+              ctx.restore();
+              ctx.globalAlpha = 1;
+              element = canvas;
           } else {
               if (webglRendererRef.current.canvas.width !== targetW || webglRendererRef.current.canvas.height !== targetH) {
                   webglRendererRef.current.resize(targetW, targetH);
@@ -14691,6 +15073,10 @@ return (
                                    if (uuid === 'delta-maze-1') return '🔺';
                                    if (uuid === 'thread-nest-1') return '🧶';
                                    if (uuid === 'iso-bar-wave-1') return '📊';
+                                   if (uuid === 'dendrite-bloom-1') return '🩸';
+                                   if (uuid === 'ember-core-1') return '☄️';
+                                   if (uuid === 'wire-canyon-1') return '🏔️';
+                                   if (uuid === 'ring-tunnel-1') return '🌀';
                                    if (uuid === 'bubble-spheres-1') return '🫧';
                                    if (uuid === 'dancing-cubes-canvas-1') return '🎲';
                                    return '✨';

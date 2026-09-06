@@ -1958,6 +1958,114 @@ void main(void) {
   "uuid": "iso-bar-wave-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Dendrite Bloom",
+  "category": "Psychedelic",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "coral_reef",
+  "parameters": [
+    { "name": "speed",      "min": 0.0, "max": 3.0,   "default": 1.0,  "type": "number" },
+    { "name": "details",    "min": 1.0, "max": 8.0,   "default": 4.0,  "type": "number" },
+    { "name": "blend",      "min": 0.0, "max": 1.0,   "default": 0.5,  "type": "number" },
+    { "name": "density",    "min": 0.0, "max": 1.0,   "default": 0.5,  "type": "number" },
+    { "name": "mutation",   "min": 0.0, "max": 1.0,   "default": 0.3,  "type": "number" },
+    { "name": "blur",       "min": 0.0, "max": 1.0,   "default": 0.3,  "type": "number" },
+    { "name": "distortion", "min": 0.0, "max": 1.0,   "default": 0.0,  "type": "number" },
+    { "name": "regrow", "default": 0, "type": "action" },
+    { "name": "surge",  "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Ground", "defaultColor": "#0a0505" },
+    { "id": "veins", "name": "Veins", "defaultColor": "#ff2a2a" },
+    { "id": "tips", "name": "Growing Tips", "defaultColor": "#ffb0a0" }
+  ],
+  "uuid": "dendrite-bloom-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Ember Core",
+  "category": "Psychedelic",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "ember_glow",
+  "parameters": [
+    { "name": "speed",  "min": 0.0,  "max": 3.0,   "default": 1.0,   "type": "number" },
+    { "name": "size",   "min": 0.2,  "max": 2.0,   "default": 1.0,   "type": "number" },
+    { "name": "edge",   "min": 0.0,  "max": 1.0,   "default": 0.5,   "type": "number" },
+    { "name": "core",   "min": 0.0,  "max": 1.0,   "default": 0.7,   "type": "number" },
+    { "name": "detail", "min": 20.0, "max": 600.0, "default": 240.0, "type": "number" },
+    { "name": "form",   "min": 0.0,  "max": 1.0,   "default": 0.5,   "type": "number" },
+    { "name": "spread", "min": 0.2,  "max": 2.0,   "default": 1.0,   "type": "number" },
+    { "name": "flare",    "default": 0, "type": "action" },
+    { "name": "collapse", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Void", "defaultColor": "#0a0202" },
+    { "id": "core", "name": "Core", "defaultColor": "#ff3018" },
+    { "id": "debris", "name": "Debris", "defaultColor": "#8a1810" }
+  ],
+  "uuid": "ember-core-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Wire Canyon",
+  "category": "Retro",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "acid_matrix",
+  "parameters": [
+    { "name": "speed",   "min": 0.0,   "max": 4.0,   "default": 1.0,  "type": "number" },
+    { "name": "steer_x", "min": -1.0,  "max": 1.0,   "default": 0.0,  "type": "number" },
+    { "name": "steer_y", "min": -1.0,  "max": 1.0,   "default": 0.0,  "type": "number" },
+    { "name": "roll",    "min": -180.0,"max": 180.0, "default": 0.0,  "type": "number" },
+    { "name": "depth",   "min": 6.0,   "max": 30.0,  "default": 16.0, "type": "number" },
+    { "name": "relief",  "min": 0.0,   "max": 1.0,   "default": 0.5,  "type": "number" },
+    { "name": "width",   "min": 6.0,   "max": 24.0,  "default": 12.0, "type": "number" },
+    { "name": "warp",  "default": 0, "type": "action" },
+    { "name": "quake", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "grid", "name": "Grid", "defaultColor": "#aadf1e" },
+    { "id": "glow", "name": "Ridge Glow", "defaultColor": "#eaff6a" }
+  ],
+  "uuid": "wire-canyon-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Ring Tunnel",
+  "category": "Retro",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "acid_matrix",
+  "parameters": [
+    { "name": "speed",     "min": 0.0, "max": 4.0,  "default": 1.0,  "type": "number" },
+    { "name": "size",      "min": 0.3, "max": 3.0,  "default": 1.0,  "type": "number" },
+    { "name": "zoom",      "min": 0.3, "max": 3.0,  "default": 1.0,  "type": "number" },
+    { "name": "wobble",    "min": 0.0, "max": 1.0,  "default": 0.2,  "type": "number" },
+    { "name": "twist",     "min": -2.0,"max": 2.0,  "default": 0.4,  "type": "number" },
+    { "name": "rings",     "min": 6.0, "max": 40.0, "default": 20.0, "type": "number" },
+    { "name": "thickness", "min": 0.2, "max": 3.0,  "default": 1.0,  "type": "number" },
+    { "name": "jump",  "default": 0, "type": "action" },
+    { "name": "pulse", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#000000" },
+    { "id": "rings", "name": "Rings", "defaultColor": "#2eff66" },
+    { "id": "accent", "name": "Shockwave", "defaultColor": "#eaffea" }
+  ],
+  "uuid": "ring-tunnel-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   }
 ];
 
@@ -1991,6 +2099,8 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'stacked-balls-canvas-1': 'Psychedelic',
   'reaction-diffusion-canvas-1': 'Psychedelic',
   'ink-blot-canvas-1': 'Psychedelic',
+  'dendrite-bloom-1': 'Psychedelic',
+  'ember-core-1': 'Psychedelic',
   // Text
   'kinetic-type-canvas-1': 'Text',
   'text-umbrella-canvas-1': 'Text',
@@ -2019,6 +2129,8 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'centipede-garden-canvas-1': 'Retro',
   'circuit-routes-1': 'Retro',
   'delta-maze-1': 'Retro',
+  'wire-canyon-1': 'Retro',
+  'ring-tunnel-1': 'Retro',
 };
 
 export const GENERATIVE_CATEGORY_ORDER = ['Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];
