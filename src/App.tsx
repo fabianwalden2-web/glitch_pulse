@@ -2264,6 +2264,8 @@ export default function App() {
   const lastMidiId = useRef(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
+  const recSystemStreamRef = useRef<MediaStream | null>(null);
+  const [recAudioSrc, setRecAudioSrc] = useState<'none' | 'app' | 'system'>('app');
   const windowsRef = useRef<{ x: number, y: number, w: number, h: number, id: number, time: number }[]>([]);
   const glitchBoxesRef = useRef<{ x: number, y: number, w: number, h: number, id: number, life: number, value: string }[]>([]);
   const voronoiPointsRef = useRef<{ x: number, y: number, vx: number, vy: number }[]>([]);
@@ -2650,18 +2652,62 @@ export default function App() {
 
   // --- Recording Logic ---
 
-  const startRecording = () => {
-    if (!canvasRef.current) return;
-    try {
-      const stream = canvasRef.current.captureStream(30);
-      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
-      
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          recordedChunksRef.current.push(e.data);
-        }
-      };
+  const pickRecMime = () => {
+    const cands = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=h264,opus',
+      'video/webm',
+    ];
+    for (const m of cands) {
+      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported?.(m)) return m;
+    }
+    return 'video/webm';
+  };
 
+  const startRecording = async () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    try {
+      const vstream = canvas.captureStream(30);
+      let audioTracks: MediaStreamTrack[] = [];
+
+      if (recAudioSrc === 'app') {
+        // The stems / mic / tab audio mix the engine is already playing — perfectly
+        // in sync with whatever drove the MIDI triggers.
+        const s = engine.getRecordStream();
+        if (s) audioTracks = s.getAudioTracks();
+      } else if (recAudioSrc === 'system') {
+        // Whatever the computer is outputting (music in another app, headphones…).
+        // Browser: a one-time picker with "Share system/tab audio". Electron: granted as loopback.
+        try {
+          const md = navigator.mediaDevices as any;
+          const disp: MediaStream = await md.getDisplayMedia({
+            video: true, // the API requires a video track to be requested
+            audio: { echoCancellation: false, autoGainControl: false, noiseSuppression: false },
+            systemAudio: 'include',
+            selfBrowserSurface: 'include',
+          });
+          disp.getVideoTracks().forEach(t => t.stop());
+          audioTracks = disp.getAudioTracks();
+          if (audioTracks.length === 0) {
+            disp.getTracks().forEach(t => t.stop());
+            alert('No audio was shared. Re-open the picker and tick "Share system audio" (or "Share tab audio").');
+          } else {
+            recSystemStreamRef.current = disp;
+          }
+        } catch (e) {
+          // cancelled / unsupported -> fall through and record silent video
+        }
+      }
+
+      const stream = new MediaStream([...vstream.getVideoTracks(), ...audioTracks]);
+      const recorder = new MediaRecorder(stream, {
+        mimeType: pickRecMime(),
+        videoBitsPerSecond: 12_000_000,
+      });
+
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunksRef.current.push(e.data); };
       recorder.onstop = () => {
         const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
         const url = URL.createObjectURL(blob);
@@ -2669,7 +2715,10 @@ export default function App() {
         a.href = url;
         a.download = `glitch-pulse-recording-${Date.now()}.webm`;
         a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
         recordedChunksRef.current = [];
+        recSystemStreamRef.current?.getTracks().forEach(t => t.stop());
+        recSystemStreamRef.current = null;
       };
 
       recorder.start();
@@ -2677,6 +2726,8 @@ export default function App() {
       setIsRecording(true);
     } catch (err) {
       console.error("Recording Error:", err);
+      recSystemStreamRef.current?.getTracks().forEach(t => t.stop());
+      recSystemStreamRef.current = null;
       alert("Recording is not supported in this browser or context.");
     }
   };
@@ -11908,6 +11959,33 @@ export default function App() {
           ))}
         </div>
       )}
+
+      {/* Audio muxed into canvas recordings */}
+      <div className="space-y-1.5 pt-3 border-t border-white/5">
+        <label className="text-[8px] uppercase tracking-widest opacity-40 block">Record audio</label>
+        <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+          {([
+            ['none', 'Off'],
+            ['app', 'App mix'],
+            ['system', 'System'],
+          ] as const).map(([v, lbl]) => (
+            <button
+              key={v}
+              onClick={() => setRecAudioSrc(v)}
+              className={`flex-1 py-1.5 text-[8px] uppercase tracking-widest transition-colors ${recAudioSrc === v ? 'bg-red-600 text-white font-bold' : 'text-white/40 hover:text-white'}`}
+            >
+              {lbl}
+            </button>
+          ))}
+        </div>
+        <p className="text-[8px] opacity-30 leading-tight">
+          {recAudioSrc === 'app'
+            ? 'The stems / mic / tab audio the app is playing — stays in sync with your MIDI takes.'
+            : recAudioSrc === 'system'
+            ? 'Whatever the computer outputs (music in another app, headphones). Asks once to share system/tab audio when you press record.'
+            : 'Recordings are silent video only.'}
+        </p>
+      </div>
     </div>
   );
 
@@ -12995,7 +13073,7 @@ export default function App() {
                 className={`p-3 rounded-none border transition-all ${
                   isRecording ? 'bg-red-600 border-red-500 text-white animate-pulse' : 'border-white/20 hover:border-white hover:bg-white hover:text-black'
                 }`}
-                title={isRecording ? 'Stop Recording' : 'Start Recording'}
+                title={isRecording ? 'Stop recording' : `Start recording — audio: ${recAudioSrc === 'none' ? 'off' : recAudioSrc === 'app' ? 'app mix' : 'system'}`}
               >
                 {isRecording ? <Square size={18} fill="currentColor" /> : <Circle size={18} fill="currentColor" className="text-red-500" />}
               </button>

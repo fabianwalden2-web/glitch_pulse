@@ -20,10 +20,16 @@ export class AudioEngine {
   private ctx: AudioContext | null = null;
   private stems: Map<string, AudioStemNode> = new Map();
   public isPlaying: boolean = false;
-  
+
   // For FFT logic
   private fftSize = 8192; // Hugely increased for powerful bass/sub-bass precision
   private freqDataArray: Uint8Array | null = null;
+
+  // A dry mix of everything the app is playing (stems + mic + tab/system audio),
+  // exposed as a MediaStream so the canvas recorder can mux audio into the video.
+  // Never connected to ctx.destination, so it can't create a feedback loop.
+  private recordTap: GainNode | null = null;
+  private recordDest: MediaStreamAudioDestinationNode | null = null;
 
   init() {
     if (!this.ctx) {
@@ -31,12 +37,21 @@ export class AudioEngine {
       // legacy per-stem analysers and the decoupled AnalysisEngine hear the same graph.
       this.ctx = audioGraph.context;
       this.freqDataArray = new Uint8Array(this.fftSize / 2);
+      this.recordTap = this.ctx.createGain();
+      this.recordDest = this.ctx.createMediaStreamDestination();
+      this.recordTap.connect(this.recordDest);
       // fire-and-forget: boot the worklet + analysis engine
       void audioModule.init();
     }
     if (this.ctx.state === 'suspended') {
       this.ctx.resume();
     }
+  }
+
+  /** MediaStream of the current audio mix, for muxing into a canvas recording. */
+  getRecordStream(): MediaStream | null {
+    this.init();
+    return this.recordDest?.stream ?? null;
   }
 
   hasStem(id: string): boolean {
@@ -81,6 +96,7 @@ export class AudioEngine {
       sourceNode.connect(analyserNode);
       analyserNode.connect(gainNode);
       gainNode.connect(this.ctx.destination);
+      if (this.recordTap) gainNode.connect(this.recordTap); // post-mute -> recording
 
       // Also feed the decoupled analysis bus (pre-gain, so mute doesn't kill analysis).
       try { sourceNode.connect(audioGraph.analysisBus); } catch { /* noop */ }
@@ -127,6 +143,7 @@ export class AudioEngine {
       
       sourceNode.connect(micGainNode);
       micGainNode.connect(analyserNode);
+      if (this.recordTap) micGainNode.connect(this.recordTap); // into recordings, not the speakers
       // NOTE: We do not connect analyserNode to destination or gainNode to avoid speaker feedback loops
 
       // Feed the decoupled analysis bus too (analysis only, never to destination).
@@ -193,6 +210,7 @@ export class AudioEngine {
       gainNode.gain.value = 1.0;
       sourceNode.connect(gainNode);
       gainNode.connect(analyserNode);
+      if (this.recordTap) gainNode.connect(this.recordTap); // capture tab/system audio into recordings
       // analysis only — the tab already plays its own audio, so do not route to destination.
       try { gainNode.connect(audioGraph.analysisBus); } catch { /* noop */ }
 
