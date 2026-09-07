@@ -1809,6 +1809,157 @@ function faBuildCutout(
 }
 
 // ---- First-run quick-start tour --------------------------------------------
+// ---- MIDI music-theory helpers (shared by the Music visuals) ----------------
+export interface MidiNoteEvt { note: number; vel: number; on: number; off: number; ch: number }
+
+const PC_SHARP = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'];
+/** Clockwise circle-of-fifths order starting at C. */
+const FIFTHS_ORDER = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5];
+// Krumhansl–Kessler key profiles
+const KK_MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+const KK_MINOR = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+const MAJOR_STEPS = [0, 2, 4, 5, 7, 9, 11];
+const MINOR_STEPS = [0, 2, 3, 5, 7, 8, 10];
+
+function pearson12(a: Float32Array | number[], b: number[]): number {
+  let ma = 0, mb = 0;
+  for (let i = 0; i < 12; i++) { ma += a[i]; mb += b[i]; }
+  ma /= 12; mb /= 12;
+  let num = 0, da = 0, db = 0;
+  for (let i = 0; i < 12; i++) {
+    const x = a[i] - ma, y = b[i] - mb;
+    num += x * y; da += x * x; db += y * y;
+  }
+  const den = Math.sqrt(da * db);
+  return den > 1e-9 ? num / den : 0;
+}
+
+/** Krumhansl–Schmuckler key induction from a pitch-class histogram. */
+function detectKey(pc: Float32Array): { root: number; minor: boolean; conf: number } {
+  let total = 0;
+  for (let i = 0; i < 12; i++) total += pc[i];
+  if (total < 1e-6) return { root: 0, minor: false, conf: 0 };
+  let bRoot = 0, bMinor = false, bConf = -2;
+  const rot = new Float32Array(12);
+  for (let r = 0; r < 12; r++) {
+    for (let i = 0; i < 12; i++) rot[i] = pc[(i + r) % 12];
+    const cM = pearson12(rot, KK_MAJOR);
+    if (cM > bConf) { bRoot = r; bMinor = false; bConf = cM; }
+    const cm = pearson12(rot, KK_MINOR);
+    if (cm > bConf) { bRoot = r; bMinor = true; bConf = cm; }
+  }
+  return { root: bRoot, minor: bMinor, conf: Math.max(0, bConf) };
+}
+
+function scaleSet(root: number, minor: boolean): boolean[] {
+  const steps = minor ? MINOR_STEPS : MAJOR_STEPS;
+  const out = new Array(12).fill(false);
+  for (const s of steps) out[(root + s) % 12] = true;
+  return out;
+}
+
+const CHORD_TEMPLATES: { name: string; iv: number[] }[] = [
+  { name: '', iv: [0, 4, 7] },
+  { name: 'm', iv: [0, 3, 7] },
+  { name: '°', iv: [0, 3, 6] },
+  { name: '+', iv: [0, 4, 8] },
+  { name: 'sus4', iv: [0, 5, 7] },
+  { name: 'sus2', iv: [0, 2, 7] },
+  { name: '7', iv: [0, 4, 7, 10] },
+  { name: 'maj7', iv: [0, 4, 7, 11] },
+  { name: 'm7', iv: [0, 3, 7, 10] },
+  { name: '°7', iv: [0, 3, 6, 9] },
+  { name: 'ø7', iv: [0, 3, 6, 10] },
+];
+
+/** Best-matching chord for a set of sounding pitch classes. */
+function detectChord(pcs: number[]): { root: number; name: string } | null {
+  if (pcs.length < 3) return null;
+  const set = new Set(pcs.map(p => ((p % 12) + 12) % 12));
+  let bRoot = -1, bName = '', bScore = -99;
+  for (let root = 0; root < 12; root++) {
+    for (const t of CHORD_TEMPLATES) {
+      let hit = 0;
+      for (const iv of t.iv) if (set.has((root + iv) % 12)) hit++;
+      if (hit < t.iv.length) continue;               // every template tone must sound
+      const score = t.iv.length * 2 - (set.size - t.iv.length);
+      if (score > bScore) { bRoot = root; bName = t.name; bScore = score; }
+    }
+  }
+  return bRoot >= 0 ? { root: bRoot, name: bName } : null;
+}
+
+/** Velocity-weighted, time-decayed pitch-class histogram. */
+function pcHistogram(hist: MidiNoteEvt[], nowMs: number, halfLifeSec: number): Float32Array {
+  const out = new Float32Array(12);
+  const hl = Math.max(0.2, halfLifeSec) * 1000;
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const n = hist[i];
+    const age = nowMs - n.on;
+    if (age > hl * 6) break;
+    out[n.note % 12] += (n.vel / 127) * Math.exp(-age / hl);
+  }
+  return out;
+}
+
+function markNoteOff(hist: MidiNoteEvt[], note: number, t: number) {
+  for (let i = hist.length - 1; i >= 0; i--) {
+    if (hist[i].note === note && hist[i].off < 0) { hist[i].off = t; return; }
+  }
+}
+
+// A deterministic ii–V–I demo phrase that cycles keys by fifths, so the Music
+// visuals are alive (and previewable) without a controller plugged in.
+const DEMO_PROG = [
+  { root: 2, iv: [0, 3, 7, 10] },  // ii m7
+  { root: 7, iv: [0, 4, 7, 10] },  // V 7
+  { root: 0, iv: [0, 4, 7, 11] },  // I maj7
+  { root: 0, iv: [0, 4, 7, 11] },
+];
+const _demo: { hist: MidiNoteEvt[]; active: Map<number, { vel: number; on: number; ch: number }>; nextAt: number; step: number } =
+  { hist: [], active: new Map(), nextAt: 0, step: 0 };
+
+function advanceDemoMusic(nowMs: number) {
+  const d = _demo;
+  const STEP_MS = 300;                                // eighth notes at 100 BPM
+  // Pre-roll four bars into the past on the first call so history-based visuals
+  // (arc diagram, piano roll) open with something to show instead of an empty frame.
+  if (!d.nextAt) d.nextAt = nowMs - 96 * STEP_MS;
+  else if (nowMs - d.nextAt > 5000) d.nextAt = nowMs;
+  let guard = 0;
+  while (nowMs >= d.nextAt && guard++ < 128) {
+    const step = d.step;
+    const bar = Math.floor(step / 8) % 4;
+    const transpose = (Math.floor(step / 64) * 5) % 12;   // two identical 4-bar phrases, then modulate
+    const at = d.nextAt;
+
+    if (step % 8 === 0) {                             // new chord on each downbeat
+      for (const [n, a] of Array.from(d.active)) {
+        if (a.ch === 0) { d.active.delete(n); markNoteOff(d.hist, n, at); }
+      }
+      const c = DEMO_PROG[bar];
+      for (const iv of c.iv) {
+        const n = 48 + ((c.root + transpose) % 12) + iv;
+        d.active.set(n, { vel: 68, on: at, ch: 0 });
+        d.hist.push({ note: n, vel: 68, on: at, off: -1, ch: 0 });
+      }
+    }
+    // melody: pseudo-random walk through the major scale
+    for (const [n, a] of Array.from(d.active)) {
+      if (a.ch === 1) { d.active.delete(n); markNoteOff(d.hist, n, at); }
+    }
+    // the melody repeats every 32 steps so repetition-seeking visuals have something to find
+    const r = Math.abs(Math.sin((step % 32) * 12.9898) * 43758.5453) % 1;
+    const mn = 72 + ((transpose + MAJOR_STEPS[Math.floor(r * 7)]) % 12) + (r > 0.78 ? 12 : 0);
+    d.active.set(mn, { vel: 92, on: at, ch: 1 });
+    d.hist.push({ note: mn, vel: 92, on: at, off: -1, ch: 1 });
+
+    d.step++;
+    d.nextAt += STEP_MS;
+  }
+  if (d.hist.length > 4000) d.hist.splice(0, d.hist.length - 4000);
+}
+
 const TOUR_STEPS = [
   {
     key: 'intro',
@@ -2262,6 +2413,13 @@ export default function App() {
   const lastFrameTimeRef = useRef<number>(0);
   const requestRef = useRef<number>(0);
   const lastMidiId = useRef(0);
+  // Raw note stream for the Music visuals — every note-on/off on every channel,
+  // independent of layer mappings.
+  const musicNotesRef = useRef<{
+    active: Map<number, { vel: number; on: number; ch: number }>;
+    history: MidiNoteEvt[];
+    lastAt: number;
+  }>({ active: new Map(), history: [], lastAt: 0 });
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const recSystemStreamRef = useRef<MediaStream | null>(null);
@@ -2338,6 +2496,11 @@ export default function App() {
   const emberCoreStateRef = useRef<Record<string, any>>({});
   const wireCanyonStateRef = useRef<Record<string, any>>({});
   const ringTunnelStateRef = useRef<Record<string, any>>({});
+  const pitchClockStateRef = useRef<Record<string, any>>({});
+  const circleFifthsStateRef = useRef<Record<string, any>>({});
+  const tonnetzStateRef = useRef<Record<string, any>>({});
+  const shapeOfSongStateRef = useRef<Record<string, any>>({});
+  const pianoRollStateRef = useRef<Record<string, any>>({});
   const dragonTextStateRef = useRef<Record<string, any>>({});
 
   // Accumulation Mode Refs
@@ -2921,6 +3084,21 @@ export default function App() {
         type: isDown ? 'ON' : 'OFF'
       };
       setMidiLogs(prev => [log, ...prev].slice(0, 15));
+
+      // Feed the Music visuals' note stream (all channels, before any mapping).
+      {
+        const mn = musicNotesRef.current;
+        const tNow = Date.now();
+        mn.lastAt = tNow;
+        if (isDown) {
+          mn.active.set(note, { vel: velocity, on: tNow, ch: channel });
+          mn.history.push({ note, vel: velocity, on: tNow, off: -1, ch: channel });
+          if (mn.history.length > 4000) mn.history.splice(0, mn.history.length - 4000);
+        } else {
+          mn.active.delete(note);
+          markNoteOff(mn.history, note, tNow);
+        }
+      }
 
       // 1. Check Scene Triggers
       if (isDown) {
@@ -9374,6 +9552,683 @@ export default function App() {
               ctx.restore();
               ctx.globalAlpha = 1;
               element = canvas;
+          } else if (def.uuid === 'pitch-clock-1' || def.uuid === 'circle-of-fifths-1'
+                  || def.uuid === 'tonnetz-viz-1' || def.uuid === 'shape-of-song-1'
+                  || def.uuid === 'piano-roll-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const nowMs = Date.now();
+              const sc = Math.min(targetW, targetH) / 720;
+
+              // Live MIDI if anything arrived in the last 3s, otherwise the demo phrase.
+              const mnBuf = musicNotesRef.current;
+              const demoOn = (ms.demo ?? 1) > 0.5;
+              const liveMidi = nowMs - mnBuf.lastAt < 3000;
+              let noteHist: MidiNoteEvt[];
+              let noteActive: Map<number, { vel: number; on: number; ch: number }>;
+              if (liveMidi || !demoOn) { noteHist = mnBuf.history; noteActive = mnBuf.active; }
+              else { advanceDemoMusic(nowMs); noteHist = _demo.hist; noteActive = _demo.active; }
+
+              if (def.uuid === 'pitch-clock-1') {
+                  const bg = resolvedGenerativeColors['background'] || '#0a0a12';
+                  const cRing = resolvedGenerativeColors['ring'] || '#3a3a52';
+                  const cScale = resolvedGenerativeColors['scale'] || '#8b6cf0';
+                  const cAct = resolvedGenerativeColors['active'] || '#ffffff';
+                  const cChord = resolvedGenerativeColors['chord'] || '#f0a0d8';
+                  const rgbScale = hexToRgb(cScale), rgbChord = hexToRgb(cChord), rgbAct = hexToRgb(cAct);
+
+                  const spiral = Math.max(0, Math.min(1, ms.spiral ?? 0));
+                  const trail = Math.max(0, Math.min(1, ms.trail ?? 0.5));
+                  const scaleGlow = Math.max(0, Math.min(1, ms.scale_glow ?? 0.6));
+                  const chordFill = Math.max(0, Math.min(1, ms.chord_fill ?? 0.45));
+                  const nodeSize = Math.max(0.3, Math.min(3, ms.node_size ?? 1));
+                  const memory = Math.max(0.5, Math.min(12, ms.memory ?? 4));
+                  const tonicTop = (ms.tonic_top ?? 0) > 0.5;
+                  const showLabels = (ms.labels ?? 1) > 0.5;
+
+                  let st = pitchClockStateRef.current[layer.id];
+                  if (!st) st = pitchClockStateRef.current[layer.id] = { lastPulse: 0, pulseAt: -99, lastSnap: 0, locked: null };
+                  const nPulse = Number(ms.pulse_tonic ?? 0), nSnap = Number(ms.snap_key ?? 0);
+                  if (nPulse > st.lastPulse) { st.lastPulse = nPulse; st.pulseAt = nowSec; }
+
+                  const pcH = pcHistogram(noteHist, nowMs, memory);
+                  const detected = detectKey(pcH);
+                  if (nSnap > st.lastSnap) { st.lastSnap = nSnap; st.locked = st.locked ? null : detected; }
+                  const key = st.locked || detected;
+                  const inScale = scaleSet(key.root, key.minor);
+                  const actPcs = Array.from(new Set(Array.from(noteActive.keys()).map(n => n % 12)));
+                  const chord = detectChord(actPcs);
+
+                  const pulseT = nowSec - st.pulseAt;
+                  const pulseEnv = pulseT >= 0 && pulseT < 1.1 ? Math.sin(Math.PI * (pulseT / 1.1)) : 0;
+
+                  ctx.fillStyle = bg; ctx.fillRect(0, 0, targetW, targetH);
+                  const cx = targetW / 2, cy = targetH / 2;
+                  const R = Math.min(targetW, targetH) * 0.34;
+                  const rotOff = tonicTop ? -key.root * (Math.PI / 6) : 0;
+                  const angOf = (pc: number) => -Math.PI / 2 + pc * (Math.PI / 6) + rotOff;
+                  const posOf = (pc: number, oct = 0) => {
+                      const a = angOf(pc);
+                      const r = R * (1 - spiral * 0.30) + spiral * (oct - 5) * R * 0.085;
+                      return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r };
+                  };
+
+                  // ring + spokes
+                  ctx.strokeStyle = cRing; ctx.globalAlpha = 0.35; ctx.lineWidth = 1.2 * sc;
+                  ctx.beginPath(); ctx.arc(cx, cy, R * (1 - spiral * 0.30), 0, Math.PI * 2); ctx.stroke();
+                  ctx.globalAlpha = 0.14;
+                  for (let pc = 0; pc < 12; pc++) {
+                      const p = posOf(pc, 5);
+                      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(p.x, p.y); ctx.stroke();
+                  }
+
+                  // scale polygon
+                  if (scaleGlow > 0.02) {
+                      ctx.beginPath();
+                      const steps = key.minor ? MINOR_STEPS : MAJOR_STEPS;
+                      for (let i = 0; i < steps.length; i++) {
+                          const p = posOf((key.root + steps[i]) % 12, 5);
+                          i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y);
+                      }
+                      ctx.closePath();
+                      ctx.fillStyle = `rgba(${rgbScale.r},${rgbScale.g},${rgbScale.b},${(scaleGlow * 0.13).toFixed(3)})`;
+                      ctx.fill();
+                      ctx.strokeStyle = `rgba(${rgbScale.r},${rgbScale.g},${rgbScale.b},${(scaleGlow * 0.5).toFixed(3)})`;
+                      ctx.lineWidth = 1.5 * sc; ctx.globalAlpha = 1; ctx.stroke();
+                  }
+
+                  // melodic trail
+                  if (trail > 0.02) {
+                      const tWin = trail * 7000;
+                      const recent = noteHist.filter(n => nowMs - n.on < tWin);
+                      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+                      for (let i = 1; i < recent.length; i++) {
+                          const a = posOf(recent[i - 1].note % 12, Math.floor(recent[i - 1].note / 12));
+                          const b = posOf(recent[i].note % 12, Math.floor(recent[i].note / 12));
+                          const age = (nowMs - recent[i].on) / tWin;
+                          ctx.globalAlpha = Math.max(0, (1 - age) * 0.55);
+                          ctx.strokeStyle = cAct;
+                          ctx.lineWidth = Math.max(0.6, (1 - age) * 2.4 * sc);
+                          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+                      }
+                  }
+
+                  // chord polygon
+                  if (chordFill > 0.02 && actPcs.length >= 2) {
+                      const sorted = [...actPcs].sort((p, q) => p - q);
+                      ctx.beginPath();
+                      sorted.forEach((pc, i) => { const p = posOf(pc, 5); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
+                      ctx.closePath();
+                      ctx.globalAlpha = 1;
+                      ctx.fillStyle = `rgba(${rgbChord.r},${rgbChord.g},${rgbChord.b},${(chordFill * 0.30).toFixed(3)})`;
+                      ctx.fill();
+                      ctx.strokeStyle = `rgba(${rgbChord.r},${rgbChord.g},${rgbChord.b},${(chordFill * 0.9).toFixed(3)})`;
+                      ctx.lineWidth = 2 * sc; ctx.stroke();
+                  }
+
+                  // nodes
+                  ctx.globalAlpha = 1;
+                  for (let pc = 0; pc < 12; pc++) {
+                      const p = posOf(pc, 5);
+                      const energy = Math.min(1, pcH[pc]);
+                      const isTonicSet = pulseEnv > 0 && (pc === key.root || pc === (key.root + 7) % 12 || pc === (key.root + (key.minor ? 3 : 4)) % 12);
+                      const base = 4.2 * nodeSize * sc;
+                      const r = base * (1 + energy * 0.9 + (isTonicSet ? pulseEnv * 1.6 : 0));
+                      ctx.fillStyle = inScale[pc] ? cScale : cRing;
+                      ctx.globalAlpha = inScale[pc] ? 0.55 + scaleGlow * 0.35 : 0.4;
+                      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
+                      if (pc === key.root) {
+                          ctx.strokeStyle = cScale; ctx.globalAlpha = 0.9; ctx.lineWidth = 2 * sc;
+                          ctx.beginPath(); ctx.arc(p.x, p.y, r + 4 * sc, 0, Math.PI * 2); ctx.stroke();
+                      }
+                  }
+                  // sounding notes on top (own octave radius when spiralled)
+                  ctx.globalCompositeOperation = 'lighter';
+                  for (const [n, a] of noteActive) {
+                      const p = posOf(n % 12, Math.floor(n / 12));
+                      const r = (5 + (a.vel / 127) * 9) * nodeSize * sc;
+                      ctx.globalAlpha = 0.95;
+                      ctx.fillStyle = `rgba(${rgbAct.r},${rgbAct.g},${rgbAct.b},1)`;
+                      ctx.shadowColor = cAct; ctx.shadowBlur = 16 * sc;
+                      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
+                      ctx.shadowBlur = 0;
+                  }
+                  ctx.globalCompositeOperation = 'source-over';
+                  ctx.globalAlpha = 1;
+
+                  if (showLabels) {
+                      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                      ctx.font = `600 ${Math.round(13 * sc)}px ui-sans-serif, system-ui, sans-serif`;
+                      for (let pc = 0; pc < 12; pc++) {
+                          const a = angOf(pc);
+                          const lr = R * (1 - spiral * 0.30) + 22 * sc;
+                          ctx.fillStyle = pc === key.root ? cScale : cAct;
+                          ctx.globalAlpha = pc === key.root ? 1 : (inScale[pc] ? 0.8 : 0.28);
+                          ctx.fillText(PC_SHARP[pc], cx + Math.cos(a) * lr, cy + Math.sin(a) * lr);
+                      }
+                      ctx.globalAlpha = 1;
+                      ctx.font = `700 ${Math.round(16 * sc)}px ui-sans-serif, system-ui, sans-serif`;
+                      ctx.fillStyle = cScale;
+                      ctx.fillText(`${PC_SHARP[key.root]} ${key.minor ? 'minor' : 'major'}${st.locked ? ' ·' : ''}`, cx, cy - 9 * sc);
+                      if (chord) {
+                          ctx.font = `500 ${Math.round(12 * sc)}px ui-sans-serif, system-ui, sans-serif`;
+                          ctx.fillStyle = cChord;
+                          ctx.fillText(`${PC_SHARP[chord.root]}${chord.name}`, cx, cy + 11 * sc);
+                      }
+                  }
+                  element = canvas;
+
+              } else if (def.uuid === 'circle-of-fifths-1') {
+                  const bg = resolvedGenerativeColors['background'] || '#0a0a12';
+                  const cWedge = resolvedGenerativeColors['wedge'] || '#2a2a3e';
+                  const cAct = resolvedGenerativeColors['active'] || '#8b6cf0';
+                  const cAccent = resolvedGenerativeColors['accent'] || '#f0a0d8';
+                  const cText = resolvedGenerativeColors['text'] || '#ffffff';
+                  const rgbAct = hexToRgb(cAct), rgbAcc = hexToRgb(cAccent);
+
+                  const innerRing = (ms.inner_ring ?? 1) > 0.5;
+                  const noteFlash = Math.max(0, Math.min(1, ms.note_flash ?? 0.7));
+                  const cometAmt = Math.max(0, Math.min(1, ms.comet ?? 0.5));
+                  const glow = Math.max(0, Math.min(1, ms.glow ?? 0.6));
+                  const memory = Math.max(0.5, Math.min(12, ms.memory ?? 4));
+                  const tonicTop = (ms.tonic_top ?? 0) > 0.5;
+                  const showLabels = (ms.labels ?? 1) > 0.5;
+
+                  let st = circleFifthsStateRef.current[layer.id];
+                  if (!st) st = circleFifthsStateRef.current[layer.id] = { lastMod: 0, modAt: -99, lastSpin: 0, spinFrom: 0, spinTo: 0, spinAt: -99, keyTrail: [], prevKey: -1 };
+                  const nMod = Number(ms.modulate_flash ?? 0), nSpin = Number(ms.spin ?? 0);
+                  if (nMod > st.lastMod) { st.lastMod = nMod; st.modAt = nowSec; }
+                  if (nSpin > st.lastSpin) { st.lastSpin = nSpin; st.spinFrom = st.spinTo; st.spinTo += Math.PI * 2; st.spinAt = nowSec; }
+                  const spinT = nowSec - st.spinAt;
+                  const spinP = spinT >= 0 && spinT < 1.4 ? spinT / 1.4 : 1;
+                  const spinEase = spinP < 1 ? 1 - Math.pow(1 - spinP, 3) : 1;
+                  const spinRot = st.spinFrom + (st.spinTo - st.spinFrom) * spinEase;
+
+                  const pcH = pcHistogram(noteHist, nowMs, memory);
+                  const key = detectKey(pcH);
+                  const majorRoot = key.minor ? (key.root + 3) % 12 : key.root;
+                  if (majorRoot !== st.prevKey) {
+                      st.prevKey = majorRoot;
+                      st.keyTrail.push({ pc: majorRoot, at: nowSec });
+                      if (st.keyTrail.length > 12) st.keyTrail.shift();
+                  }
+                  const modT = nowSec - st.modAt;
+                  const modEnv = modT >= 0 && modT < 1.2 ? Math.sin(Math.PI * (modT / 1.2)) : 0;
+
+                  ctx.fillStyle = bg; ctx.fillRect(0, 0, targetW, targetH);
+                  const cx = targetW / 2, cy = targetH / 2;
+                  const rOut = Math.min(targetW, targetH) * 0.42;
+                  const rMid = rOut * (innerRing ? 0.68 : 0.5);
+                  const rIn = rOut * 0.40;
+                  const tonicIdx = FIFTHS_ORDER.indexOf(majorRoot);
+                  const baseRot = (tonicTop ? -tonicIdx * (Math.PI / 6) : 0) + spinRot;
+
+                  const wedgePath = (i: number, r0: number, r1: number) => {
+                      const a0 = -Math.PI / 2 + (i - 0.5) * (Math.PI / 6) + baseRot;
+                      const a1 = a0 + Math.PI / 6;
+                      ctx.beginPath();
+                      ctx.arc(cx, cy, r1, a0, a1);
+                      ctx.arc(cx, cy, r0, a1, a0, true);
+                      ctx.closePath();
+                  };
+
+                  for (let i = 0; i < 12; i++) {
+                      const pcMaj = FIFTHS_ORDER[i];
+                      const pcMin = (pcMaj + 9) % 12;                    // relative minor
+                      const litMaj = Math.min(1, pcH[pcMaj] * noteFlash);
+                      const litMin = Math.min(1, pcH[pcMin] * noteFlash);
+                      const isKeyMaj = pcMaj === majorRoot && !key.minor;
+                      const isKeyMin = pcMaj === majorRoot && key.minor;
+
+                      wedgePath(i, rMid, rOut);
+                      ctx.fillStyle = cWedge; ctx.globalAlpha = 0.55; ctx.fill();
+                      if (litMaj > 0.01 || isKeyMaj) {
+                          ctx.fillStyle = `rgba(${rgbAct.r},${rgbAct.g},${rgbAct.b},${Math.min(0.95, litMaj * 0.6 + (isKeyMaj ? 0.45 + modEnv * 0.5 : 0)).toFixed(3)})`;
+                          ctx.globalAlpha = 1; ctx.fill();
+                      }
+                      ctx.strokeStyle = bg; ctx.globalAlpha = 0.8; ctx.lineWidth = 2 * sc; ctx.stroke();
+
+                      if (innerRing) {
+                          wedgePath(i, rIn, rMid);
+                          ctx.fillStyle = cWedge; ctx.globalAlpha = 0.32; ctx.fill();
+                          if (litMin > 0.01 || isKeyMin) {
+                              ctx.fillStyle = `rgba(${rgbAct.r},${rgbAct.g},${rgbAct.b},${Math.min(0.95, litMin * 0.6 + (isKeyMin ? 0.45 + modEnv * 0.5 : 0)).toFixed(3)})`;
+                              ctx.globalAlpha = 1; ctx.fill();
+                          }
+                          ctx.strokeStyle = bg; ctx.globalAlpha = 0.8; ctx.lineWidth = 2 * sc; ctx.stroke();
+                      }
+                  }
+
+                  // modulation comet through recent key centres
+                  if (cometAmt > 0.02 && st.keyTrail.length > 1) {
+                      ctx.globalAlpha = 1; ctx.lineCap = 'round';
+                      const rr = rMid + (rOut - rMid) * 0.84;   // outside the wedge labels
+                      const angOfPc = (pc: number) => -Math.PI / 2 + FIFTHS_ORDER.indexOf(pc) * (Math.PI / 6) + baseRot;
+                      for (let i = 1; i < st.keyTrail.length; i++) {
+                          const age = nowSec - st.keyTrail[i].at;
+                          const life = Math.max(0, 1 - age / (4 + cometAmt * 12));
+                          if (life <= 0) continue;
+                          const aa = angOfPc(st.keyTrail[i - 1].pc), ab = angOfPc(st.keyTrail[i].pc);
+                          // travel the short way round the wheel, so a hop reads as motion along the circle
+                          let dA = ab - aa;
+                          while (dA > Math.PI) dA -= Math.PI * 2;
+                          while (dA < -Math.PI) dA += Math.PI * 2;
+                          ctx.strokeStyle = `rgba(${rgbAcc.r},${rgbAcc.g},${rgbAcc.b},${(life * 0.7).toFixed(3)})`;
+                          ctx.lineWidth = (0.6 + life * 2.8) * sc;
+                          ctx.beginPath();
+                          ctx.arc(cx, cy, rr, aa, aa + dA, dA < 0);
+                          ctx.stroke();
+                          const bx = cx + Math.cos(ab) * rr, by = cy + Math.sin(ab) * rr;
+                          ctx.fillStyle = `rgba(${rgbAcc.r},${rgbAcc.g},${rgbAcc.b},${(life * 0.9).toFixed(3)})`;
+                          ctx.beginPath(); ctx.arc(bx, by, (1.2 + life * 3) * sc, 0, Math.PI * 2); ctx.fill();
+                      }
+                  }
+
+                  if (glow > 0.02 && tonicIdx >= 0) {
+                      const a = -Math.PI / 2 + tonicIdx * (Math.PI / 6) + baseRot;
+                      const rr = (rMid + rOut) / 2;
+                      const g = ctx.createRadialGradient(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr, 0, cx + Math.cos(a) * rr, cy + Math.sin(a) * rr, rOut * 0.45);
+                      g.addColorStop(0, `rgba(${rgbAct.r},${rgbAct.g},${rgbAct.b},${(glow * 0.4 + modEnv * 0.4).toFixed(3)})`);
+                      g.addColorStop(1, 'rgba(0,0,0,0)');
+                      ctx.globalCompositeOperation = 'lighter';
+                      ctx.fillStyle = g; ctx.fillRect(0, 0, targetW, targetH);
+                      ctx.globalCompositeOperation = 'source-over';
+                  }
+
+                  ctx.globalAlpha = 1;
+                  if (showLabels) {
+                      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                      for (let i = 0; i < 12; i++) {
+                          const a = -Math.PI / 2 + i * (Math.PI / 6) + baseRot;
+                          ctx.font = `700 ${Math.round(13 * sc)}px ui-sans-serif, system-ui, sans-serif`;
+                          ctx.fillStyle = cText; ctx.globalAlpha = 0.9;
+                          const rm = (rMid + rOut) / 2;
+                          ctx.fillText(PC_SHARP[FIFTHS_ORDER[i]], cx + Math.cos(a) * rm, cy + Math.sin(a) * rm);
+                          if (innerRing) {
+                              ctx.font = `500 ${Math.round(10 * sc)}px ui-sans-serif, system-ui, sans-serif`;
+                              ctx.globalAlpha = 0.6;
+                              const ri = (rIn + rMid) / 2;
+                              ctx.fillText(PC_SHARP[(FIFTHS_ORDER[i] + 9) % 12].toLowerCase() + 'm', cx + Math.cos(a) * ri, cy + Math.sin(a) * ri);
+                          }
+                      }
+                      ctx.globalAlpha = 1;
+                      ctx.font = `700 ${Math.round(15 * sc)}px ui-sans-serif, system-ui, sans-serif`;
+                      ctx.fillStyle = cAct;
+                      ctx.fillText(`${PC_SHARP[key.root]} ${key.minor ? 'minor' : 'major'}`, cx, cy);
+                  }
+                  element = canvas;
+
+              } else if (def.uuid === 'tonnetz-viz-1') {
+                  const bg = resolvedGenerativeColors['background'] || '#0d1117';
+                  const cLat = resolvedGenerativeColors['lattice'] || '#1e3a24';
+                  const cNode = resolvedGenerativeColors['node'] || '#2ea043';
+                  const cAct = resolvedGenerativeColors['active'] || '#39d353';
+                  const cTriad = resolvedGenerativeColors['triad'] || '#00ff66';
+                  const rgbTriad = hexToRgb(cTriad);
+
+                  const extent = Math.max(2, Math.min(8, Math.round(ms.extent ?? 4)));
+                  const nodeSize = Math.max(0.3, Math.min(3, ms.node_size ?? 1));
+                  const triadFill = Math.max(0, Math.min(1, ms.triad_fill ?? 0.65));
+                  const trail = Math.max(0, Math.min(1, ms.trail ?? 0.5));
+                  const edgeA = Math.max(0, Math.min(1, ms.edges ?? 0.45));
+                  const warp = Math.max(0, Math.min(1, ms.warp ?? 0));
+                  const showLabels = (ms.labels ?? 1) > 0.5;
+
+                  let st = tonnetzStateRef.current[layer.id];
+                  if (!st) st = tonnetzStateRef.current[layer.id] = { lastCry: 0, cryAt: -99, lastRet: 0, retAt: -99, path: [] };
+                  const nCry = Number(ms.crystallize ?? 0), nRet = Number(ms.retrace ?? 0);
+                  if (nCry > st.lastCry) { st.lastCry = nCry; st.cryAt = nowSec; }
+                  if (nRet > st.lastRet) { st.lastRet = nRet; st.retAt = nowSec; }
+                  const cryT = nowSec - st.cryAt;
+                  const cryEnv = cryT >= 0 && cryT < 1.4 ? Math.sin(Math.PI * (cryT / 1.4)) : 0;
+                  const retT = nowSec - st.retAt;
+                  const retP = retT >= 0 && retT < 1.6 ? retT / 1.6 : -1;
+
+                  const actSet = new Set(Array.from(noteActive.keys()).map(n => n % 12));
+                  const pcH = pcHistogram(noteHist, nowMs, 2.5);
+
+                  ctx.fillStyle = bg; ctx.fillRect(0, 0, targetW, targetH);
+                  const cx = targetW / 2, cy = targetH / 2;
+                  const S = targetH / (extent * 2 * 0.866 + 1.2);
+                  // rows set the density; columns are derived from the aspect so the lattice fills the frame
+                  const colsHalf = Math.min(28, Math.ceil(targetW / (2 * S)) + 1);
+                  const shearOf = (row: number) => Math.round(row / 2);
+                  const pcAt = (col: number, row: number) => (((7 * col + 4 * row) % 12) + 12) % 12;
+                  const posAt = (col: number, row: number) => {
+                      let x = cx + (col + row * 0.5) * S;
+                      let y = cy - row * S * 0.866;
+                      if (warp > 0.01) {
+                          const e = pcH[pcAt(col, row)] || 0;
+                          x += Math.sin(nowSec * 1.3 + col * 0.7) * warp * e * 16 * sc;
+                          y += Math.cos(nowSec * 1.1 + row * 0.9) * warp * e * 16 * sc;
+                      }
+                      return { x, y };
+                  };
+
+                  // lattice edges
+                  if (edgeA > 0.02) {
+                      ctx.strokeStyle = cLat; ctx.globalAlpha = edgeA; ctx.lineWidth = 1.1 * sc;
+                      ctx.beginPath();
+                      for (let row = -extent - 1; row <= extent + 1; row++) {
+                          const sh = shearOf(row);
+                          for (let col = -colsHalf - sh; col <= colsHalf - sh; col++) {
+                              const a = posAt(col, row);
+                              for (const [dc, dr] of [[1, 0], [0, 1], [1, -1]] as [number, number][]) {
+                                  const b = posAt(col + dc, row + dr);
+                                  ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+                              }
+                          }
+                      }
+                      ctx.stroke();
+                  }
+
+                  // triad faces whose three pitch classes are all sounding
+                  ctx.globalAlpha = 1;
+                  let litCentre: { x: number; y: number } | null = null;
+                  if (actSet.size >= 3) {
+                      for (let row = -extent - 1; row <= extent + 1; row++) {
+                          const sh = shearOf(row);
+                          for (let col = -colsHalf - sh; col <= colsHalf - sh; col++) {
+                              const tris: [number, number][][] = [
+                                  [[col, row], [col + 1, row], [col, row + 1]],
+                                  [[col + 1, row], [col, row + 1], [col + 1, row + 1]],
+                              ];
+                              for (const tri of tris) {
+                                  if (!tri.every(([c, r]) => actSet.has(pcAt(c, r)))) continue;
+                                  const pts = tri.map(([c, r]) => posAt(c, r));
+                                  ctx.beginPath();
+                                  pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+                                  ctx.closePath();
+                                  ctx.fillStyle = `rgba(${rgbTriad.r},${rgbTriad.g},${rgbTriad.b},${(triadFill * (0.35 + cryEnv * 0.5)).toFixed(3)})`;
+                                  ctx.fill();
+                                  ctx.strokeStyle = cTriad; ctx.lineWidth = (1.6 + cryEnv * 2.5) * sc; ctx.stroke();
+                                  const mx = (pts[0].x + pts[1].x + pts[2].x) / 3, my = (pts[0].y + pts[1].y + pts[2].y) / 3;
+                                  litCentre = { x: mx, y: my };
+                              }
+                          }
+                      }
+                  }
+                  // harmonic path trail
+                  if (litCentre) {
+                      const last = st.path[st.path.length - 1];
+                      if (!last || Math.hypot(last.x - litCentre.x, last.y - litCentre.y) > S * 0.3) {
+                          st.path.push({ x: litCentre.x, y: litCentre.y, at: nowSec });
+                          if (st.path.length > 80) st.path.shift();
+                      }
+                  }
+                  if (trail > 0.02 && st.path.length > 1) {
+                      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+                      const lifeMax = 3 + trail * 20;
+                      for (let i = 1; i < st.path.length; i++) {
+                          const age = nowSec - st.path[i].at;
+                          let life = Math.max(0, 1 - age / lifeMax);
+                          if (retP >= 0) life = Math.max(life, (i / st.path.length) < retP ? 1 - (retP - i / st.path.length) * 2 : 0);
+                          if (life <= 0) continue;
+                          ctx.strokeStyle = `rgba(${rgbTriad.r},${rgbTriad.g},${rgbTriad.b},${(life * 0.55).toFixed(3)})`;
+                          ctx.lineWidth = (0.8 + life * 2.6) * sc;
+                          ctx.beginPath(); ctx.moveTo(st.path[i - 1].x, st.path[i - 1].y); ctx.lineTo(st.path[i].x, st.path[i].y); ctx.stroke();
+                      }
+                  }
+
+                  // nodes
+                  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                  ctx.font = `600 ${Math.round(9.5 * sc)}px ui-sans-serif, system-ui, sans-serif`;
+                  for (let row = -extent - 1; row <= extent + 1; row++) {
+                      const sh = shearOf(row);
+                      for (let col = -colsHalf - sh; col <= colsHalf - sh; col++) {
+                          const pc = pcAt(col, row);
+                          const p = posAt(col, row);
+                          if (p.x < -40 || p.x > targetW + 40 || p.y < -40 || p.y > targetH + 40) continue;
+                          const on = actSet.has(pc);
+                          const e = Math.min(1, pcH[pc]);
+                          const r = (3.6 + e * 4 + (on ? 3.5 : 0)) * nodeSize * sc;
+                          ctx.globalAlpha = on ? 1 : 0.5 + e * 0.4;
+                          ctx.fillStyle = on ? cAct : cNode;
+                          if (on) { ctx.shadowColor = cAct; ctx.shadowBlur = 14 * sc; }
+                          ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
+                          ctx.shadowBlur = 0;
+                          if (showLabels && nodeSize > 0.6) {
+                              ctx.globalAlpha = on ? 0.95 : 0.4;
+                              ctx.fillStyle = bg;
+                              ctx.fillText(PC_SHARP[pc], p.x, p.y + 0.5);
+                          }
+                      }
+                  }
+                  ctx.globalAlpha = 1;
+                  element = canvas;
+
+              } else if (def.uuid === 'shape-of-song-1') {
+                  const bg = resolvedGenerativeColors['background'] || '#ede9e2';
+                  const cArc = resolvedGenerativeColors['arc'] || '#3a5ba0';
+                  const cArcAlt = resolvedGenerativeColors['arc_alt'] || '#d9557a';
+                  const cNote = resolvedGenerativeColors['note'] || '#234a30';
+                  const rgbArc = hexToRgb(cArc), rgbAlt = hexToRgb(cArcAlt);
+
+                  const motifLen = Math.max(2, Math.min(12, Math.round(ms.motif_len ?? 4)));
+                  const windowN = Math.max(60, Math.min(3000, Math.round(ms.window ?? 800)));
+                  const arcOp = Math.max(0.05, Math.min(1, ms.arc_opacity ?? 0.35));
+                  const arcH = Math.max(0.2, Math.min(2, ms.arc_height ?? 1));
+                  const lw = Math.max(0.2, Math.min(4, ms.line_weight ?? 1));
+                  const transposed = (ms.transposed ?? 1) > 0.5;
+                  const baseAmt = Math.max(0, Math.min(1, ms.baseline ?? 0.8));
+
+                  let st = shapeOfSongStateRef.current[layer.id];
+                  if (!st) st = shapeOfSongStateRef.current[layer.id] = { lastClear: 0, lastFreeze: 0, since: 0, frozen: false, acc: null, drawnKey: '' };
+                  const nClear = Number(ms.clear ?? 0), nFreeze = Number(ms.freeze ?? 0);
+                  if (nClear > st.lastClear) { st.lastClear = nClear; st.since = nowMs; st.drawnKey = ''; }
+                  if (nFreeze > st.lastFreeze) { st.lastFreeze = nFreeze; st.frozen = !st.frozen; }
+
+                  // notes since the last clear, capped to the window
+                  let notes = noteHist.filter(n => n.on >= st.since);
+                  if (notes.length > windowN) notes = notes.slice(notes.length - windowN);
+                  const count = st.frozen ? Math.min(notes.length, st.frozenCount ?? notes.length) : notes.length;
+                  if (!st.frozen) st.frozenCount = notes.length;
+                  notes = notes.slice(0, count);
+
+                  // find repeated motifs (hash of the last `motifLen` notes at each index)
+                  const arcs: { a: number; b: number; len: number }[] = [];
+                  if (notes.length >= motifLen) {
+                      const seen = new Map<string, number[]>();
+                      for (let i = motifLen - 1; i < notes.length; i++) {
+                          let k = '';
+                          if (transposed) {
+                              for (let j = i - motifLen + 2; j <= i; j++) k += (notes[j].note - notes[j - 1].note) + ',';
+                          } else {
+                              for (let j = i - motifLen + 1; j <= i; j++) k += notes[j].note + ',';
+                          }
+                          const prev = seen.get(k);
+                          if (prev) {
+                              for (let p = Math.max(0, prev.length - 3); p < prev.length; p++) arcs.push({ a: prev[p], b: i, len: motifLen });
+                              prev.push(i);
+                          } else seen.set(k, [i]);
+                      }
+                  }
+                  const arcsCapped = arcs.length > 1400 ? arcs.slice(arcs.length - 1400) : arcs;
+
+                  // redraw only when the picture actually changed
+                  const drawKey = `${notes.length}|${targetW}x${targetH}|${motifLen}|${transposed}|${arcOp}|${arcH}|${lw}|${baseAmt}|${bg}|${cArc}|${cArcAlt}|${cNote}`;
+                  let acc: HTMLCanvasElement = st.acc;
+                  if (!acc) acc = st.acc = document.createElement('canvas');
+                  if (acc.width !== targetW || acc.height !== targetH) { acc.width = targetW; acc.height = targetH; st.drawnKey = ''; }
+                  if (st.drawnKey !== drawKey) {
+                      st.drawnKey = drawKey;
+                      const a = acc.getContext('2d')!;
+                      a.clearRect(0, 0, targetW, targetH);
+                      a.fillStyle = bg; a.fillRect(0, 0, targetW, targetH);
+                      const pad = targetW * 0.04;
+                      const baseY = targetH * 0.80;
+                      const xOf = (i: number) => notes.length < 2 ? pad : pad + (i / (notes.length - 1)) * (targetW - pad * 2);
+                      a.lineCap = 'round';
+                      for (const arc of arcsCapped) {
+                          const x0 = xOf(arc.a), x1 = xOf(arc.b);
+                          const dist = Math.abs(x1 - x0);
+                          if (dist < 1) continue;
+                          const far = dist > (targetW - pad * 2) * 0.5;
+                          const rgb = far ? rgbAlt : rgbArc;
+                          const h = Math.min(baseY - 6, dist * 0.55 * arcH);
+                          a.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${arcOp.toFixed(3)})`;
+                          a.lineWidth = lw * sc;
+                          a.beginPath();
+                          a.moveTo(x0, baseY);
+                          a.bezierCurveTo(x0, baseY - h, x1, baseY - h, x1, baseY);
+                          a.stroke();
+                      }
+                      if (baseAmt > 0.02 && notes.length) {
+                          let lo = 127, hi = 0;
+                          for (const n of notes) { if (n.note < lo) lo = n.note; if (n.note > hi) hi = n.note; }
+                          const rng = Math.max(6, hi - lo);
+                          const bandH = targetH * 0.13 * baseAmt;
+                          a.globalAlpha = 0.85;
+                          for (let i = 0; i < notes.length; i++) {
+                              const x = xOf(i);
+                              const y = baseY + 6 * sc + (1 - (notes[i].note - lo) / rng) * bandH;
+                              a.fillStyle = cNote;
+                              a.beginPath(); a.arc(x, y, Math.max(0.7, 1.5 * lw * sc), 0, Math.PI * 2); a.fill();
+                          }
+                          a.globalAlpha = 0.35;
+                          a.strokeStyle = cNote; a.lineWidth = 1 * sc;
+                          a.beginPath(); a.moveTo(pad, baseY); a.lineTo(targetW - pad, baseY); a.stroke();
+                          a.globalAlpha = 1;
+                      }
+                  }
+                  ctx.clearRect(0, 0, targetW, targetH);
+                  ctx.drawImage(acc, 0, 0);
+                  // live playhead
+                  if (!st.frozen && notes.length > 1) {
+                      const pad = targetW * 0.04;
+                      const x = pad + (targetW - pad * 2);
+                      ctx.strokeStyle = cArcAlt; ctx.globalAlpha = 0.5; ctx.lineWidth = 1.5 * sc;
+                      ctx.beginPath(); ctx.moveTo(x, targetH * 0.12); ctx.lineTo(x, targetH * 0.86); ctx.stroke();
+                      ctx.globalAlpha = 1;
+                  }
+                  element = canvas;
+
+              } else {   // piano-roll-1
+                  const bg = resolvedGenerativeColors['background'] || '#1a1b26';
+                  const cGrid = resolvedGenerativeColors['grid'] || '#2c2e40';
+                  const cNote = resolvedGenerativeColors['note'] || '#7aa2f7';
+                  const cAct = resolvedGenerativeColors['active'] || '#f7768e';
+                  const cKeys = resolvedGenerativeColors['keys'] || '#bb9af7';
+
+                  const spanSec = Math.max(2, Math.min(60, ms.span ?? 12));
+                  const noteH = Math.max(0.3, Math.min(3, ms.note_height ?? 1));
+                  const showKeys = (ms.keyboard ?? 1) > 0.5;
+                  const gridA = Math.max(0, Math.min(1, ms.grid ?? 0.4));
+                  const hueByPitch = (ms.hue_by_pitch ?? 1) > 0.5;
+                  const glow = Math.max(0, Math.min(1, ms.glow ?? 0.5));
+                  const falling = (ms.falling ?? 0) > 0.5;
+
+                  let st = pianoRollStateRef.current[layer.id];
+                  if (!st) st = pianoRollStateRef.current[layer.id] = { lastClear: 0, lastFreeze: 0, since: 0, frozen: false, frozenAt: 0, lo: 48, hi: 84 };
+                  const nClear = Number(ms.clear ?? 0), nFreeze = Number(ms.freeze ?? 0);
+                  if (nClear > st.lastClear) { st.lastClear = nClear; st.since = nowMs; }
+                  if (nFreeze > st.lastFreeze) { st.lastFreeze = nFreeze; st.frozen = !st.frozen; st.frozenAt = nowMs; }
+
+                  const tEnd = st.frozen ? st.frozenAt : nowMs;
+                  const spanMs = spanSec * 1000;
+                  const tStart = tEnd - spanMs;
+                  const vis = noteHist.filter(n => n.on >= st.since && (n.off < 0 || n.off > tStart) && n.on < tEnd);
+
+                  // eased auto range
+                  let lo = 127, hi = 0;
+                  for (const n of vis) { if (n.note < lo) lo = n.note; if (n.note > hi) hi = n.note; }
+                  if (lo > hi) { lo = 48; hi = 84; }
+                  lo -= 2; hi += 2;
+                  if (hi - lo < 14) { const m = (hi + lo) / 2; lo = m - 7; hi = m + 7; }
+                  st.lo += (lo - st.lo) * 0.06;
+                  st.hi += (hi - st.hi) * 0.06;
+                  const rLo = st.lo, rHi = st.hi, rng = Math.max(6, rHi - rLo);
+
+                  ctx.fillStyle = bg; ctx.fillRect(0, 0, targetW, targetH);
+                  const keyW = showKeys ? Math.max(26, Math.min(70, targetW * 0.06)) : 0;
+                  const plotX = falling ? 0 : keyW;
+                  const plotY = 0;
+                  const plotW = falling ? targetW : targetW - keyW;
+                  const plotH = falling ? targetH - (showKeys ? keyW : 0) : targetH;
+
+                  const pitchPos = (n: number) => falling
+                      ? plotX + ((n - rLo) / rng) * plotW
+                      : plotY + (1 - (n - rLo) / rng) * plotH;
+                  const timePos = (t: number) => falling
+                      ? plotY + (1 - (t - tStart) / spanMs) * plotH
+                      : plotX + ((t - tStart) / spanMs) * plotW;
+
+                  const rowThick = Math.max(2, ((falling ? plotW : plotH) / rng) * 0.75 * noteH);
+
+                  // grid at every C
+                  if (gridA > 0.02) {
+                      ctx.strokeStyle = cGrid; ctx.globalAlpha = gridA; ctx.lineWidth = 1;
+                      ctx.beginPath();
+                      for (let n = Math.ceil(rLo / 12) * 12; n <= rHi; n += 12) {
+                          const p = pitchPos(n);
+                          if (falling) { ctx.moveTo(p, 0); ctx.lineTo(p, plotH); }
+                          else { ctx.moveTo(plotX, p); ctx.lineTo(targetW, p); }
+                      }
+                      ctx.stroke();
+                      ctx.globalAlpha = gridA * 0.5;
+                      ctx.beginPath();
+                      for (let s = 1; s < 5; s++) {
+                          const t = tStart + (spanMs * s) / 5;
+                          const p = timePos(t);
+                          if (falling) { ctx.moveTo(0, p); ctx.lineTo(plotW, p); }
+                          else { ctx.moveTo(p, 0); ctx.lineTo(p, plotH); }
+                      }
+                      ctx.stroke();
+                  }
+
+                  // notes
+                  ctx.globalAlpha = 1;
+                  for (const n of vis) {
+                      const a = Math.max(n.on, tStart);
+                      const b = Math.min(n.off < 0 ? tEnd : n.off, tEnd);
+                      if (b <= a) continue;
+                      const live = n.off < 0;
+                      const hue = ((n.note % 12) / 12) * 360;
+                      const col = hueByPitch
+                          ? `hsl(${hue}, ${live ? 92 : 68}%, ${live ? 72 : 58}%)`
+                          : (live ? cAct : cNote);
+                      const p0 = timePos(a), p1 = timePos(b);
+                      const pp = pitchPos(n.note);
+                      const alpha = 0.35 + (n.vel / 127) * 0.65;
+                      ctx.globalAlpha = alpha;
+                      ctx.fillStyle = col;
+                      if (live && glow > 0.02) { ctx.shadowColor = col; ctx.shadowBlur = 18 * glow * sc; }
+                      if (falling) {
+                          const y0 = Math.min(p0, p1), y1 = Math.max(p0, p1);
+                          ctx.fillRect(pp - rowThick / 2, y0, rowThick, Math.max(2, y1 - y0));
+                      } else {
+                          ctx.fillRect(Math.min(p0, p1), pp - rowThick / 2, Math.max(2, Math.abs(p1 - p0)), rowThick);
+                      }
+                      ctx.shadowBlur = 0;
+                  }
+                  ctx.globalAlpha = 1;
+
+                  // keyboard strip
+                  if (showKeys) {
+                      const isBlack = (pc: number) => [1, 3, 6, 8, 10].includes(pc);
+                      const sounding = new Set(Array.from(noteActive.keys()));
+                      for (let n = Math.ceil(rLo); n <= rHi; n++) {
+                          const p = pitchPos(n);
+                          const black = isBlack(((n % 12) + 12) % 12);
+                          const on = sounding.has(n);
+                          ctx.fillStyle = on ? cAct : (black ? bg : cKeys);
+                          ctx.globalAlpha = on ? 1 : (black ? 0.9 : 0.32);
+                          if (falling) ctx.fillRect(p - rowThick / 2, plotH, rowThick, keyW);
+                          else ctx.fillRect(0, p - rowThick / 2, keyW * (black ? 0.62 : 1), rowThick);
+                      }
+                      ctx.globalAlpha = 0.5;
+                      ctx.strokeStyle = cGrid; ctx.lineWidth = 1;
+                      ctx.beginPath();
+                      if (falling) { ctx.moveTo(0, plotH); ctx.lineTo(targetW, plotH); }
+                      else { ctx.moveTo(keyW, 0); ctx.lineTo(keyW, targetH); }
+                      ctx.stroke();
+                      ctx.globalAlpha = 1;
+                  }
+                  element = canvas;
+              }
           } else {
               if (webglRendererRef.current.canvas.width !== targetW || webglRendererRef.current.canvas.height !== targetH) {
                   webglRendererRef.current.resize(targetW, targetH);
@@ -15078,6 +15933,11 @@ return (
                                    if (uuid === 'ember-core-1') return '☄️';
                                    if (uuid === 'wire-canyon-1') return '🏔️';
                                    if (uuid === 'ring-tunnel-1') return '🌀';
+                                   if (uuid === 'pitch-clock-1') return '🕛';
+                                   if (uuid === 'circle-of-fifths-1') return '🎼';
+                                   if (uuid === 'tonnetz-viz-1') return '🔺';
+                                   if (uuid === 'shape-of-song-1') return '🌈';
+                                   if (uuid === 'piano-roll-1') return '🎹';
                                    if (uuid === 'bubble-spheres-1') return '🫧';
                                    if (uuid === 'dancing-cubes-canvas-1') return '🎲';
                                    return '✨';

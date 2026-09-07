@@ -2037,6 +2037,156 @@ void main(void) {
   "uuid": "ring-tunnel-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Pitch Clock",
+  "category": "Music",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "aurora_glow",
+  "parameters": [
+    { "name": "spiral",     "min": 0.0, "max": 1.0,  "default": 0.0,  "type": "number" },
+    { "name": "trail",      "min": 0.0, "max": 1.0,  "default": 0.5,  "type": "number" },
+    { "name": "scale_glow", "min": 0.0, "max": 1.0,  "default": 0.6,  "type": "number" },
+    { "name": "chord_fill", "min": 0.0, "max": 1.0,  "default": 0.45, "type": "number" },
+    { "name": "node_size",  "min": 0.3, "max": 3.0,  "default": 1.0,  "type": "number" },
+    { "name": "memory",     "min": 0.5, "max": 12.0, "default": 4.0,  "type": "number" },
+    { "name": "tonic_top",  "min": 0.0, "max": 1.0,  "default": 0.0,  "type": "number" },
+    { "name": "labels",     "min": 0.0, "max": 1.0,  "default": 1.0,  "type": "number" },
+    { "name": "demo",       "min": 0.0, "max": 1.0,  "default": 1.0,  "type": "number" },
+    { "name": "pulse_tonic", "default": 0, "type": "action" },
+    { "name": "snap_key",    "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#0a0a12" },
+    { "id": "ring", "name": "Ring & Idle Notes", "defaultColor": "#3a3a52" },
+    { "id": "scale", "name": "In-Scale Notes", "defaultColor": "#8b6cf0" },
+    { "id": "active", "name": "Sounding Notes", "defaultColor": "#ffffff" },
+    { "id": "chord", "name": "Chord Shape", "defaultColor": "#f0a0d8" }
+  ],
+  "uuid": "pitch-clock-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Circle of Fifths",
+  "category": "Music",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "aurora_glow",
+  "parameters": [
+    { "name": "inner_ring", "min": 0.0, "max": 1.0,  "default": 1.0, "type": "number" },
+    { "name": "note_flash", "min": 0.0, "max": 1.0,  "default": 0.7, "type": "number" },
+    { "name": "comet",      "min": 0.0, "max": 1.0,  "default": 0.5, "type": "number" },
+    { "name": "glow",       "min": 0.0, "max": 1.0,  "default": 0.6, "type": "number" },
+    { "name": "memory",     "min": 0.5, "max": 12.0, "default": 4.0, "type": "number" },
+    { "name": "tonic_top",  "min": 0.0, "max": 1.0,  "default": 0.0, "type": "number" },
+    { "name": "labels",     "min": 0.0, "max": 1.0,  "default": 1.0, "type": "number" },
+    { "name": "demo",       "min": 0.0, "max": 1.0,  "default": 1.0, "type": "number" },
+    { "name": "modulate_flash", "default": 0, "type": "action" },
+    { "name": "spin",           "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#0a0a12" },
+    { "id": "wedge", "name": "Key Wedges", "defaultColor": "#2a2a3e" },
+    { "id": "active", "name": "Current Key", "defaultColor": "#8b6cf0" },
+    { "id": "accent", "name": "Comet & Notes", "defaultColor": "#f0a0d8" },
+    { "id": "text", "name": "Labels", "defaultColor": "#ffffff" }
+  ],
+  "uuid": "circle-of-fifths-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Tonnetz",
+  "category": "Music",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "acid_matrix",
+  "parameters": [
+    { "name": "extent",     "min": 2.0, "max": 8.0,  "default": 4.0,  "type": "number" },
+    { "name": "node_size",  "min": 0.3, "max": 3.0,  "default": 1.0,  "type": "number" },
+    { "name": "triad_fill", "min": 0.0, "max": 1.0,  "default": 0.65, "type": "number" },
+    { "name": "trail",      "min": 0.0, "max": 1.0,  "default": 0.5,  "type": "number" },
+    { "name": "edges",      "min": 0.0, "max": 1.0,  "default": 0.45, "type": "number" },
+    { "name": "warp",       "min": 0.0, "max": 1.0,  "default": 0.0,  "type": "number" },
+    { "name": "labels",     "min": 0.0, "max": 1.0,  "default": 1.0,  "type": "number" },
+    { "name": "demo",       "min": 0.0, "max": 1.0,  "default": 1.0,  "type": "number" },
+    { "name": "crystallize", "default": 0, "type": "action" },
+    { "name": "retrace",     "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#0d1117" },
+    { "id": "lattice", "name": "Lattice Edges", "defaultColor": "#1e3a24" },
+    { "id": "node", "name": "Idle Notes", "defaultColor": "#2ea043" },
+    { "id": "active", "name": "Sounding Notes", "defaultColor": "#39d353" },
+    { "id": "triad", "name": "Triad Face", "defaultColor": "#00ff66" }
+  ],
+  "uuid": "tonnetz-viz-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Shape of Song",
+  "category": "Music",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "plotter_bands",
+  "parameters": [
+    { "name": "motif_len",   "min": 2.0,  "max": 12.0,   "default": 4.0,   "type": "number" },
+    { "name": "window",      "min": 60.0, "max": 3000.0, "default": 800.0, "type": "number" },
+    { "name": "arc_opacity", "min": 0.05, "max": 1.0,    "default": 0.35,  "type": "number" },
+    { "name": "arc_height",  "min": 0.2,  "max": 2.0,    "default": 1.0,   "type": "number" },
+    { "name": "line_weight", "min": 0.2,  "max": 4.0,    "default": 1.0,   "type": "number" },
+    { "name": "transposed",  "min": 0.0,  "max": 1.0,    "default": 1.0,   "type": "number" },
+    { "name": "baseline",    "min": 0.0,  "max": 1.0,    "default": 0.8,   "type": "number" },
+    { "name": "demo",        "min": 0.0,  "max": 1.0,    "default": 1.0,   "type": "number" },
+    { "name": "clear",  "default": 0, "type": "action" },
+    { "name": "freeze", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Paper", "defaultColor": "#ede9e2" },
+    { "id": "arc", "name": "Repetition Arcs", "defaultColor": "#3a5ba0" },
+    { "id": "arc_alt", "name": "Long-Range Arcs", "defaultColor": "#d9557a" },
+    { "id": "note", "name": "Note Baseline", "defaultColor": "#234a30" }
+  ],
+  "uuid": "shape-of-song-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Piano Roll",
+  "category": "Music",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "tokyo_synth",
+  "parameters": [
+    { "name": "span",        "min": 2.0, "max": 60.0, "default": 12.0, "type": "number" },
+    { "name": "note_height", "min": 0.3, "max": 3.0,  "default": 1.0,  "type": "number" },
+    { "name": "keyboard",    "min": 0.0, "max": 1.0,  "default": 1.0,  "type": "number" },
+    { "name": "grid",        "min": 0.0, "max": 1.0,  "default": 0.4,  "type": "number" },
+    { "name": "hue_by_pitch","min": 0.0, "max": 1.0,  "default": 1.0,  "type": "number" },
+    { "name": "glow",        "min": 0.0, "max": 1.0,  "default": 0.5,  "type": "number" },
+    { "name": "falling",     "min": 0.0, "max": 1.0,  "default": 0.0,  "type": "number" },
+    { "name": "demo",        "min": 0.0, "max": 1.0,  "default": 1.0,  "type": "number" },
+    { "name": "clear",  "default": 0, "type": "action" },
+    { "name": "freeze", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#1a1b26" },
+    { "id": "grid", "name": "Grid", "defaultColor": "#2c2e40" },
+    { "id": "note", "name": "Notes", "defaultColor": "#7aa2f7" },
+    { "id": "active", "name": "Sounding Now", "defaultColor": "#f7768e" },
+    { "id": "keys", "name": "Keyboard", "defaultColor": "#bb9af7" }
+  ],
+  "uuid": "piano-roll-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   }
 ];
 
@@ -2101,9 +2251,15 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'delta-maze-1': 'Retro',
   'wire-canyon-1': 'Retro',
   'ring-tunnel-1': 'Retro',
+  // Music — MIDI-driven music-theory visualisations
+  'pitch-clock-1': 'Music',
+  'circle-of-fifths-1': 'Music',
+  'tonnetz-viz-1': 'Music',
+  'shape-of-song-1': 'Music',
+  'piano-roll-1': 'Music',
 };
 
-export const GENERATIVE_CATEGORY_ORDER = ['Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];
+export const GENERATIVE_CATEGORY_ORDER = ['Music', 'Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];
 
 export function parseGeneratives(): GenerativeDefinition[] {
   return GENERATIVES_DATA.map(g => {
