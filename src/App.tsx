@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   Upload, 
@@ -108,7 +108,16 @@ interface TriggerState {
   useFixedDuration: boolean;
 }
 
+/** A MIDI source filter entry. Ids are not stable across sessions or machines,
+ *  so the name is kept alongside and used as a fallback when matching. */
+interface MidiDeviceRef {
+  id: string;
+  name: string;
+}
+
 interface LayerTriggerMapping {
+  /** Instruments this trigger listens to. undefined or [] means ANY instrument. */
+  devices?: MidiDeviceRef[];
   channels: number[];
   noteStart: number;
   noteEnd: number;
@@ -239,6 +248,8 @@ interface EffectMapping {
   id: string;
   name: string;
   description: string;
+  /** Instruments this mapping listens to. undefined or [] means ANY instrument. */
+  devices?: MidiDeviceRef[];
   channels: number[]; // 0-15
   noteStart: number;
   noteEnd: number;
@@ -502,7 +513,21 @@ function processTransientHit(
   return tr.value;
 }
 
+/** Add or remove one instrument from a mapping's filter list. */
+const toggleDeviceList = (list: MidiDeviceRef[] | undefined, dev: MidiDevice): MidiDeviceRef[] => {
+  const cur = list || [];
+  return cur.some(d => d.id === dev.id || (!!d.name && d.name === dev.name))
+    ? cur.filter(d => d.id !== dev.id && d.name !== dev.name)
+    : [...cur, { id: dev.id, name: dev.name }];
+};
+
+/** Does an event from (id, name) pass this mapping's instrument filter?
+ *  An empty or missing list means "any instrument" — never "no instrument". */
+const matchesDevice = (list: MidiDeviceRef[] | undefined, id: string, name: string) =>
+  !list || list.length === 0 || list.some(d => d.id === id || (!!d.name && d.name === name));
+
 const DEFAULT_TRIGGER_MAPPING: LayerTriggerMapping = {
+  devices: [],
   channels: Array.from({length: 16}, (_, i) => i),
   noteStart: 0,
   noteEnd: 127,
@@ -1554,7 +1579,7 @@ function NoteSettingsConfigUI({ ns, onUpdateNote }: { ns: NoteSettings, onUpdate
   );
 }
 
-function MidiConfigUI({ label, mapping, onUpdate, onUpdateNote, onToggleChannel, onSetAllChannels, onSetNoChannels, isLearnActive, onToggleLearn }: {
+function MidiConfigUI({ label, mapping, onUpdate, onUpdateNote, onToggleChannel, onSetAllChannels, onSetNoChannels, isLearnActive, onToggleLearn, devices = [], onToggleDevice }: {
   label: string,
   mapping: LayerTriggerMapping | EffectMapping,
   onUpdate: (field: string, val: any) => void,
@@ -1564,10 +1589,13 @@ function MidiConfigUI({ label, mapping, onUpdate, onUpdateNote, onToggleChannel,
   onSetNoChannels: () => void,
   isLearnActive?: { field: 'noteStart' | 'noteEnd' } | false,
   onToggleLearn?: (field: 'noteStart' | 'noteEnd') => void,
+  devices?: MidiDevice[],
+  onToggleDevice?: (dev: MidiDevice) => void,
 }) {
   const safeMapping = {
     ...DEFAULT_TRIGGER_MAPPING,
     ...(mapping || {}),
+    devices: mapping?.devices || [],
     channels: mapping?.channels || Array.from({length: 16}, (_, i) => i),
     noteSettings: mapping?.noteSettings || { ...DEFAULT_NOTE_SETTINGS },
     noteStart: mapping?.noteStart !== undefined ? mapping.noteStart : 0,
@@ -1596,6 +1624,43 @@ function MidiConfigUI({ label, mapping, onUpdate, onUpdateNote, onToggleChannel,
         </div>
       </div>
       
+      {onToggleDevice && (
+        <div className="space-y-2">
+          <div className="flex justify-between items-center">
+            <label className="text-[8px] uppercase opacity-30">Instrument</label>
+            {safeMapping.devices.length > 0 && (
+              <button
+                onClick={() => safeMapping.devices.forEach(d => onToggleDevice(d))}
+                className="text-[8px] uppercase tracking-widest bg-transparent px-2 py-0.5 rounded hover:border border-white hover:bg-white hover:text-black transition-colors"
+              >Any</button>
+            )}
+          </div>
+          {devices.length === 0 ? (
+            <div className="text-[9px] italic opacity-30 py-1">No active instruments</div>
+          ) : (
+            <div className="flex flex-col gap-1">
+              {devices.map(d => {
+                // An empty list means "any instrument", so nothing reads as selected.
+                const isSelected = safeMapping.devices.some(sd => sd.id === d.id || (!!sd.name && sd.name === d.name));
+                return (
+                  <button
+                    key={d.id}
+                    onClick={() => onToggleDevice(d)}
+                    title={d.name}
+                    className={`px-2 py-1.5 rounded text-[9px] font-mono text-left truncate transition-all border ${isSelected ? 'bg-red-600 border-red-500 text-white shadow-[0_0_10px_rgba(239,68,68,0.3)]' : 'bg-black/40 border-white/5 text-white/40 hover:border-white/20'}`}
+                  >
+                    {d.name}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {safeMapping.devices.length === 0 && devices.length > 0 && (
+            <div className="text-[8px] uppercase tracking-widest opacity-25">Any instrument</div>
+          )}
+        </div>
+      )}
+
       <div className="space-y-3">
         <div className="flex justify-between items-center">
           <label className="text-[8px] uppercase opacity-30">Channels</label>
@@ -1810,7 +1875,11 @@ function faBuildCutout(
 
 // ---- First-run quick-start tour --------------------------------------------
 // ---- MIDI music-theory helpers (shared by the Music visuals) ----------------
-export interface MidiNoteEvt { note: number; vel: number; on: number; off: number; ch: number }
+export interface MidiNoteEvt { note: number; vel: number; on: number; off: number; ch: number; dev: string; devName: string }
+/** Value type of the "sounding right now" map. Keyed by noteKey(), never by note
+ *  number alone — two instruments can hold the same note at the same time. */
+export interface MidiActiveNote { note: number; vel: number; on: number; ch: number; dev: string; devName: string }
+const noteKey = (dev: string, ch: number, note: number) => `${dev}:${ch}:${note}`;
 
 const PC_SHARP = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'];
 /** Clockwise circle-of-fifths order starting at C. */
@@ -1902,9 +1971,10 @@ function pcHistogram(hist: MidiNoteEvt[], nowMs: number, halfLifeSec: number): F
   return out;
 }
 
-function markNoteOff(hist: MidiNoteEvt[], note: number, t: number) {
+function markNoteOff(hist: MidiNoteEvt[], note: number, ch: number, dev: string, t: number) {
   for (let i = hist.length - 1; i >= 0; i--) {
-    if (hist[i].note === note && hist[i].off < 0) { hist[i].off = t; return; }
+    const h = hist[i];
+    if (h.note === note && h.ch === ch && h.dev === dev && h.off < 0) { h.off = t; return; }
   }
 }
 
@@ -1916,8 +1986,25 @@ const DEMO_PROG = [
   { root: 0, iv: [0, 4, 7, 11] },  // I maj7
   { root: 0, iv: [0, 4, 7, 11] },
 ];
-const _demo: { hist: MidiNoteEvt[]; active: Map<number, { vel: number; on: number; ch: number }>; nextAt: number; step: number } =
+const DEMO_DEV = 'demo';
+const DEMO_DEV_NAME = 'Demo Sequence';
+/** Demo parts sit on consecutive channels so the Note Plotter's unmapped-line
+ *  fallback (line N -> channel N-1) lights up four separate lines out of the box. */
+const DEMO_CH = { chords: 0, melody: 1, bass: 2, drums: 3 };
+const _demo: { hist: MidiNoteEvt[]; active: Map<string, MidiActiveNote>; nextAt: number; step: number } =
   { hist: [], active: new Map(), nextAt: 0, step: 0 };
+
+function demoNoteOn(at: number, note: number, vel: number, ch: number) {
+  const d = _demo;
+  d.active.set(noteKey(DEMO_DEV, ch, note), { note, vel, on: at, ch, dev: DEMO_DEV, devName: DEMO_DEV_NAME });
+  d.hist.push({ note, vel, on: at, off: -1, ch, dev: DEMO_DEV, devName: DEMO_DEV_NAME });
+}
+function demoReleaseChannel(at: number, ch: number) {
+  const d = _demo;
+  for (const [k, a] of Array.from(d.active)) {
+    if (a.ch === ch) { d.active.delete(k); markNoteOff(d.hist, a.note, ch, DEMO_DEV, at); }
+  }
+}
 
 function advanceDemoMusic(nowMs: number) {
   const d = _demo;
@@ -1933,26 +2020,31 @@ function advanceDemoMusic(nowMs: number) {
     const transpose = (Math.floor(step / 64) * 5) % 12;   // two identical 4-bar phrases, then modulate
     const at = d.nextAt;
 
-    if (step % 8 === 0) {                             // new chord on each downbeat
-      for (const [n, a] of Array.from(d.active)) {
-        if (a.ch === 0) { d.active.delete(n); markNoteOff(d.hist, n, at); }
-      }
-      const c = DEMO_PROG[bar];
-      for (const iv of c.iv) {
-        const n = 48 + ((c.root + transpose) % 12) + iv;
-        d.active.set(n, { vel: 68, on: at, ch: 0 });
-        d.hist.push({ note: n, vel: 68, on: at, off: -1, ch: 0 });
-      }
+    const c = DEMO_PROG[bar];
+    const chordRoot = (c.root + transpose) % 12;
+
+    if (step % 8 === 0) {                             // new chord + bass on each downbeat
+      demoReleaseChannel(at, DEMO_CH.chords);
+      for (const iv of c.iv) demoNoteOn(at, 48 + chordRoot + iv, 68, DEMO_CH.chords);
+      demoReleaseChannel(at, DEMO_CH.bass);
+      demoNoteOn(at, 28 + chordRoot, 100, DEMO_CH.bass);
+    } else if (step % 8 === 5) {                      // bass answers on the "and" of 3
+      demoReleaseChannel(at, DEMO_CH.bass);
+      demoNoteOn(at, 28 + ((chordRoot + 7) % 12), 84, DEMO_CH.bass);
     }
+
     // melody: pseudo-random walk through the major scale
-    for (const [n, a] of Array.from(d.active)) {
-      if (a.ch === 1) { d.active.delete(n); markNoteOff(d.hist, n, at); }
-    }
+    demoReleaseChannel(at, DEMO_CH.melody);
     // the melody repeats every 32 steps so repetition-seeking visuals have something to find
     const r = Math.abs(Math.sin((step % 32) * 12.9898) * 43758.5453) % 1;
     const mn = 72 + ((transpose + MAJOR_STEPS[Math.floor(r * 7)]) % 12) + (r > 0.78 ? 12 : 0);
-    d.active.set(mn, { vel: 92, on: at, ch: 1 });
-    d.hist.push({ note: mn, vel: 92, on: at, off: -1, ch: 1 });
+    demoNoteOn(at, mn, 92, DEMO_CH.melody);
+
+    // drums: kick on the downbeats, snare on the backbeat (GM note numbers)
+    demoReleaseChannel(at, DEMO_CH.drums);
+    const beat = step % 8;
+    if (beat === 0 || beat === 6) demoNoteOn(at, 36, 110, DEMO_CH.drums);
+    else if (beat === 4) demoNoteOn(at, 38, 96, DEMO_CH.drums);
 
     d.step++;
     d.nextAt += STEP_MS;
@@ -2274,6 +2366,11 @@ export default function App() {
   const [webcamError, setWebcamError] = useState<Record<string, string>>({});
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
   const [midiLearnTarget, setMidiLearnTarget] = useState<{layerId: string, effectId?: string, field: 'noteStart' | 'noteEnd'} | null>(null);
+  // Only instruments the user has actually enabled are offered as trigger sources.
+  const activeMidiDevices = useMemo(
+    () => midiDevices.filter(d => selectedDeviceIds.includes(d.id)),
+    [midiDevices, selectedDeviceIds]
+  );
   const [isMidiLearnMode, setIsMidiLearnMode] = useState(false);
   const [ccLearnTarget, setCcLearnTarget] = useState<{layerId: string, paramId: string, min: number, max: number} | null>(null);
   const [expandedParamTrigger, setExpandedParamTrigger] = useState<string | null>(null);
@@ -2416,7 +2513,7 @@ export default function App() {
   // Raw note stream for the Music visuals — every note-on/off on every channel,
   // independent of layer mappings.
   const musicNotesRef = useRef<{
-    active: Map<number, { vel: number; on: number; ch: number }>;
+    active: Map<string, MidiActiveNote>;
     history: MidiNoteEvt[];
     lastAt: number;
   }>({ active: new Map(), history: [], lastAt: 0 });
@@ -3039,6 +3136,9 @@ export default function App() {
     const [statusByte, note, velocity] = event.data;
     const channel = statusByte & 0xf;
     const type = statusByte >> 4;
+    // Which instrument sent this. Read here because every filter below needs it.
+    const devId: string = event?.target?.id ?? '';
+    const devName: string = event?.target?.name ?? '';
 
     // Note On (9) or Note Off (8)
     if (type === 9 || type === 8) {
@@ -3085,18 +3185,20 @@ export default function App() {
       };
       setMidiLogs(prev => [log, ...prev].slice(0, 15));
 
-      // Feed the Music visuals' note stream (all channels, before any mapping).
+      // Feed the Music visuals' note stream (every instrument and channel, before
+      // any mapping — the visuals do their own per-line filtering downstream).
       {
         const mn = musicNotesRef.current;
         const tNow = Date.now();
         mn.lastAt = tNow;
+        const k = noteKey(devId, channel, note);
         if (isDown) {
-          mn.active.set(note, { vel: velocity, on: tNow, ch: channel });
-          mn.history.push({ note, vel: velocity, on: tNow, off: -1, ch: channel });
+          mn.active.set(k, { note, vel: velocity, on: tNow, ch: channel, dev: devId, devName });
+          mn.history.push({ note, vel: velocity, on: tNow, off: -1, ch: channel, dev: devId, devName });
           if (mn.history.length > 4000) mn.history.splice(0, mn.history.length - 4000);
         } else {
-          mn.active.delete(note);
-          markNoteOff(mn.history, note, tNow);
+          mn.active.delete(k);
+          markNoteOff(mn.history, note, channel, devId, tNow);
         }
       }
 
@@ -3129,7 +3231,7 @@ export default function App() {
         const noteStart = tr.noteStart !== undefined ? tr.noteStart : 0;
         const noteEnd = tr.noteEnd !== undefined ? tr.noteEnd : 127;
         const noteSettings = tr.noteSettings || DEFAULT_NOTE_SETTINGS;
-        if (channels.includes(channel) && note >= noteStart && note <= noteEnd) {
+        if (matchesDevice(tr.devices, devId, devName) && channels.includes(channel) && note >= noteStart && note <= noteEnd) {
           const finalVelocity = noteSettings.useFixedVelocity ? (noteSettings.fixedVelocity ?? 127) : velocity;
           const triggerKey = `layer-${layer.id}`;
           
@@ -3251,7 +3353,7 @@ export default function App() {
       // 3. Check Effect & Generative Mappings
       layersRef.current.forEach(layer => {
         const processMapping = (m: any, type: string) => {
-          if (m.channels.includes(channel) && note >= m.noteStart && note <= m.noteEnd) {
+          if (matchesDevice(m.devices, devId, devName) && m.channels.includes(channel) && note >= m.noteStart && note <= m.noteEnd) {
             const finalVelocity = m.noteSettings.useFixedVelocity ? m.noteSettings.fixedVelocity : velocity;
             const triggerKey = `${type}-${layer.id}-${m.id}`;
             
@@ -9568,7 +9670,7 @@ export default function App() {
               const demoOn = (ms.demo ?? 1) > 0.5;
               const liveMidi = nowMs - mnBuf.lastAt < 3000;
               let noteHist: MidiNoteEvt[];
-              let noteActive: Map<number, { vel: number; on: number; ch: number }>;
+              let noteActive: Map<string, MidiActiveNote>;
               if (liveMidi || !demoOn) { noteHist = mnBuf.history; noteActive = mnBuf.active; }
               else { advanceDemoMusic(nowMs); noteHist = _demo.hist; noteActive = _demo.active; }
 
@@ -9599,7 +9701,7 @@ export default function App() {
                   if (nSnap > st.lastSnap) { st.lastSnap = nSnap; st.locked = st.locked ? null : detected; }
                   const key = st.locked || detected;
                   const inScale = scaleSet(key.root, key.minor);
-                  const actPcs = Array.from(new Set(Array.from(noteActive.keys()).map(n => n % 12)));
+                  const actPcs = Array.from(new Set(Array.from(noteActive.values()).map(a => a.note % 12)));
                   const chord = detectChord(actPcs);
 
                   const pulseT = nowSec - st.pulseAt;
@@ -9687,8 +9789,8 @@ export default function App() {
                   }
                   // sounding notes on top (own octave radius when spiralled)
                   ctx.globalCompositeOperation = 'lighter';
-                  for (const [n, a] of noteActive) {
-                      const p = posOf(n % 12, Math.floor(n / 12));
+                  for (const a of noteActive.values()) {
+                      const p = posOf(a.note % 12, Math.floor(a.note / 12));
                       const r = (5 + (a.vel / 127) * 9) * nodeSize * sc;
                       ctx.globalAlpha = 0.95;
                       ctx.fillStyle = `rgba(${rgbAct.r},${rgbAct.g},${rgbAct.b},1)`;
@@ -9887,7 +9989,7 @@ export default function App() {
                   const retT = nowSec - st.retAt;
                   const retP = retT >= 0 && retT < 1.6 ? retT / 1.6 : -1;
 
-                  const actSet = new Set(Array.from(noteActive.keys()).map(n => n % 12));
+                  const actSet = new Set(Array.from(noteActive.values()).map(a => a.note % 12));
                   const pcH = pcHistogram(noteHist, nowMs, 2.5);
 
                   ctx.fillStyle = bg; ctx.fillRect(0, 0, targetW, targetH);
@@ -10106,35 +10208,71 @@ export default function App() {
                   }
                   element = canvas;
 
-              } else {   // piano-roll-1
-                  const bg = resolvedGenerativeColors['background'] || '#1a1b26';
-                  const cGrid = resolvedGenerativeColors['grid'] || '#2c2e40';
-                  const cNote = resolvedGenerativeColors['note'] || '#7aa2f7';
-                  const cAct = resolvedGenerativeColors['active'] || '#f7768e';
-                  const cKeys = resolvedGenerativeColors['keys'] || '#bb9af7';
+              } else {   // piano-roll-1 — "Note Plotter"
+                  const bg = resolvedGenerativeColors['background'] || '#ede9e2';
+                  const cAxis = resolvedGenerativeColors['axis'] || '#a4342f';
 
-                  const spanSec = Math.max(2, Math.min(60, ms.span ?? 12));
-                  const noteH = Math.max(0.3, Math.min(3, ms.note_height ?? 1));
-                  const showKeys = (ms.keyboard ?? 1) > 0.5;
-                  const gridA = Math.max(0, Math.min(1, ms.grid ?? 0.4));
-                  const hueByPitch = (ms.hue_by_pitch ?? 1) > 0.5;
-                  const glow = Math.max(0, Math.min(1, ms.glow ?? 0.5));
-                  const falling = (ms.falling ?? 0) > 0.5;
+                  const noteSize = Math.max(0.3, Math.min(3, ms.note_size ?? 1));
+                  const contour = Math.max(0, Math.min(1, ms.contour ?? 0));
+                  const baseSpanSec = Math.max(5, Math.min(120, ms.span ?? 20));
+                  const autoZoom = (ms.auto_zoom ?? 1) > 0.5;
+                  const guides = Math.max(0, Math.min(1, ms.guides ?? 0.35));
 
                   let st = pianoRollStateRef.current[layer.id];
-                  if (!st) st = pianoRollStateRef.current[layer.id] = { lastClear: 0, lastFreeze: 0, since: 0, frozen: false, frozenAt: 0, lo: 48, hi: 84 };
+                  if (!st) st = pianoRollStateRef.current[layer.id] =
+                      // since 0 / viewStart one span back keeps whatever history already exists
+                      // (the demo pre-roll, or notes played before this layer was added).
+                      { lastClear: 0, lastFreeze: 0, since: 0, frozen: false, frozenAt: 0,
+                        lo: 48, hi: 84, viewStart: nowMs - baseSpanSec * 1000,
+                        span: baseSpanSec * 1000, spanTarget: baseSpanSec * 1000, lastBase: baseSpanSec };
                   const nClear = Number(ms.clear ?? 0), nFreeze = Number(ms.freeze ?? 0);
-                  if (nClear > st.lastClear) { st.lastClear = nClear; st.since = nowMs; }
+                  if (nClear > st.lastClear) {
+                      // Wipe the canvas: forget every note and reset the zoom.
+                      st.lastClear = nClear; st.since = nowMs; st.viewStart = nowMs;
+                      st.span = st.spanTarget = baseSpanSec * 1000;
+                  }
                   if (nFreeze > st.lastFreeze) { st.lastFreeze = nFreeze; st.frozen = !st.frozen; st.frozenAt = nowMs; }
+                  // Turning the span knob re-bases the view rather than fighting the auto-zoom.
+                  if (baseSpanSec !== st.lastBase) { st.lastBase = baseSpanSec; st.span = st.spanTarget = baseSpanSec * 1000; }
 
                   const tEnd = st.frozen ? st.frozenAt : nowMs;
-                  const spanMs = spanSec * 1000;
-                  const tStart = tEnd - spanMs;
-                  const vis = noteHist.filter(n => n.on >= st.since && (n.off < 0 || n.off > tStart) && n.on < tEnd);
+                  const MAX_SPAN_MS = 3600 * 1000;
+                  if (autoZoom && !st.frozen) {
+                      // Once the newest note nears the right edge, step the window out by 1.5x.
+                      while (tEnd - st.viewStart > st.spanTarget * 0.97 && st.spanTarget < MAX_SPAN_MS) {
+                          st.spanTarget = Math.min(MAX_SPAN_MS, st.spanTarget * 1.5);
+                      }
+                  }
+                  st.span += (st.spanTarget - st.span) * Math.min(1, deltaTime * 4);   // eased zoom-out
+                  const spanMs = Math.max(1000, st.span);
+                  const tStart = Math.max(st.viewStart, tEnd - spanMs);
 
-                  // eased auto range
+                  // Per-line MIDI routing. A line's source is the trigger mapping created when
+                  // you Zap it (Instrument / Channel / Note Range). Unmapped -> channel N-1.
+                  const lineOf = (n: number) => {
+                      const src: any = layer.generativeMappings?.find((m: any) => m.id === `line_${n}`);
+                      // Read the BASE value, not the modulated one: a line's trigger exists to pick
+                      // its note source, so an active envelope must not scramble its shape.
+                      const raw = layer.generativeSettings?.[`line_${n}`] ?? ms[`line_${n}`] ?? 0;
+                      const shape = Math.round(Math.max(0, Math.min(5, Number(raw))));
+                      return {
+                          shape,
+                          colour: resolvedGenerativeColors[`line_${n}`] || '#333333',
+                          match: (e: MidiNoteEvt) => src
+                              ? matchesDevice(src.devices, e.dev, e.devName)
+                                  && (!src.channels || src.channels.length === 0 || src.channels.includes(e.ch))
+                                  && e.note >= (src.noteStart ?? 0) && e.note <= (src.noteEnd ?? 127)
+                              : e.ch === n - 1,
+                      };
+                  };
+                  const lines = [1, 2, 3, 4, 5].map(lineOf).filter(l => l.shape > 0);
+
+                  const inView = noteHist.filter(n => n.on >= st.since && n.on >= tStart && n.on <= tEnd);
+                  const perLine: MidiNoteEvt[][] = lines.map(l => inView.filter(l.match));
+
+                  // Eased pitch range over everything actually plotted.
                   let lo = 127, hi = 0;
-                  for (const n of vis) { if (n.note < lo) lo = n.note; if (n.note > hi) hi = n.note; }
+                  for (const bucket of perLine) for (const n of bucket) { if (n.note < lo) lo = n.note; if (n.note > hi) hi = n.note; }
                   if (lo > hi) { lo = 48; hi = 84; }
                   lo -= 2; hi += 2;
                   if (hi - lo < 14) { const m = (hi + lo) / 2; lo = m - 7; hi = m + 7; }
@@ -10143,90 +10281,77 @@ export default function App() {
                   const rLo = st.lo, rHi = st.hi, rng = Math.max(6, rHi - rLo);
 
                   ctx.fillStyle = bg; ctx.fillRect(0, 0, targetW, targetH);
-                  const keyW = showKeys ? Math.max(26, Math.min(70, targetW * 0.06)) : 0;
-                  const plotX = falling ? 0 : keyW;
-                  const plotY = 0;
-                  const plotW = falling ? targetW : targetW - keyW;
-                  const plotH = falling ? targetH - (showKeys ? keyW : 0) : targetH;
+                  const padX = targetW * 0.035, padY = targetH * 0.08;
+                  const plotW = targetW - padX * 2, plotH = targetH - padY * 2;
+                  const xOfT = (t: number) => padX + ((t - tStart) / spanMs) * plotW;
+                  const yOfN = (n: number) => padY + (1 - (n - rLo) / rng) * plotH;
 
-                  const pitchPos = (n: number) => falling
-                      ? plotX + ((n - rLo) / rng) * plotW
-                      : plotY + (1 - (n - rLo) / rng) * plotH;
-                  const timePos = (t: number) => falling
-                      ? plotY + (1 - (t - tStart) / spanMs) * plotH
-                      : plotX + ((t - tStart) / spanMs) * plotW;
-
-                  const rowThick = Math.max(2, ((falling ? plotW : plotH) / rng) * 0.75 * noteH);
-
-                  // grid at every C
-                  if (gridA > 0.02) {
-                      ctx.strokeStyle = cGrid; ctx.globalAlpha = gridA; ctx.lineWidth = 1;
+                  // guides: octave lines + a baseline
+                  if (guides > 0.02) {
+                      ctx.strokeStyle = cAxis; ctx.lineWidth = 1;
+                      ctx.globalAlpha = guides * 0.16;
                       ctx.beginPath();
                       for (let n = Math.ceil(rLo / 12) * 12; n <= rHi; n += 12) {
-                          const p = pitchPos(n);
-                          if (falling) { ctx.moveTo(p, 0); ctx.lineTo(p, plotH); }
-                          else { ctx.moveTo(plotX, p); ctx.lineTo(targetW, p); }
+                          const y = yOfN(n);
+                          ctx.moveTo(padX, y); ctx.lineTo(targetW - padX, y);
                       }
                       ctx.stroke();
-                      ctx.globalAlpha = gridA * 0.5;
+                      ctx.globalAlpha = guides * 0.3;
                       ctx.beginPath();
-                      for (let s = 1; s < 5; s++) {
-                          const t = tStart + (spanMs * s) / 5;
-                          const p = timePos(t);
-                          if (falling) { ctx.moveTo(0, p); ctx.lineTo(plotW, p); }
-                          else { ctx.moveTo(p, 0); ctx.lineTo(p, plotH); }
-                      }
-                      ctx.stroke();
-                  }
-
-                  // notes
-                  ctx.globalAlpha = 1;
-                  for (const n of vis) {
-                      const a = Math.max(n.on, tStart);
-                      const b = Math.min(n.off < 0 ? tEnd : n.off, tEnd);
-                      if (b <= a) continue;
-                      const live = n.off < 0;
-                      const hue = ((n.note % 12) / 12) * 360;
-                      const col = hueByPitch
-                          ? `hsl(${hue}, ${live ? 92 : 68}%, ${live ? 72 : 58}%)`
-                          : (live ? cAct : cNote);
-                      const p0 = timePos(a), p1 = timePos(b);
-                      const pp = pitchPos(n.note);
-                      const alpha = 0.35 + (n.vel / 127) * 0.65;
-                      ctx.globalAlpha = alpha;
-                      ctx.fillStyle = col;
-                      if (live && glow > 0.02) { ctx.shadowColor = col; ctx.shadowBlur = 18 * glow * sc; }
-                      if (falling) {
-                          const y0 = Math.min(p0, p1), y1 = Math.max(p0, p1);
-                          ctx.fillRect(pp - rowThick / 2, y0, rowThick, Math.max(2, y1 - y0));
-                      } else {
-                          ctx.fillRect(Math.min(p0, p1), pp - rowThick / 2, Math.max(2, Math.abs(p1 - p0)), rowThick);
-                      }
-                      ctx.shadowBlur = 0;
-                  }
-                  ctx.globalAlpha = 1;
-
-                  // keyboard strip
-                  if (showKeys) {
-                      const isBlack = (pc: number) => [1, 3, 6, 8, 10].includes(pc);
-                      const sounding = new Set(Array.from(noteActive.keys()));
-                      for (let n = Math.ceil(rLo); n <= rHi; n++) {
-                          const p = pitchPos(n);
-                          const black = isBlack(((n % 12) + 12) % 12);
-                          const on = sounding.has(n);
-                          ctx.fillStyle = on ? cAct : (black ? bg : cKeys);
-                          ctx.globalAlpha = on ? 1 : (black ? 0.9 : 0.32);
-                          if (falling) ctx.fillRect(p - rowThick / 2, plotH, rowThick, keyW);
-                          else ctx.fillRect(0, p - rowThick / 2, keyW * (black ? 0.62 : 1), rowThick);
-                      }
-                      ctx.globalAlpha = 0.5;
-                      ctx.strokeStyle = cGrid; ctx.lineWidth = 1;
-                      ctx.beginPath();
-                      if (falling) { ctx.moveTo(0, plotH); ctx.lineTo(targetW, plotH); }
-                      else { ctx.moveTo(keyW, 0); ctx.lineTo(keyW, targetH); }
+                      ctx.moveTo(padX, targetH - padY); ctx.lineTo(targetW - padX, targetH - padY);
                       ctx.stroke();
                       ctx.globalAlpha = 1;
                   }
+
+                  const drawShape = (kind: number, x: number, y: number, r: number) => {
+                      ctx.beginPath();
+                      switch (kind) {
+                          case 1: ctx.arc(x, y, r, 0, Math.PI * 2); break;                                   // circle
+                          case 2: ctx.rect(x - r, y - r, r * 2, r * 2); break;                               // square
+                          case 3: ctx.moveTo(x, y - r); ctx.lineTo(x + r, y + r * 0.8);
+                                  ctx.lineTo(x - r, y + r * 0.8); ctx.closePath(); break;                    // triangle
+                          case 4: ctx.moveTo(x, y - r); ctx.lineTo(x + r, y);
+                                  ctx.lineTo(x, y + r); ctx.lineTo(x - r, y); ctx.closePath(); break;        // diamond
+                          default: {                                                                          // cross
+                              const t = r * 0.42;
+                              ctx.rect(x - r, y - t, r * 2, t * 2);
+                              ctx.rect(x - t, y - r, t * 2, r * 2);
+                              break;
+                          }
+                      }
+                      ctx.fill();
+                  };
+
+                  lines.forEach((line, li) => {
+                      const bucket = perLine[li];
+                      if (!bucket.length) return;
+
+                      // contour: connect this line's own notes so the melodic shape reads
+                      if (contour > 0.1 && bucket.length > 1) {
+                          const solid = contour > 0.5;
+                          ctx.strokeStyle = line.colour;
+                          ctx.globalAlpha = solid ? 0.5 + (contour - 0.5) * 1.0 : 0.25 + (contour - 0.1) * 0.625;
+                          ctx.lineWidth = (solid ? 0.8 + (contour - 0.5) * 4.4 : 0.8) * sc;
+                          ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+                          ctx.setLineDash(solid ? [] : [2 * sc, 4 * sc]);
+                          ctx.beginPath();
+                          bucket.forEach((n, i) => {
+                              const x = xOfT(n.on), y = yOfN(n.note);
+                              i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+                          });
+                          ctx.stroke();
+                          ctx.setLineDash([]);   // shared context — must not leak into later layers
+                      }
+
+                      ctx.fillStyle = line.colour;
+                      for (const n of bucket) {
+                          const r = (3.2 + (n.vel / 127) * 2.6) * noteSize * sc;
+                          ctx.globalAlpha = 0.55 + (n.vel / 127) * 0.45;
+                          drawShape(line.shape, xOfT(n.on), yOfN(n.note), r);
+                      }
+                      ctx.globalAlpha = 1;
+                  });
+
                   element = canvas;
               }
           } else {
@@ -15416,6 +15541,14 @@ return (
                                   setNoChannels(layerTarget.id, mapping.id)
                                 }
                               }}
+                              devices={activeMidiDevices}
+                              onToggleDevice={(dev) => {
+                                if (isGenerativeParam || isThreeDParam) {
+                                  patchMapping((m: any) => ({ ...m, devices: toggleDeviceList(m.devices, dev) }));
+                                } else {
+                                  updateMapping(layerTarget.id, mapping.id, 'devices' as keyof EffectMapping, toggleDeviceList(mapping.devices, dev));
+                                }
+                              }}
                             />
                           )}
                         </div>
@@ -15597,6 +15730,8 @@ return (
                               onToggleChannel={(ch) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...(l.triggerMapping || DEFAULT_TRIGGER_MAPPING), channels: (l.triggerMapping?.channels || []).includes(ch) ? (l.triggerMapping?.channels || []).filter(c => c !== ch) : [...(l.triggerMapping?.channels || []), ch] } } : l))}
                               onSetAllChannels={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...(l.triggerMapping || DEFAULT_TRIGGER_MAPPING), channels: Array.from({ length: 16 }, (_, i) => i) } } : l))}
                               onSetNoChannels={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...(l.triggerMapping || DEFAULT_TRIGGER_MAPPING), channels: [] } } : l))}
+                              devices={activeMidiDevices}
+                              onToggleDevice={(dev) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, triggerMapping: { ...(l.triggerMapping || DEFAULT_TRIGGER_MAPPING), devices: toggleDeviceList(l.triggerMapping?.devices, dev) } } : l))}
                             />
                           )}
                         </div>
