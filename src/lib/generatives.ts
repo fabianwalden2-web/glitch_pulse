@@ -2167,9 +2167,9 @@ void main(void) {
   "defaultPaletteId": "plotter_bands",
   "parameters": [
     { "name": "line_1",    "min": 0.0, "max": 5.0,   "default": 3.0,  "type": "number" },
-    { "name": "line_2",    "min": 0.0, "max": 5.0,   "default": 1.0,  "type": "number" },
-    { "name": "line_3",    "min": 0.0, "max": 5.0,   "default": 2.0,  "type": "number" },
-    { "name": "line_4",    "min": 0.0, "max": 5.0,   "default": 5.0,  "type": "number" },
+    { "name": "line_2",    "min": 0.0, "max": 5.0,   "default": 0.0,  "type": "number" },
+    { "name": "line_3",    "min": 0.0, "max": 5.0,   "default": 0.0,  "type": "number" },
+    { "name": "line_4",    "min": 0.0, "max": 5.0,   "default": 0.0,  "type": "number" },
     { "name": "line_5",    "min": 0.0, "max": 5.0,   "default": 0.0,  "type": "number" },
     { "name": "note_size", "min": 0.3, "max": 3.0,   "default": 1.0,  "type": "number" },
     { "name": "contour",   "min": 0.0, "max": 1.0,   "default": 0.0,  "type": "number" },

@@ -64,7 +64,13 @@ import {
   Redo2
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
-import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition, BUILTIN_PALETTES, GenerativeElement, ColorPalettePreset, GENERATIVE_CATEGORY_ORDER } from './lib/generatives';
+import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition, BUILTIN_PALETTES, GenerativeElement, ColorPalettePreset, GENERATIVE_CATEGORY_ORDER, GENERATIVE_CATEGORIES } from './lib/generatives';
+
+/** Music visuals read the MIDI note stream directly. Their layer trigger picks
+ *  WHICH notes to read (instrument / channel / range) instead of gating
+ *  visibility the way it does for every other layer type. */
+const isMusicLayer = (l: { type?: string; generativeId?: string | null }) =>
+  l.type === 'generative' && !!l.generativeId && GENERATIVE_CATEGORIES[l.generativeId] === 'Music';
 import { engine, AudioStemNode } from './lib/audioEngine';
 import { AudioSpectrogram } from './components/AudioSpectrogram';
 import { Waves } from './components/Waves';
@@ -3845,7 +3851,8 @@ export default function App() {
 
       const hasActiveEffect = layer.mappings.some(m => (m.active || m.manualActive) && !m.isMuted);
       let isVisibleNormally = layer.isVisible;
-      if (layer.midiMode) {
+      // Music layers stay on: their trigger selects notes, it does not show/hide the layer.
+      if (layer.midiMode && !isMusicLayer(layer)) {
           // Advance mode: layer is always visible
           if (layer.videoTriggerMode === 'advance' && layer.type === 'video') {
               isVisibleNormally = true;
@@ -9674,6 +9681,27 @@ export default function App() {
               if (liveMidi || !demoOn) { noteHist = mnBuf.history; noteActive = mnBuf.active; }
               else { advanceDemoMusic(nowMs); noteHist = _demo.hist; noteActive = _demo.active; }
 
+              // The layer trigger is this visual's note source: instrument, channel and
+              // note range decide WHAT it reads. (It does not gate visibility here.)
+              {
+                  const lt = layer.triggerMapping;
+                  const lo = lt?.noteStart ?? 0, hi = lt?.noteEnd ?? 127;
+                  const chs = lt?.channels;
+                  const narrowed = (lt?.devices?.length ?? 0) > 0
+                      || (!!chs && chs.length > 0 && chs.length < 16)
+                      || lo > 0 || hi < 127;
+                  if (narrowed) {
+                      const passes = (e: { ch: number; note: number; dev: string; devName: string }) =>
+                          matchesDevice(lt?.devices, e.dev, e.devName)
+                          && (!chs || chs.length === 0 || chs.includes(e.ch))
+                          && e.note >= lo && e.note <= hi;
+                      noteHist = noteHist.filter(passes);
+                      const filteredActive = new Map<string, MidiActiveNote>();
+                      for (const [k, a] of noteActive) if (passes(a)) filteredActive.set(k, a);
+                      noteActive = filteredActive;
+                  }
+              }
+
               if (def.uuid === 'pitch-clock-1') {
                   const bg = resolvedGenerativeColors['background'] || '#0a0a12';
                   const cRing = resolvedGenerativeColors['ring'] || '#3a3a52';
@@ -10248,7 +10276,8 @@ export default function App() {
                   const tStart = Math.max(st.viewStart, tEnd - spanMs);
 
                   // Per-line MIDI routing. A line's source is the trigger mapping created when
-                  // you Zap it (Instrument / Channel / Note Range). Unmapped -> channel N-1.
+                  // you Zap it (Instrument / Channel / Note Range). An unmapped line shows
+                  // everything the layer trigger passed through — never nothing.
                   const lineOf = (n: number) => {
                       const src: any = layer.generativeMappings?.find((m: any) => m.id === `line_${n}`);
                       // Read the BASE value, not the modulated one: a line's trigger exists to pick
@@ -10258,11 +10287,10 @@ export default function App() {
                       return {
                           shape,
                           colour: resolvedGenerativeColors[`line_${n}`] || '#333333',
-                          match: (e: MidiNoteEvt) => src
-                              ? matchesDevice(src.devices, e.dev, e.devName)
+                          match: (e: MidiNoteEvt) => !src
+                              || (matchesDevice(src.devices, e.dev, e.devName)
                                   && (!src.channels || src.channels.length === 0 || src.channels.includes(e.ch))
-                                  && e.note >= (src.noteStart ?? 0) && e.note <= (src.noteEnd ?? 127)
-                              : e.ch === n - 1,
+                                  && e.note >= (src.noteStart ?? 0) && e.note <= (src.noteEnd ?? 127)),
                       };
                   };
                   const lines = [1, 2, 3, 4, 5].map(lineOf).filter(l => l.shape > 0);
@@ -12212,7 +12240,8 @@ export default function App() {
       }
 
       let opacityMult = 1.0;
-      if (layer.midiMode) {
+      // Music layers keep full opacity: their trigger selects notes, not visibility.
+      if (layer.midiMode && !isMusicLayer(layer)) {
           // Advance mode: always visible
           if (layer.videoTriggerMode === 'advance' && layer.type === 'video') {
               opacityMult = 1.0;
@@ -15562,16 +15591,23 @@ return (
                     const layerAudioEngine = layerTarget.audioMapping?.engine || 'level';
                     return (
                       <div className="space-y-4">
-                        <h3 className="text-[10px] font-bold uppercase tracking-widest text-red-400 border-b border-white/5 pb-2 mb-2">Layer Triggers</h3>
+                        <h3 className="text-[10px] font-bold uppercase tracking-widest text-red-400 border-b border-white/5 pb-2 mb-2">
+                          {isMusicLayer(layerTarget) ? 'Note Source' : 'Layer Triggers'}
+                        </h3>
+                        {isMusicLayer(layerTarget) && (
+                          <p className="text-[9px] opacity-30 leading-relaxed -mt-2">
+                            Picks which notes this visual reads. It does not show or hide the layer.
+                          </p>
+                        )}
                         <div className="space-y-6">
-                        <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
-                            <button 
+                        <div className={`flex bg-black/40 border border-white/10 rounded overflow-hidden ${isMusicLayer(layerTarget) ? 'hidden' : ''}`}>
+                            <button
                               onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, midiMode: true, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false }, rhythmMapping: { ...(l.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false } } : l))}
                               className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layerTarget.midiMode && !layerTarget.audioMapping?.enabled && !layerTarget.rhythmMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
                             >
                               MIDI
                             </button>
-                            <button 
+                            <button
                               onClick={() => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, midiMode: true, rhythmMapping: { ...(l.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false }, audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: true } } : l))}
                               className={`flex-1 py-1.5 text-[9px] uppercase tracking-widest transition-colors ${layerTarget.midiMode && layerTarget.audioMapping?.enabled ? 'bg-red-600 text-white' : 'text-white/40 hover:bg-transparent'}`}
                             >
@@ -15592,12 +15628,12 @@ return (
                             </button>
                           </div>
 
-                          {!layerTarget.midiMode ? (
+                          {!layerTarget.midiMode && !isMusicLayer(layerTarget) ? (
                               <div className="p-4 text-center mt-4">
                                 <p className="text-[10px] uppercase font-bold tracking-widest opacity-40">Layer triggers disabled</p>
                                 <p className="text-[9px] opacity-20 mt-2">Activate MIDI, Audio, or Rhythm above to modulate layer visibility.</p>
                               </div>
-                          ) : layerTarget.rhythmMapping?.enabled ? (
+                          ) : (layerTarget.rhythmMapping?.enabled && !isMusicLayer(layerTarget)) ? (
                             <div className="space-y-4">
                                 <div className="grid grid-cols-2 gap-4">
                                   <div className="flex flex-col gap-1">
@@ -15628,7 +15664,7 @@ return (
                                   onUpdateNote={(field, val) => setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, rhythmMapping: { ...l.rhythmMapping!, noteSettings: { ...(l.rhythmMapping!.noteSettings || DEFAULT_NOTE_SETTINGS), [field]: val } } } : l))}
                                 />
                             </div>
-                          ) : layerTarget.audioMapping?.enabled ? (
+                          ) : (layerTarget.audioMapping?.enabled && !isMusicLayer(layerTarget)) ? (
                             <div className="space-y-4">
                                <label className="text-[10px] uppercase tracking-widest opacity-80 font-bold text-red-500">Audio Visibility Trigger</label>
 
@@ -15720,8 +15756,8 @@ return (
                                )}
                             </div>
                           ) : (
-                            <MidiConfigUI 
-                              label="Layer Visibility Trigger"
+                            <MidiConfigUI
+                              label={isMusicLayer(layerTarget) ? 'Notes Read By This Visual' : 'Layer Visibility Trigger'}
                               mapping={layerTarget.triggerMapping || DEFAULT_TRIGGER_MAPPING}
                               isLearnActive={midiLearnTarget?.layerId === layerTarget.id && !midiLearnTarget?.effectId ? midiLearnTarget : false}
                               onToggleLearn={(field) => setMidiLearnTarget(prev => prev?.layerId === layerTarget.id && !prev?.effectId && prev?.field === field ? null : { layerId: layerTarget.id, field })}
