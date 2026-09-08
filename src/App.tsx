@@ -1482,6 +1482,100 @@ function CustomSelect({ value, onChange, options, className, buttonClassName, pl
   );
 }
 
+/** Compact multi-choice dropdown. Used where a full grid of toggles would eat
+ *  the panel (MIDI channels, instrument lists). Empty selection reads as "All". */
+function MultiSelect({ values, options, onToggle, onSetAll, onSetNone, emptyLabel = 'All', placeholder = 'None', className }: {
+  values: string[];
+  options: { value: string; label: string }[];
+  onToggle: (val: string) => void;
+  onSetAll?: () => void;
+  onSetNone?: () => void;
+  emptyLabel?: string;
+  placeholder?: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const update = () => {
+      const r = btnRef.current?.getBoundingClientRect();
+      if (r) setPos({ top: r.bottom + 4, left: r.left, width: r.width });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    const onDocDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (btnRef.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocDown);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+      document.removeEventListener('mousedown', onDocDown);
+    };
+  }, [open]);
+
+  const all = values.length === 0 || values.length === options.length;
+  const summary = options.length === 0
+    ? placeholder
+    : all
+      ? emptyLabel
+      : values.length <= 3
+        ? options.filter(o => values.includes(o.value)).map(o => o.label).join(', ')
+        : `${values.length} selected`;
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className={`w-full flex items-center justify-between gap-2 bg-black/40 border rounded px-2 py-1.5 text-[10px] uppercase tracking-widest outline-none text-left transition-colors ${all ? 'border-white/10 text-white/55' : 'border-red-500/50 text-white'} hover:border-white/30 ${className ?? ''}`}
+      >
+        <span className="truncate">{summary}</span>
+        <ChevronDown size={11} className={`shrink-0 opacity-50 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && pos && createPortal(
+        <div
+          ref={menuRef}
+          style={{ position: 'fixed', top: pos.top, left: pos.left, width: Math.max(pos.width, 170), zIndex: 9999 }}
+          className="max-h-60 overflow-y-auto bg-[#0a0a0a] border border-white/15 rounded shadow-2xl custom-scrollbar"
+        >
+          {(onSetAll || onSetNone) && (
+            <div className="flex border-b border-white/10 sticky top-0 bg-[#0a0a0a]">
+              {onSetAll && <button type="button" onClick={onSetAll} className="flex-1 py-1.5 text-[8px] uppercase tracking-widest text-white/50 hover:bg-white/10 transition-colors">All</button>}
+              {onSetNone && <button type="button" onClick={onSetNone} className="flex-1 py-1.5 text-[8px] uppercase tracking-widest text-white/50 hover:bg-white/10 transition-colors">None</button>}
+            </div>
+          )}
+          {options.length === 0 && <div className="px-2 py-2 text-[9px] italic text-white/25">Nothing available</div>}
+          {options.map(o => {
+            const on = values.includes(o.value);
+            return (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => onToggle(o.value)}
+                title={o.label}
+                className={`w-full flex items-center gap-2 text-left px-2 py-1.5 text-[10px] uppercase tracking-widest transition-colors ${on ? 'text-white' : 'text-white/50 hover:bg-white/10'}`}
+              >
+                <span className={`w-2.5 h-2.5 shrink-0 rounded-[2px] border ${on ? 'bg-red-600 border-red-500' : 'border-white/25'}`} />
+                <span className="truncate">{o.label}</span>
+              </button>
+            );
+          })}
+        </div>,
+        document.body
+      )}
+    </>
+  );
+}
+
 function NoteSettingsConfigUI({ ns, onUpdateNote }: { ns: NoteSettings, onUpdateNote: (field: string, val: any) => void }) {
   const ToggleSwitch = ({ active }: { active: boolean }) => (
     <div className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors ${active ? 'bg-red-600' : 'bg-white/20'}`}>
@@ -1631,60 +1725,29 @@ function MidiConfigUI({ label, mapping, onUpdate, onUpdateNote, onToggleChannel,
       </div>
       
       {onToggleDevice && (
-        <div className="space-y-2">
-          <div className="flex justify-between items-center">
-            <label className="text-[8px] uppercase opacity-30">Instrument</label>
-            {safeMapping.devices.length > 0 && (
-              <button
-                onClick={() => safeMapping.devices.forEach(d => onToggleDevice(d))}
-                className="text-[8px] uppercase tracking-widest bg-transparent px-2 py-0.5 rounded hover:border border-white hover:bg-white hover:text-black transition-colors"
-              >Any</button>
-            )}
-          </div>
-          {devices.length === 0 ? (
-            <div className="text-[9px] italic opacity-30 py-1">No active instruments</div>
-          ) : (
-            <div className="flex flex-col gap-1">
-              {devices.map(d => {
-                // An empty list means "any instrument", so nothing reads as selected.
-                const isSelected = safeMapping.devices.some(sd => sd.id === d.id || (!!sd.name && sd.name === d.name));
-                return (
-                  <button
-                    key={d.id}
-                    onClick={() => onToggleDevice(d)}
-                    title={d.name}
-                    className={`px-2 py-1.5 rounded text-[9px] font-mono text-left truncate transition-all border ${isSelected ? 'bg-red-600 border-red-500 text-white shadow-[0_0_10px_rgba(239,68,68,0.3)]' : 'bg-black/40 border-white/5 text-white/40 hover:border-white/20'}`}
-                  >
-                    {d.name}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {safeMapping.devices.length === 0 && devices.length > 0 && (
-            <div className="text-[8px] uppercase tracking-widest opacity-25">Any instrument</div>
-          )}
+        <div className="space-y-1">
+          <label className="text-[8px] uppercase opacity-30">Instrument</label>
+          <MultiSelect
+            values={safeMapping.devices.map((d: MidiDeviceRef) => d.id)}
+            options={devices.map(d => ({ value: d.id, label: d.name }))}
+            onToggle={(id) => { const d = devices.find(x => x.id === id); if (d) onToggleDevice(d); }}
+            onSetNone={() => safeMapping.devices.forEach((d: MidiDeviceRef) => onToggleDevice(d))}
+            emptyLabel="Any instrument"
+            placeholder="No active instruments"
+          />
         </div>
       )}
 
-      <div className="space-y-3">
-        <div className="flex justify-between items-center">
-          <label className="text-[8px] uppercase opacity-30">Channels</label>
-          <div className="flex gap-2">
-            <button onClick={onSetAllChannels} className="text-[8px] uppercase tracking-widest bg-transparent px-2 py-0.5 rounded hover:border border-white hover:bg-white hover:text-black transition-colors">All</button>
-            <button onClick={onSetNoChannels} className="text-[8px] uppercase tracking-widest bg-transparent px-2 py-0.5 rounded hover:border border-white hover:bg-white hover:text-black transition-colors">None</button>
-          </div>
-        </div>
-        <div className="grid grid-cols-4 gap-1">
-          {Array.from({length: 16}).map((_, i) => {
-            const isSelected = safeMapping.channels.includes(i);
-            return (
-              <button key={i} onClick={() => onToggleChannel(i)} className={`h-8 rounded text-[10px] font-mono transition-all border ${isSelected ? 'bg-red-600 border-red-500 text-white shadow-[0_0_10px_rgba(239,68,68,0.3)]' : 'bg-black/40 border-white/5 text-white/40 hover:border-white/20'}`}>
-                {i + 1}
-              </button>
-            );
-          })}
-        </div>
+      <div className="space-y-1">
+        <label className="text-[8px] uppercase opacity-30">Channels</label>
+        <MultiSelect
+          values={safeMapping.channels.map(String)}
+          options={Array.from({ length: 16 }, (_, i) => ({ value: String(i), label: `Ch ${i + 1}` }))}
+          onToggle={(v) => onToggleChannel(parseInt(v, 10))}
+          onSetAll={onSetAllChannels}
+          onSetNone={onSetNoChannels}
+          emptyLabel="All channels"
+        />
       </div>
 
       <div className="space-y-1">
@@ -2474,7 +2537,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [undoLayers, redoLayers]);
   const [sidebarTab, setSidebarTab] = useState<'config' | 'triggers'>('config');
-  const [belowPanel, setBelowPanel] = useState<'params' | 'colours' | 'fx'>('params');
+  const [belowPanel, setBelowPanel] = useState<'params' | 'colours' | 'lines' | 'fx'>('params');
   const [isRecording, setIsRecording] = useState(false);
   const [isPanic, setIsPanic] = useState(false);
   const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null);
@@ -14385,7 +14448,7 @@ return (
                    return [...params].sort((a, b) => (pushToEnd(a.type) ? 1 : 0) - (pushToEnd(b.type) ? 1 : 0));
                 };
 
-                const CollapseHead = ({ id, label }: { id: 'params' | 'colours' | 'fx'; label: string }) => (
+                const CollapseHead = ({ id, label }: { id: 'params' | 'colours' | 'lines' | 'fx'; label: string }) => (
                   <button
                     onClick={() => setBelowPanel(id)}
                     className={`w-full flex items-center justify-between text-[11px] font-bold uppercase tracking-widest border-b pb-2 transition-colors ${belowPanel === id ? 'text-red-400 border-white/10' : 'text-white/35 border-white/5 hover:text-white/70'}`}
@@ -14683,12 +14746,114 @@ return (
                         <CollapseHead id="params" label={`Parameters — ${generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.description || 'Script'}`} />
                         {belowPanel === 'params' && (
                         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
-                          {sortParamsForDisplay(generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.parameters || []).map(p => {
+                          {sortParamsForDisplay((generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.parameters || [])
+                            .filter((p: any) => !(activeLayer.generativeId === 'piano-roll-1' && /^line_[1-5]$/.test(p.name)))).map(p => {
                             const mapping = activeLayer.generativeMappings?.find(m => m.id === p.name) || { id: p.name, name: p.name, active: false };
                             return renderKnob(p, mapping, activeLayer, 'gen');
                           })}
                         </div>
                         )}
+
+                        {activeLayer.generativeId === 'piano-roll-1' && (() => {
+                          const shapes = [
+                            { v: 0, glyph: '\u2014', name: 'Off' },
+                            { v: 1, glyph: '\u25CF', name: 'Circle' },
+                            { v: 2, glyph: '\u25A0', name: 'Square' },
+                            { v: 3, glyph: '\u25B2', name: 'Triangle' },
+                            { v: 4, glyph: '\u25C6', name: 'Diamond' },
+                            { v: 5, glyph: '\u271A', name: 'Cross' },
+                          ];
+                          const genDef = generativesRef.current.find(g => g.uuid === activeLayer.generativeId);
+                          const els: GenerativeElement[] = genDef?.elements || [];
+                          return (
+                            <>
+                              <CollapseHead id="lines" label="Lines" />
+                              {belowPanel === 'lines' && (
+                                <div className="space-y-1.5 pt-1">
+                                  <p className="text-[9px] opacity-30 leading-relaxed pb-1">
+                                    Each line plots its own instrument. Pick a symbol and colour, then use the trigger to choose which instrument, channel and notes feed it.
+                                  </p>
+                                  {[1, 2, 3, 4, 5].map(n => {
+                                    const pname = `line_${n}`;
+                                    const el = els.find(e => e.id === pname);
+                                    const colour = activeLayer.generativeColors?.[pname] || el?.defaultColor || '#888888';
+                                    const shape = Math.round(Number(activeLayer.generativeSettings?.[pname] ?? (n === 1 ? 3 : 0)));
+                                    const isOn = shape > 0;
+                                    const trigOn = !!activeLayer.generativeTriggerActive?.[pname];
+                                    const src: any = activeLayer.generativeMappings?.find((m: any) => m.id === pname);
+                                    const srcLabel = (!trigOn || !src)
+                                      ? 'All notes'
+                                      : ([
+                                          (src.devices?.length ? src.devices.map((d: MidiDeviceRef) => d.name).join(', ') : null),
+                                          (src.channels && src.channels.length > 0 && src.channels.length < 16 ? `Ch ${src.channels.map((c: number) => c + 1).join(',')}` : null),
+                                          ((src.noteStart ?? 0) > 0 || (src.noteEnd ?? 127) < 127 ? `${src.noteStart}-${src.noteEnd}` : null),
+                                        ].filter(Boolean).join(' \u00B7 ') || 'All notes');
+                                    return (
+                                      <div key={pname} className={`flex items-center gap-3 px-2 py-2 rounded border transition-colors ${isOn ? 'bg-white/[0.03] border-white/10' : 'border-white/5 opacity-45'}`}>
+                                        <span className="text-[9px] font-mono uppercase tracking-widest text-white/40 w-12 shrink-0">Line {n}</span>
+
+                                        <div className="flex items-center gap-0.5 shrink-0">
+                                          {shapes.map(sh => (
+                                            <button
+                                              key={sh.v}
+                                              title={sh.name}
+                                              onClick={() => setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, generativeSettings: { ...(l.generativeSettings || {}), [pname]: sh.v } } : l))}
+                                              className={`w-6 h-6 rounded text-[11px] leading-none flex items-center justify-center border transition-all ${shape === sh.v ? 'bg-red-600 border-red-500 text-white' : 'bg-black/40 border-white/5 text-white/35 hover:border-white/25'}`}
+                                            >{sh.glyph}</button>
+                                          ))}
+                                        </div>
+
+                                        <button
+                                          onClick={(e) => setActiveColorPickerTarget({
+                                            elementId: pname,
+                                            elementName: `Line ${n}`,
+                                            color: colour,
+                                            anchorRect: (e.currentTarget as HTMLElement).getBoundingClientRect(),
+                                          })}
+                                          title="Line colour"
+                                          className="w-6 h-6 rounded shrink-0 border border-white/20 hover:border-white/50 transition-colors"
+                                          style={{ backgroundColor: colour }}
+                                        />
+
+                                        <span className="text-[9px] font-mono text-white/35 truncate flex-1 min-w-0" title={srcLabel}>{srcLabel}</span>
+
+                                        <button
+                                          onClick={() => {
+                                            const targetId = `generative-${pname}`;
+                                            setLayers(prev => prev.map(l => {
+                                              if (l.id !== activeLayer.id) return l;
+                                              const next: any = { ...l, generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [pname]: true } };
+                                              if (!l.generativeMappings?.find((gm: any) => gm.id === pname)) {
+                                                next.generativeMappings = [...(l.generativeMappings || []), {
+                                                  ...INITIAL_MAPPINGS[0],
+                                                  id: pname,
+                                                  name: pname,
+                                                  active: true,
+                                                  triggerBehavior: 'momentary' as any,
+                                                  noteSettings: { ...DEFAULT_NOTE_SETTINGS },
+                                                  channels: Array.from({ length: 16 }, (_, i) => i),
+                                                  devices: [],
+                                                }];
+                                              }
+                                              return next;
+                                            }));
+                                            setSelectedEffectId(targetId);
+                                            setSelectedLayerForEffect(activeLayer.id);
+                                            setSidebarTab('triggers');
+                                          }}
+                                          title="Choose the instrument, channel and notes for this line"
+                                          className={`p-1.5 rounded-full shrink-0 transition-all ${trigOn ? 'text-red-500 bg-red-500/20' : 'text-white/25 hover:text-white hover:bg-white/10'}`}
+                                        >
+                                          <Zap size={11} />
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
 
                         <CollapseHead id="colours" label="Colours & Palette" />
                         {belowPanel === 'colours' && (
@@ -15356,6 +15521,7 @@ return (
                         <h3 className="text-[10px] font-bold uppercase tracking-widest text-red-400 border-b border-white/5 pb-2 mb-2">{headerTitle}</h3>
                         <div className="space-y-6">
                           <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+                            {!(isGenerativeParam && isMusicLayer(layerTarget)) && (<>
                             <button 
                               onClick={() => {
                                  patchMapping((m: any) => ({ ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: true }, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false } }));
@@ -15364,6 +15530,7 @@ return (
                             >
                               Audio
                             </button>
+                            </>)}
                             <button 
                               onClick={() => {
                                  patchMapping((m: any) => ({ ...m, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false }, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: false } }));
@@ -15372,6 +15539,7 @@ return (
                             >
                               MIDI
                             </button>
+                            {!(isGenerativeParam && isMusicLayer(layerTarget)) && (<>
                             <button 
                               onClick={() => {
                                  patchMapping((m: any) => ({ ...m, rhythmMapping: { ...(m.rhythmMapping || { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) }), enabled: true }, audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false } }));
@@ -15380,6 +15548,7 @@ return (
                             >
                               Rhythm
                             </button>
+                            </>)}
                             <button 
                               onClick={() => {
                                  // To turn off a parameter trigger, we just set its triggerActive to false
