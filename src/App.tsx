@@ -8129,9 +8129,18 @@ export default function App() {
               if (isHex && dropAction > (gSt.lastDrop ?? 0)) {
                   gSt.lastDrop = dropAction;
                   const taken = new Set([...gSt.lit, ...gSt.dropped]);
-                  const free: number[] = [];
-                  for (let i = 0; i < total; i++) if (!taken.has(i)) free.push(i);
-                  if (free.length) gSt.dropped.push(free[(Math.random() * free.length) | 0]);
+                  // Nearest free slot to the frame centre wins, so repeated drops grow
+                  // a cluster outward. A little jitter keeps it from spiralling
+                  // mechanically through the ring.
+                  const dcx = targetW / 2, dcy = targetH / 2;
+                  let best = -1, bestD = Infinity;
+                  for (let i = 0; i < total; i++) {
+                      if (taken.has(i)) continue;
+                      const dx = cellPos[i].cx - dcx, dy = cellPos[i].cy - dcy;
+                      const d = Math.sqrt(dx * dx + dy * dy) * (0.92 + Math.random() * 0.16);
+                      if (d < bestD) { bestD = d; best = i; }
+                  }
+                  if (best >= 0) gSt.dropped.push(best);
               }
               const litSet = new Set([...gSt.lit, ...(gSt.dropped ?? [])]);
 
@@ -8179,11 +8188,8 @@ export default function App() {
                           ctx.fillStyle = `rgba(${gGridRgb.r}, ${gGridRgb.g}, ${gGridRgb.b}, ${(checker * 0.5).toFixed(3)})`;
                           ctx.fill();
                       }
-                      if (isHex) {
-                          ctx.strokeStyle = `rgba(${gGridRgb.r}, ${gGridRgb.g}, ${gGridRgb.b}, 0.55)`;
-                          ctx.lineWidth = 1.25;
-                          ctx.stroke();
-                      } else if (gOutline > 0.02) {
+                      // Hex has no outline control, so its unlit cells stay invisible.
+                      if (!isHex && gOutline > 0.02) {
                           ctx.strokeStyle = `rgba(${gGridRgb.r}, ${gGridRgb.g}, ${gGridRgb.b}, ${(gOutline * 0.7).toFixed(3)})`;
                           ctx.lineWidth = 1.25;
                           ctx.stroke();
