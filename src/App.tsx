@@ -8065,9 +8065,11 @@ export default function App() {
 
               const s = modifiedSettings;
               const gap = Math.max(0, Math.min(0.45, s.gap ?? 0.07));
-              const shuffleRate = Math.max(0, s.shuffle ?? 0.8);
+              // Hex calls it "speed"; at 0 the pattern holds still.
+              const shuffleRate = Math.max(0, isHex ? (s.speed ?? 0.9) : (s.shuffle ?? 0.8));
               const flipAction = Number(s.flip ?? 0);
               const centerAction = Number(s.center ?? 0);
+              const dropAction = Number(s.drop ?? 0);
 
               // --- grid geometry ---
               let cols: number, rows: number, cellPos: { cx: number, cy: number }[] = [], cellR = 0;
@@ -8097,7 +8099,7 @@ export default function App() {
               const total = cellPos.length;
               const litCount = Math.max(0, Math.min(total, Math.round(s.lit_count ?? 30)));
 
-              if (!gridLitStateRef.current[layer.id]) gridLitStateRef.current[layer.id] = { lit: [], lastShuffle: -999, lastAction: 0, lastCenter: centerAction, total: 0, centered: false };
+              if (!gridLitStateRef.current[layer.id]) gridLitStateRef.current[layer.id] = { lit: [], lastShuffle: -999, lastAction: 0, lastCenter: centerAction, lastDrop: dropAction, total: 0, centered: false, wantLit: -1, dropped: [] };
               const gSt = gridLitStateRef.current[layer.id];
 
               const reshuffle = () => {
@@ -8116,15 +8118,25 @@ export default function App() {
                   }
                   gSt.lit = order.slice(0, litCount);
                   gSt.total = total;
+                  gSt.wantLit = litCount;
                   gSt.lastShuffle = nowSec;
               };
               const shufflePeriod = shuffleRate > 0.01 ? Math.max(0.15, 3.5 / shuffleRate) : 1e9;
-              if (gSt.total !== total || gSt.lit.length !== litCount || (nowSec - gSt.lastShuffle) > shufflePeriod) reshuffle();
-              if (flipAction > gSt.lastAction) { gSt.centered = false; reshuffle(); gSt.lastAction = flipAction; }
-              if (centerAction > (gSt.lastCenter ?? 0)) { gSt.centered = true; reshuffle(); gSt.lastCenter = centerAction; }
-              const litSet = new Set(gSt.lit);
+              if (gSt.total !== total || gSt.wantLit !== litCount || (nowSec - gSt.lastShuffle) > shufflePeriod) reshuffle();
+              if (flipAction > gSt.lastAction) { gSt.centered = false; gSt.dropped = []; reshuffle(); gSt.lastAction = flipAction; }
+              if (centerAction > (gSt.lastCenter ?? 0)) { gSt.centered = true; gSt.dropped = []; reshuffle(); gSt.lastCenter = centerAction; }
+              if (gSt.total !== total) gSt.dropped = [];
+              if (isHex && dropAction > (gSt.lastDrop ?? 0)) {
+                  gSt.lastDrop = dropAction;
+                  const taken = new Set([...gSt.lit, ...gSt.dropped]);
+                  const free: number[] = [];
+                  for (let i = 0; i < total; i++) if (!taken.has(i)) free.push(i);
+                  if (free.length) gSt.dropped.push(free[(Math.random() * free.length) | 0]);
+              }
+              const litSet = new Set([...gSt.lit, ...(gSt.dropped ?? [])]);
 
               const glow = Math.max(0, Math.min(1, s.glow ?? 0.5));
+              const transp = Math.max(0, Math.min(1, s.transparency ?? 0));
               const gOutline = Math.max(0, Math.min(1, s.outline ?? 0.3));
               const checker = Math.max(0, Math.min(1, s.checker ?? 0.15));
               const round = Math.max(0, Math.min(0.5, s.round ?? 0));
@@ -8159,7 +8171,7 @@ export default function App() {
                       }
                   }
                   if (lit) {
-                      const a = glow > 0.01 ? (0.55 + 0.45 * pulse) * (0.4 + glow * 0.6) : 0.95;
+                      const a = isHex ? (1 - transp) : (glow > 0.01 ? (0.55 + 0.45 * pulse) * (0.4 + glow * 0.6) : 0.95);
                       ctx.fillStyle = `rgba(${gLitRgb.r}, ${gLitRgb.g}, ${gLitRgb.b}, ${Math.min(1, a).toFixed(3)})`;
                       ctx.fill();
                   } else {
@@ -8167,7 +8179,11 @@ export default function App() {
                           ctx.fillStyle = `rgba(${gGridRgb.r}, ${gGridRgb.g}, ${gGridRgb.b}, ${(checker * 0.5).toFixed(3)})`;
                           ctx.fill();
                       }
-                      if (gOutline > 0.02) {
+                      if (isHex) {
+                          ctx.strokeStyle = `rgba(${gGridRgb.r}, ${gGridRgb.g}, ${gGridRgb.b}, 0.55)`;
+                          ctx.lineWidth = 1.25;
+                          ctx.stroke();
+                      } else if (gOutline > 0.02) {
                           ctx.strokeStyle = `rgba(${gGridRgb.r}, ${gGridRgb.g}, ${gGridRgb.b}, ${(gOutline * 0.7).toFixed(3)})`;
                           ctx.lineWidth = 1.25;
                           ctx.stroke();

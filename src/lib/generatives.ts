@@ -1262,14 +1262,14 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "cyberpunk_neon",
   "parameters": [
-    { "name": "density",   "min": 4.0,  "max": 30.0,  "default": 12.0, "type": "number" },
-    { "name": "lit_count", "min": 0.0,  "max": 200.0, "default": 26.0, "type": "number" },
-    { "name": "shuffle",   "min": 0.0,  "max": 5.0,   "default": 0.9, "type": "number" },
-    { "name": "gap",       "min": 0.0,  "max": 0.4,   "default": 0.08, "type": "number" },
-    { "name": "glow",      "min": 0.0,  "max": 1.0,   "default": 0.5, "type": "number" },
-    { "name": "outline",   "min": 0.0,  "max": 1.0,   "default": 0.3, "type": "number" },
-    { "name": "flip",      "default": 0, "type": "action" },
-    { "name": "center",    "default": 0, "type": "action" }
+    { "name": "density",      "min": 4.0, "max": 30.0,  "default": 12.0, "type": "number" },
+    { "name": "lit_count",    "min": 0.0, "max": 200.0, "default": 26.0, "type": "number" },
+    { "name": "speed",        "min": 0.0, "max": 5.0,   "default": 0.9,  "type": "number" },
+    { "name": "gap",          "min": 0.0, "max": 0.4,   "default": 0.08, "type": "number" },
+    { "name": "transparency", "min": 0.0, "max": 1.0,   "default": 0.0,  "type": "number" },
+    { "name": "drop",   "default": 0, "type": "action" },
+    { "name": "flip",   "default": 0, "type": "action" },
+    { "name": "center", "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#0a0a12" },
