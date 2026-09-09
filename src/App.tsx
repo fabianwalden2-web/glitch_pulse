@@ -636,6 +636,77 @@ export function isTransparentColor(c?: string): boolean {
   return s === 'transparent' || s === 'none' || s === 'rgba(0, 0, 0, 0)' || s === 'rgba(0,0,0,0)' || s === '#00000000' || s === '#0000';
 }
 
+// ---- Retro pixel-art engine -------------------------------------------------
+// The Retro visuals draw into a small offscreen buffer, one buffer pixel = one
+// art pixel, and are blitted up with smoothing off. That is what makes them read
+// as real pixel art at any canvas size instead of smooth shapes scaled down.
+interface PixelBuf { c: HTMLCanvasElement; g: CanvasRenderingContext2D; w: number; h: number; px: number }
+
+function getPixelBuf(store: Record<string, any>, id: string, targetW: number, targetH: number, chunk: number): PixelBuf {
+  const px = Math.max(2, Math.round(chunk));
+  const w = Math.max(16, Math.ceil(targetW / px));
+  const h = Math.max(16, Math.ceil(targetH / px));
+  let e = store[id];
+  if (!e) e = store[id] = { c: document.createElement('canvas') };
+  if (e.c.width !== w || e.c.height !== h) { e.c.width = w; e.c.height = h; }
+  const g = e.c.getContext('2d')! as CanvasRenderingContext2D;
+  g.imageSmoothingEnabled = false;
+  return { c: e.c, g, w, h, px };
+}
+
+function blitPixelBuf(ctx: CanvasRenderingContext2D, buf: PixelBuf, targetW: number, targetH: number) {
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, targetW, targetH);
+  ctx.drawImage(buf.c, 0, 0, buf.w, buf.h, 0, 0, buf.w * buf.px, buf.h * buf.px);
+}
+
+/** Blit a sprite made of character rows. "." and " " are transparent; every other
+ *  character is looked up in `map`. One character = one buffer pixel. */
+function drawSprite(g: CanvasRenderingContext2D, rows: string[], x: number, y: number, map: Record<string, string>, flipX = false) {
+  x = Math.round(x); y = Math.round(y);
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r];
+    for (let c = 0; c < row.length; c++) {
+      const col = map[row[flipX ? row.length - 1 - c : c]];
+      if (!col) continue;
+      g.fillStyle = col;
+      g.fillRect(x + c, y + r, 1, 1);
+    }
+  }
+}
+
+/** Axis-aligned rect on the pixel grid. */
+const pxRect = (g: CanvasRenderingContext2D, col: string, x: number, y: number, w: number, h: number) => {
+  if (w <= 0 || h <= 0) return;
+  g.fillStyle = col;
+  g.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+};
+
+/** 50% checker dither of `col` over whatever is beneath — the classic way to get
+ *  a mid-tone out of a fixed palette without adding a colour. */
+function pxDither(g: CanvasRenderingContext2D, col: string, x0: number, y0: number, w: number, h: number, phase = 0) {
+  g.fillStyle = col;
+  for (let y = 0; y < h; y++) {
+    for (let x = (y + phase) % 2; x < w; x += 2) g.fillRect(Math.round(x0 + x), Math.round(y0 + y), 1, 1);
+  }
+}
+
+/** Deterministic value noise in 1D — used for terrain so it is stable frame to frame. */
+function vnoise1(x: number, seed = 0) {
+  const i = Math.floor(x), fr = x - i;
+  const h = (n: number) => { const v = Math.sin((n * 127.1 + seed * 311.7)) * 43758.5453; return v - Math.floor(v); };
+  const a = h(i), b = h(i + 1);
+  const u = fr * fr * (3 - 2 * fr);
+  return a + (b - a) * u;
+}
+
+/** Rising-edge helper for the `action` parameters. */
+function actionFired(st: any, key: string, count: number) {
+  const prev = st[key] ?? count;
+  st[key] = count;
+  return count > prev;
+}
+
 function hexToRgb(hex: string): { r: number, g: number, b: number } {
   if (!hex || isTransparentColor(hex)) return { r: 0, g: 0, b: 0 };
   let c = hex.replace('#', '');
@@ -6211,561 +6282,696 @@ export default function App() {
               const canvas = sphereCanvasRef.current[layer.id];
               if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
               const ctx = canvas.getContext('2d')!;
-              const S = Math.min(targetW, targetH);
-              const nl = modifiedSettings;
-              const nlBg = resolvedGenerativeColors['background'] || '#05060f';
-              const nlWall = resolvedGenerativeColors['walls'] || '#2b1a63';
-              const nlPellet = resolvedGenerativeColors['pellets'] || '#ffe600';
-              const nlGhost = resolvedGenerativeColors['ghosts'] || '#ff2e88';
-              const nlDens = Math.max(0, Math.min(1, nl.corridor_density ?? 0.55));
-              const nlAggr = Math.max(0, Math.min(1, nl.ghost_aggression ?? 0.5));
-              const nlDecay = Math.max(0, Math.min(1, nl.glow_decay ?? 0.6));
-              const nlWrap = Math.max(0, Math.min(6, nl.wrap_frequency ?? 2));
-              const nlSurgeA = Number(nl.power_surge ?? 0), nlReseedA = Number(nl.grid_reseed ?? 0);
-              const nlCols = 16, nlRows = Math.max(7, Math.round(16 * targetH / Math.max(1, targetW)));
-              let nlS = neonLabyrinthStateRef.current[layer.id];
-              if (!nlS || nlS.cols !== nlCols || nlS.rows !== nlRows) {
-                  nlS = { cols: nlCols, rows: nlRows, seed: (Math.random() * 1e9) | 0, moveAcc: 0,
-                          player: { cx: nlCols >> 1, cy: nlRows >> 1, rx: nlCols >> 1, ry: nlRows >> 1, trail: [] as any[] },
-                          ghosts: [] as any[], surgeUntil: 0, lastSurge: nlSurgeA, lastReseed: nlReseedA };
-                  for (let i = 0; i < 4; i++) nlS.ghosts.push({ cx: i % 2 ? 1 : nlCols - 2, cy: i < 2 ? 1 : nlRows - 2, rx: 0, ry: 0 });
-                  for (const g of nlS.ghosts) { g.rx = g.cx; g.ry = g.cy; }
-                  neonLabyrinthStateRef.current[layer.id] = nlS;
-              }
-              if (nlReseedA > nlS.lastReseed) { nlS.seed = (Math.random() * 1e9) | 0; nlS.lastReseed = nlReseedA; }
-              if (nlSurgeA > nlS.lastSurge) { nlS.surgeUntil = nowSec + 5; nlS.lastSurge = nlSurgeA; }
-              const nlSurging = nowSec < nlS.surgeUntil;
-              const nlWH = (a: number, b: number) => { const n = Math.sin(a * 127.1 + b * 311.7 + nlS.seed * 0.00013) * 43758.5453; return n - Math.floor(n); };
-              const nlRight = (cx: number, cy: number) => cx < nlCols - 1 && nlWH(cx * 2 + 1, cy * 3) < nlDens * 0.7;
-              const nlDown = (cx: number, cy: number) => cy < nlRows - 1 && nlWH(cx * 3, cy * 2 + 1) < nlDens * 0.7;
-              const cw = targetW / nlCols, ch = targetH / nlRows;
-              const nlTick = 0.16 / (0.55 + nlAggr) / (nlSurging ? 1.7 : 1);
-              nlS.moveAcc += (deltaTime || 16.7) / 1000;
-              const nlStep = nlS.moveAcc >= nlTick;
-              if (nlStep) nlS.moveAcc = 0;
-              const nlMove = (e: any, tX: number, tY: number, aggro: number) => {
-                  const opts: number[][] = [];
-                  if (e.cx < nlCols - 1 && !nlRight(e.cx, e.cy)) opts.push([1, 0]);
-                  if (e.cx > 0 && !nlRight(e.cx - 1, e.cy)) opts.push([-1, 0]);
-                  if (e.cy < nlRows - 1 && !nlDown(e.cx, e.cy)) opts.push([0, 1]);
-                  if (e.cy > 0 && !nlDown(e.cx, e.cy - 1)) opts.push([0, -1]);
-                  if (!opts.length) return;
-                  let pick = opts[(Math.random() * opts.length) | 0];
-                  if (Math.random() < aggro) {
-                      pick = opts.reduce((pa, cb) => Math.hypot(e.cx + cb[0] - tX, e.cy + cb[1] - tY) < Math.hypot(e.cx + pa[0] - tX, e.cy + pa[1] - tY) ? cb : pa);
-                  }
-                  e.cx += pick[0]; e.cy += pick[1];
-                  if (nlWrap >= 1 && nlWH(e.cy, 7.0) < nlWrap / 6) {
-                      if (e.cx < 0) e.cx = nlCols - 1; else if (e.cx > nlCols - 1) e.cx = 0;
-                  }
-                  e.cx = Math.max(0, Math.min(nlCols - 1, e.cx)); e.cy = Math.max(0, Math.min(nlRows - 1, e.cy));
-              };
-              const nlP = nlS.player;
-              if (nlStep) {
-                  nlMove(nlP, Math.random() * nlCols, Math.random() * nlRows, 0.2);
-                  nlP.trail.push([nlP.cx, nlP.cy, nowSec]);
-                  const tLife = (nlSurging ? 3.4 : 1.5) * (0.35 + (1 - nlDecay) * 1.9);
-                  while (nlP.trail.length && nowSec - nlP.trail[0][2] > tLife) nlP.trail.shift();
-                  for (const g of nlS.ghosts) nlMove(g, nlP.cx, nlP.cy, nlSurging ? 0.04 : 0.15 + nlAggr * 0.8);
-              }
-              const nlLerp = Math.min(1, ((deltaTime || 16.7) / 1000) / Math.max(0.03, nlTick));
-              nlP.rx += (nlP.cx - nlP.rx) * nlLerp; nlP.ry += (nlP.cy - nlP.ry) * nlLerp;
-              for (const g of nlS.ghosts) { g.rx += (g.cx - g.rx) * nlLerp; g.ry += (g.cy - g.ry) * nlLerp; }
+              const ms = modifiedSettings;
+              // deltaTime is milliseconds; these sims all run in seconds.
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const cBg = resolvedGenerativeColors['background'] || '#0a0a12';
+              const cWall = resolvedGenerativeColors['walls'] || '#ff007f';
+              const cPel = resolvedGenerativeColors['pellets'] || '#00f0ff';
+              const cGho = resolvedGenerativeColors['ghosts'] || '#ffe600';
+              const cRun = resolvedGenerativeColors['player'] || '#7000ff';
 
-              ctx.fillStyle = nlBg; ctx.fillRect(0, 0, targetW, targetH);
-              if (nlSurging) { ctx.fillStyle = nlGhost; ctx.globalAlpha = 0.16 + 0.1 * Math.sin(nowSec * 30); ctx.fillRect(0, 0, targetW, targetH); ctx.globalAlpha = 1; }
-              ctx.strokeStyle = nlWall; ctx.lineWidth = Math.max(1.5, S * 0.006);
-              ctx.shadowColor = nlWall; ctx.shadowBlur = S * 0.018; ctx.lineCap = 'round';
-              ctx.beginPath();
-              for (let cy = 0; cy < nlRows; cy++) for (let cx = 0; cx < nlCols; cx++) {
-                  if (nlRight(cx, cy)) { ctx.moveTo((cx + 1) * cw, cy * ch); ctx.lineTo((cx + 1) * cw, (cy + 1) * ch); }
-                  if (nlDown(cx, cy)) { ctx.moveTo(cx * cw, (cy + 1) * ch); ctx.lineTo((cx + 1) * cw, (cy + 1) * ch); }
+              const buf = getPixelBuf(neonLabyrinthStateRef.current, layer.id + '_buf', targetW, targetH, (ms.pixel_size ?? 3) * 2);
+              const g = buf.g, BW = buf.w, BH = buf.h;
+              const scale = Math.max(6, Math.min(24, Math.round(ms.maze_scale ?? 13)));
+              const ghostN = Math.max(0, Math.min(6, Math.round(ms.ghosts ?? 4)));
+              const spd = Math.max(0.2, Math.min(3, ms.speed ?? 1));
+              const showPel = (ms.pellets ?? 1) > 0.5;
+
+              const st = (neonLabyrinthStateRef.current[layer.id] ||= { acts: {} });
+              const cols = scale * 2 + 1;
+              const rows = Math.max(7, (Math.round(cols * (BH / Math.max(1, BW))) | 1));
+              const reseed = actionFired(st.acts, 'seed', Number(ms.grid_reseed ?? 0));
+              if (actionFired(st.acts, 'surge', Number(ms.power_surge ?? 0))) st.surgeT = nowSec + 3;
+
+              if (reseed || st.cols !== cols || st.rows !== rows) {
+                  // Randomised depth-first carve on the left half, then mirrored,
+                  // which is what gives arcade mazes their symmetry.
+                  st.cols = cols; st.rows = rows;
+                  const wall: boolean[] = new Array(cols * rows).fill(true);
+                  const half = Math.floor(cols / 2) + 1;
+                  const idx = (x: number, y: number) => y * cols + x;
+                  const stack: [number, number][] = [[1, 1]];
+                  wall[idx(1, 1)] = false;
+                  while (stack.length) {
+                      const [cx, cy] = stack[stack.length - 1];
+                      const opts: [number, number][] = [];
+                      for (const [dx, dy] of [[2, 0], [-2, 0], [0, 2], [0, -2]] as [number, number][]) {
+                          const nx = cx + dx, ny = cy + dy;
+                          if (nx > 0 && nx < half && ny > 0 && ny < rows - 1 && wall[idx(nx, ny)]) opts.push([nx, ny]);
+                      }
+                      if (!opts.length) { stack.pop(); continue; }
+                      const [nx, ny] = opts[Math.floor(Math.random() * opts.length)];
+                      wall[idx((cx + nx) / 2, (cy + ny) / 2)] = false;
+                      wall[idx(nx, ny)] = false;
+                      stack.push([nx, ny]);
+                  }
+                  for (let y = 0; y < rows; y++) for (let x = half; x < cols; x++) wall[idx(x, y)] = wall[idx(cols - 1 - x, y)];
+                  // A clear ring just inside the border reads as an arcade loop and
+                  // guarantees every entity always has somewhere to go.
+                  for (let x = 1; x < cols - 1; x++) { wall[idx(x, 1)] = false; wall[idx(x, rows - 2)] = false; }
+                  for (let y = 1; y < rows - 1; y++) { wall[idx(1, y)] = false; wall[idx(cols - 2, y)] = false; }
+                  st.wall = wall;
+                  st.pel = wall.map(w => !w);
+                  st.ents = null;
               }
-              ctx.rect(2, 2, targetW - 4, targetH - 4);
-              ctx.stroke(); ctx.shadowBlur = 0;
-              ctx.fillStyle = nlPellet;
-              const nlPr = Math.max(1.1, S * 0.005);
-              for (let cy = 0; cy < nlRows; cy++) for (let cx = 0; cx < nlCols; cx++) {
-                  if ((cx * 7 + cy * 5) % 3 === 0) continue;
-                  ctx.beginPath(); ctx.arc((cx + 0.5) * cw, (cy + 0.5) * ch, nlPr, 0, 6.283); ctx.fill();
+
+              const wall: boolean[] = st.wall;
+              const open = (x: number, y: number) => x >= 0 && y >= 0 && x < cols && y < rows && !wall[y * cols + x];
+              const DIRS: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+              if (!st.ents) {
+                  st.ents = [];
+                  for (let i = 0; i < 7; i++) {
+                      let x = 1, y = 1, guard = 0;
+                      do { x = 1 + Math.floor(Math.random() * (cols - 2)); y = 1 + Math.floor(Math.random() * (rows - 2)); } while (!open(x, y) && guard++ < 200);
+                      st.ents.push({ x, y, px: x, py: y, dx: 1, dy: 0, t: 0 });
+                  }
               }
-              ctx.strokeStyle = nlPellet; ctx.lineJoin = 'round';
-              ctx.shadowColor = nlPellet; ctx.shadowBlur = S * 0.03;
-              ctx.lineWidth = Math.max(2, S * 0.013 * (nlSurging ? 1.6 : 1));
-              ctx.beginPath();
-              for (let i = 0; i < nlP.trail.length; i++) { const tp = nlP.trail[i]; const x = (tp[0] + 0.5) * cw, y = (tp[1] + 0.5) * ch; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
-              ctx.lineTo((nlP.rx + 0.5) * cw, (nlP.ry + 0.5) * ch);
-              ctx.stroke();
-              ctx.fillStyle = nlPellet; ctx.beginPath(); ctx.arc((nlP.rx + 0.5) * cw, (nlP.ry + 0.5) * ch, S * 0.015, 0, 6.283); ctx.fill();
-              ctx.shadowBlur = 0;
-              for (const g of nlS.ghosts) {
-                  ctx.fillStyle = nlGhost; ctx.shadowColor = nlGhost; ctx.shadowBlur = S * 0.022;
-                  const gx = (g.rx + 0.5) * cw, gy = (g.ry + 0.5) * ch, gr = S * 0.016;
-                  ctx.beginPath(); ctx.arc(gx, gy - gr * 0.15, gr, Math.PI, 0);
-                  ctx.lineTo(gx + gr, gy + gr);
-                  for (let k = 0; k < 3; k++) { ctx.lineTo(gx + gr - (k + 0.5) * (gr * 2 / 3), gy + gr * 0.5); ctx.lineTo(gx + gr - (k + 1) * (gr * 2 / 3), gy + gr); }
-                  ctx.closePath(); ctx.fill();
+              const ents: any[] = st.ents;
+              const runner = ents[0];
+              const step = dt * spd * 4;
+              for (let i = 0; i < ents.length; i++) {
+                  const e = ents[i];
+                  e.t += step;
+                  while (e.t >= 1) {
+                      e.t -= 1;
+                      e.px = e.x; e.py = e.y;
+                      const cands = DIRS.filter(([dx, dy]) => open(e.x + dx, e.y + dy));
+                      const fwd = cands.filter(([dx, dy]) => !(dx === -e.dx && dy === -e.dy));
+                      const pool = fwd.length ? fwd : cands;
+                      if (pool.length) {
+                          let pick = pool[Math.floor(Math.random() * pool.length)];
+                          if (i > 0 && pool.length > 1) {
+                              // Ghosts chase the runner; a power surge sends them fleeing.
+                              const flee = nowSec < (st.surgeT ?? -1);
+                              let best = -1e9;
+                              for (const [dx, dy] of pool) {
+                                  const d = Math.abs(e.x + dx - runner.x) + Math.abs(e.y + dy - runner.y);
+                                  const sc = (flee ? d : -d) + Math.random() * 1.5;
+                                  if (sc > best) { best = sc; pick = [dx, dy]; }
+                              }
+                          }
+                          e.dx = pick[0]; e.dy = pick[1];
+                      }
+                      e.x += e.dx; e.y += e.dy;
+                      if (e.x < 0) e.x = cols - 1; if (e.x >= cols) e.x = 0;
+                      if (i === 0) st.pel[e.y * cols + e.x] = false;
+                  }
               }
-              ctx.shadowBlur = 0;
+              if (st.pel && !st.pel.some((p: boolean) => p)) st.pel = wall.map((w: boolean) => !w);
+
+              const cell = Math.max(3, Math.floor(Math.min(BW / cols, BH / rows)));
+              const ox = Math.floor((BW - cell * cols) / 2), oy = Math.floor((BH - cell * rows) / 2);
+              pxRect(g, cBg, 0, 0, BW, BH);
+              for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+                  if (!wall[y * cols + x]) continue;
+                  const WX = ox + x * cell, WY = oy + y * cell;
+                  if (open(x, y - 1) || y === 0) pxRect(g, cWall, WX, WY, cell, 1);
+                  if (open(x, y + 1) || y === rows - 1) pxRect(g, cWall, WX, WY + cell - 1, cell, 1);
+                  if (open(x - 1, y) || x === 0) pxRect(g, cWall, WX, WY, 1, cell);
+                  if (open(x + 1, y) || x === cols - 1) pxRect(g, cWall, WX + cell - 1, WY, 1, cell);
+              }
+              if (showPel) {
+                  const pd = Math.max(1, Math.floor(cell / 4));
+                  const off = Math.floor((cell - pd) / 2);
+                  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+                      if (!st.pel[y * cols + x] || wall[y * cols + x]) continue;
+                      pxRect(g, cPel, ox + x * cell + off, oy + y * cell + off, pd, pd);
+                  }
+              }
+              const surge = nowSec < (st.surgeT ?? -1);
+              for (let i = ents.length - 1; i >= 0; i--) {
+                  const e = ents[i];
+                  if (i > ghostN) continue;
+                  const fx = ox + (e.px + (e.x - e.px) * e.t + 0.5) * cell;
+                  const fy = oy + (e.py + (e.y - e.py) * e.t + 0.5) * cell;
+                  const s = Math.max(3, cell - 1);
+                  const col = i === 0 ? cRun : (surge && Math.floor(nowSec * 8) % 2 ? cPel : cGho);
+                  const x0 = Math.round(fx - s / 2), y0 = Math.round(fy - s / 2);
+                  if (i === 0) {
+                      pxRect(g, col, x0, y0, s, s);
+                      pxRect(g, cBg, x0 + (e.dx > 0 ? s - 1 : 0), y0 + Math.floor(s / 2), 1, 1);
+                  } else {
+                      pxRect(g, col, x0, y0 + 1, s, s - 1);
+                      pxRect(g, col, x0 + 1, y0, s - 2, 1);
+                      for (let k = 0; k < s; k += 2) pxRect(g, cBg, x0 + k, y0 + s - 1, 1, 1);
+                      const ey = y0 + Math.max(1, Math.floor(s / 3));
+                      pxRect(g, cBg, x0 + 1, ey, 1, 1);
+                      pxRect(g, cBg, x0 + s - 2, ey, 1, 1);
+                  }
+              }
+              blitPixelBuf(ctx, buf, targetW, targetH);
               element = canvas;
           } else if (def.uuid === 'pixel-swarm-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
               const canvas = sphereCanvasRef.current[layer.id];
               if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
               const ctx = canvas.getContext('2d')!;
-              const S = Math.min(targetW, targetH);
-              const ps = modifiedSettings;
-              const psBg = resolvedGenerativeColors['background'] || '#04120a';
-              const psInv = resolvedGenerativeColors['invaders'] || '#39ff88';
-              const psBul = resolvedGenerativeColors['bullets'] || '#eaffea';
-              const psAcc = resolvedGenerativeColors['accent'] || '#00b34a';
-              const psMarch = Math.max(0.1, ps.march_speed ?? 1);
-              const psRowSp = Math.max(0.4, ps.row_spacing ?? 1);
-              const psBarrage = Math.max(0, ps.barrage_rate ?? 1);
-              const psJit = Math.max(0, Math.min(1, ps.jitter_amplitude ?? 0.15));
-              const psStepA = Number(ps.step_down ?? 0), psScatA = Number(ps.scatter_strike ?? 0);
-              const dtSec = Math.min(0.05, (deltaTime || 16.7) / 1000);
-              const psCols = 11, psRows = 5;
-              let psS = pixelSwarmStateRef.current[layer.id];
-              if (!psS) {
-                  psS = { ox: 0, dir: 1, drop: 0, tempo: 1, bullets: [] as any[], scatter: [] as any[],
-                          lastStep: psStepA, lastScat: psScatA, fireAcc: 0 };
-                  pixelSwarmStateRef.current[layer.id] = psS;
-              }
-              if (psStepA > psS.lastStep) { psS.drop += 1; psS.tempo *= 1.15; psS.lastStep = psStepA; }
-              if (psScatA > psS.lastScat) {
-                  psS.lastScat = psScatA;
-                  for (let k = 0; k < 3; k++) psS.scatter.push({ col: (Math.random() * psCols) | 0, row: (Math.random() * psRows) | 0, t: 0, dur: 2.2, phase: Math.random() * 6.28 });
-              }
-              const cellW = targetW / (psCols + 3);
-              const cellH = cellW * 0.82 * psRowSp;
-              const amp = cellW * 1.4;
-              psS.ox += psS.dir * psMarch * psS.tempo * dtSec * 60 * (cellW * 0.02);
-              if (psS.ox > amp) { psS.ox = amp; psS.dir = -1; psS.drop += 0.5; }
-              else if (psS.ox < -amp) { psS.ox = -amp; psS.dir = 1; psS.drop += 0.5; }
-              const formTop = targetH * 0.14 + psS.drop * cellH * 0.6;
-              const formLeft = targetW * 0.5 - (psCols - 1) * cellW * 0.5;
-              // fire barrage
-              psS.fireAcc += dtSec * psBarrage * (1.2 + psS.tempo * 0.5);
-              while (psS.fireAcc > 1) {
-                  psS.fireAcc -= 1;
-                  const c = (Math.random() * psCols) | 0;
-                  psS.bullets.push({ x: formLeft + c * cellW + psS.ox, y: formTop + (psRows - 1) * cellH, vy: (2.4 + Math.random() * 1.5), z: Math.random() < 0.5 });
-              }
-              for (const b of psS.bullets) { b.y += b.vy * dtSec * 60 * (S * 0.006); }
-              psS.bullets = psS.bullets.filter((b: any) => b.y < targetH + 20);
-              for (const s of psS.scatter) s.t += dtSec;
-              psS.scatter = psS.scatter.filter((s: any) => s.t < s.dur + 0.5);
+              const ms = modifiedSettings;
+              // deltaTime is milliseconds; these sims all run in seconds.
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const cBg = resolvedGenerativeColors['background'] || '#0d1117';
+              const cInv = resolvedGenerativeColors['invaders'] || '#39d353';
+              const cBul = resolvedGenerativeColors['bullets'] || '#00ff66';
+              const cAcc = resolvedGenerativeColors['accent'] || '#2ea043';
 
-              ctx.fillStyle = psBg; ctx.fillRect(0, 0, targetW, targetH);
-              // subtle scanlines
-              ctx.fillStyle = psAcc; ctx.globalAlpha = 0.06;
-              for (let y = 0; y < targetH; y += 3) ctx.fillRect(0, y, targetW, 1);
-              ctx.globalAlpha = 1;
-              const bmp = [0x08, 0x1c, 0x3e, 0x6b, 0x7f, 0x2a, 0x14, 0x22]; // 8x8-ish invader rows (7 wide)
-              const px = cellW / 9;
-              const drawInv = (gx: number, gy: number, tint: string) => {
-                  ctx.fillStyle = tint;
-                  const jx = psJit ? (Math.round((Math.random() - 0.5) * psJit * 4) * px) : 0;
-                  const jy = psJit ? (Math.round((Math.random() - 0.5) * psJit * 4) * px) : 0;
-                  for (let r = 0; r < 8; r++) for (let c = 0; c < 7; c++) {
-                      if ((bmp[r] >> (6 - c)) & 1) ctx.fillRect(gx + jx + c * px, gy + jy + r * px, px + 0.6, px + 0.6);
+              const buf = getPixelBuf(pixelSwarmStateRef.current, layer.id + '_buf', targetW, targetH, (ms.pixel_size ?? 3) * 2);
+              const g = buf.g, BW = buf.w, BH = buf.h;
+              const cols = Math.max(4, Math.min(14, Math.round(ms.formation_cols ?? 9)));
+              const rowsN = Math.max(2, Math.min(7, Math.round(ms.formation_rows ?? 5)));
+              const march = Math.max(0.1, Math.min(4, ms.march_speed ?? 1));
+              const barrage = Math.max(0, Math.min(3, ms.barrage_rate ?? 1));
+              const wantBunkers = (ms.bunkers ?? 1) > 0.5;
+
+              const SPR_A = ['..X.....X..', '...X...X...', '..XXXXXXX..', '.XX.XXX.XX.', 'XXXXXXXXXXX', 'X.XXXXXXX.X', 'X.X.....X.X', '...XX.XX...'];
+              const SPR_B = ['..X.....X..', 'X..X...X..X', 'X.XXXXXXX.X', 'XXX.XXX.XXX', 'XXXXXXXXXXX', '.XXXXXXXXX.', '..X.....X..', '.X.......X.'];
+              const CANNON = ['.....X.....', '....XXX....', '....XXX....', 'XXXXXXXXXXX', 'XXXXXXXXXXX'];
+
+              const st = (pixelSwarmStateRef.current[layer.id] ||= { acts: {}, bullets: [], shots: [], fleet: null });
+              const sw = 11, sh = 8;
+              const gapX = Math.max(3, Math.floor(BW / (cols * 1.7)));
+              const cellW = sw + gapX, cellH = sh + Math.max(3, Math.floor(sh * 0.55));
+              const fleetW = cols * cellW - gapX;
+
+              if (!st.fleet || st.cols !== cols || st.rowsN !== rowsN) {
+                  st.cols = cols; st.rowsN = rowsN;
+                  st.fleet = { x: Math.floor((BW - fleetW) / 2), y: Math.max(4, Math.floor(BH * 0.12)), dir: 1, alive: new Array(cols * rowsN).fill(true) };
+                  st.bullets = []; st.shots = [];
+              }
+              const fl = st.fleet;
+              if (actionFired(st.acts, 'down', Number(ms.step_down ?? 0))) fl.y += cellH;
+              if (actionFired(st.acts, 'strike', Number(ms.scatter_strike ?? 0))) {
+                  for (let i = 0; i < cols * rowsN; i++) if (Math.random() < 0.3) fl.alive[i] = false;
+              }
+              if (!fl.alive.some((a: boolean) => a)) { fl.alive.fill(true); fl.y = Math.max(4, Math.floor(BH * 0.12)); }
+
+              fl.x += fl.dir * march * dt * 18;
+              if (fl.x < 2) { fl.x = 2; fl.dir = 1; fl.y += cellH * 0.5; }
+              if (fl.x + fleetW > BW - 2) { fl.x = BW - 2 - fleetW; fl.dir = -1; fl.y += cellH * 0.5; }
+              const groundY = BH - 8;
+              if (fl.y + rowsN * cellH > groundY) fl.y = Math.max(4, Math.floor(BH * 0.12));
+
+              // Bunkers erode where they are hit — the damage grid is the whole point.
+              if (wantBunkers && !st.bunkers) {
+                  st.bunkers = [];
+                  const n = 4, bw = 13, bh = 7;
+                  for (let i = 0; i < n; i++) {
+                      const bx = Math.floor((BW / n) * (i + 0.5) - bw / 2);
+                      st.bunkers.push({ x: bx, y: groundY - 14, w: bw, h: bh, cells: new Array(bw * bh).fill(true) });
                   }
+              }
+              if (!wantBunkers) st.bunkers = null;
+
+              const fireRate = barrage * 1.6;
+              st.fireAcc = (st.fireAcc ?? 0) + dt * fireRate;
+              while (st.fireAcc >= 1) {
+                  st.fireAcc -= 1;
+                  const live: number[] = [];
+                  for (let i = 0; i < fl.alive.length; i++) if (fl.alive[i]) live.push(i);
+                  if (live.length) {
+                      const k = live[Math.floor(Math.random() * live.length)];
+                      st.bullets.push({ x: fl.x + (k % cols) * cellW + sw / 2, y: fl.y + Math.floor(k / cols) * cellH + sh, v: 26 });
+                  }
+              }
+              const cannonX = fl.x + fleetW / 2 + Math.sin(nowSec * 0.9) * BW * 0.22;
+              st.shotAcc = (st.shotAcc ?? 0) + dt * 1.6;
+              while (st.shotAcc >= 1) { st.shotAcc -= 1; st.shots.push({ x: cannonX + 5, y: groundY - 6, v: -40 }); }
+
+              const hitBunker = (x: number, y: number) => {
+                  if (!st.bunkers) return false;
+                  for (const b of st.bunkers) {
+                      const cx = Math.floor(x - b.x), cy = Math.floor(y - b.y);
+                      if (cx < 0 || cy < 0 || cx >= b.w || cy >= b.h) continue;
+                      if (!b.cells[cy * b.w + cx]) continue;
+                      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+                          const ax = cx + dx, ay = cy + dy;
+                          if (ax >= 0 && ay >= 0 && ax < b.w && ay < b.h) b.cells[ay * b.w + ax] = false;
+                      }
+                      return true;
+                  }
+                  return false;
               };
-              for (let r = 0; r < psRows; r++) for (let c = 0; c < psCols; c++) {
-                  const inScatter = psS.scatter.find((s: any) => s.col === c && s.row === r && s.t < s.dur);
-                  let gx = formLeft + c * cellW + psS.ox;
-                  let gy = formTop + r * cellH;
-                  if (inScatter) {
-                      const k = inScatter.t / inScatter.dur;
-                      gx += Math.sin(inScatter.t * 6 + inScatter.phase) * cellW * 2.2 * Math.sin(k * Math.PI);
-                      gy += Math.sin(k * Math.PI) * targetH * 0.28;
-                  }
-                  drawInv(gx - 3.5 * px, gy - 3.5 * px, r === 0 ? psAcc : psInv);
+              st.bullets = st.bullets.filter((b: any) => { b.y += b.v * dt; return b.y < BH && !hitBunker(b.x, b.y); });
+              st.shots = st.shots.filter((s: any) => {
+                  s.y += s.v * dt;
+                  if (s.y < 0 || hitBunker(s.x, s.y)) return false;
+                  const rx = Math.floor((s.x - fl.x) / cellW), ry = Math.floor((s.y - fl.y) / cellH);
+                  if (rx >= 0 && ry >= 0 && rx < cols && ry < rowsN && fl.alive[ry * cols + rx]) { fl.alive[ry * cols + rx] = false; return false; }
+                  return true;
+              });
+
+              pxRect(g, cBg, 0, 0, BW, BH);
+              const frame = Math.floor(nowSec * march * 2.2) % 2;
+              const map = { X: cInv };
+              for (let r = 0; r < rowsN; r++) for (let c = 0; c < cols; c++) {
+                  if (!fl.alive[r * cols + c]) continue;
+                  drawSprite(g, frame ? SPR_B : SPR_A, fl.x + c * cellW, fl.y + r * cellH, map);
               }
-              ctx.fillStyle = psBul;
-              for (const b of psS.bullets) {
-                  if (b.z) ctx.fillRect(b.x - px * 0.6, b.y, px * 1.2, px * 3);
-                  else { ctx.fillRect(b.x - px, b.y, px * 2, px); ctx.fillRect(b.x - px * 0.5, b.y + px * 1.5, px, px); }
+              if (st.bunkers) for (const b of st.bunkers) {
+                  for (let y = 0; y < b.h; y++) for (let x = 0; x < b.w; x++) if (b.cells[y * b.w + x]) pxRect(g, cAcc, b.x + x, b.y + y, 1, 1);
               }
+              drawSprite(g, CANNON, cannonX, groundY - 5, { X: cAcc });
+              pxRect(g, cAcc, 0, groundY + 2, BW, 1);
+              for (const b of st.bullets) pxRect(g, cBul, b.x, b.y, 1, 3);
+              for (const s of st.shots) pxRect(g, cBul, s.x, s.y, 1, 4);
+              blitPixelBuf(ctx, buf, targetW, targetH);
               element = canvas;
           } else if (def.uuid === 'tetromino-cascade-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
               const canvas = sphereCanvasRef.current[layer.id];
               if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
               const ctx = canvas.getContext('2d')!;
-              const S = Math.min(targetW, targetH);
-              const ts = modifiedSettings;
-              const tBg = resolvedGenerativeColors['background'] || '#0c0c10';
-              const tBlk = resolvedGenerativeColors['blocks'] || '#e63946';
-              const tGrid = resolvedGenerativeColors['grid'] || '#1d3557';
-              const tFlash = resolvedGenerativeColors['flash'] || '#f1faee';
-              const tFall = Math.max(0.2, ts.fall_velocity ?? 1.6);
-              const tChaos = Math.max(0, Math.min(1, ts.grid_chaos ?? 0.15));
-              const tBounce = Math.max(0, Math.min(1, ts.settle_bounciness ?? 0.3));
-              const tDens = Math.max(0, Math.min(0.9, ts.line_density ?? 0.25));
-              const tClearA = Number(ts.line_clear ?? 0), tInvA = Number(ts.gravity_invert ?? 0);
-              const dtS = Math.min(0.05, (deltaTime || 16.7) / 1000);
-              const tCols = 12, tRows = Math.max(10, Math.round(12 * targetH / Math.max(1, targetW)));
-              const SHAPES = [[[0,0],[1,0],[0,1],[1,1]], [[0,0],[1,0],[2,0],[3,0]], [[0,0],[1,0],[2,0],[1,1]], [[0,0],[1,0],[1,1],[2,1]], [[1,0],[2,0],[0,1],[1,1]], [[0,0],[0,1],[1,1],[2,1]], [[2,0],[0,1],[1,1],[2,1]]];
-              const ODD = [[[0,0],[1,0],[0,1]], [[0,0],[1,0],[2,0],[1,1],[1,2]], [[0,0]], [[0,0],[1,0]]];
-              const tCol = (n: number) => { const h = (n * 47) % 360; return `hsl(${h} 70% 58%)`; };
-              let tS = tetrominoStateRef.current[layer.id];
-              const newPiece = () => {
-                  const useOdd = Math.random() < tChaos;
-                  const src = useOdd ? ODD[(Math.random() * ODD.length) | 0] : SHAPES[(Math.random() * SHAPES.length) | 0];
-                  return { cells: src.map(c => [c[0], c[1]]), x: (tCols / 2 - 1) | 0, y: -2, yf: -2, vy: 0, ci: (Math.random() * 6) | 0, settling: 0 };
-              };
-              if (!tS || tS.cols !== tCols || tS.rows !== tRows) {
-                  const grid: number[] = new Array(tCols * tRows).fill(-1);
-                  const baseRows = Math.round(tRows * tDens);
-                  for (let r = tRows - baseRows; r < tRows; r++) for (let c = 0; c < tCols; c++) if (Math.random() > 0.28) grid[r * tCols + c] = (Math.random() * 6) | 0;
-                  tS = { cols: tCols, rows: tRows, grid, piece: newPiece(), invertUntil: 0, lastClear: tClearA, lastInv: tInvA, flashRows: [] as number[], flashT: 0, dir: 1 };
-                  tetrominoStateRef.current[layer.id] = tS;
+              const ms = modifiedSettings;
+              // deltaTime is milliseconds; these sims all run in seconds.
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const cBg = resolvedGenerativeColors['background'] || '#ffffff';
+              const cBlk = resolvedGenerativeColors['blocks'] || '#e63946';
+              const cGrid = resolvedGenerativeColors['grid'] || '#1d3557';
+              const cFlash = resolvedGenerativeColors['flash'] || '#f1faee';
+              const cAcc = resolvedGenerativeColors['accent'] || '#457b9d';
+              const pieceCols = [cBlk, cAcc, cGrid, cBlk, cAcc, cGrid, cBlk];
+
+              const buf = getPixelBuf(tetrominoStateRef.current, layer.id + '_buf', targetW, targetH, (ms.pixel_size ?? 3) * 2);
+              const g = buf.g, BW = buf.w, BH = buf.h;
+              const cols = Math.max(6, Math.min(20, Math.round(ms.well_width ?? 12)));
+              const cellPx = Math.max(3, Math.floor(BW / (cols + 2)));
+              const rows = Math.max(8, Math.floor((BH - 2) / cellPx));
+              const fall = Math.max(0.2, Math.min(6, ms.fall_velocity ?? 1.6));
+              const density = Math.max(0, Math.min(0.9, ms.line_density ?? 0.25));
+              const bevel = (ms.bevel ?? 1) > 0.5 && cellPx >= 5;
+
+              const SHAPES: number[][][] = [
+                  [[1, 1, 1, 1]],
+                  [[1, 1], [1, 1]],
+                  [[0, 1, 0], [1, 1, 1]],
+                  [[1, 0, 0], [1, 1, 1]],
+                  [[0, 0, 1], [1, 1, 1]],
+                  [[1, 1, 0], [0, 1, 1]],
+                  [[0, 1, 1], [1, 1, 0]],
+              ];
+              const rot = (m: number[][]) => m[0].map((_, i) => m.map(r => r[i]).reverse());
+
+              const st = (tetrominoStateRef.current[layer.id] ||= { acts: {} });
+              if (st.cols !== cols || st.rows !== rows) {
+                  st.cols = cols; st.rows = rows;
+                  st.grid = new Array(cols * rows).fill(-1);
+                  const fillRows = Math.floor(rows * density);
+                  for (let r = rows - fillRows; r < rows; r++) for (let c = 0; c < cols; c++) {
+                      if (Math.random() < 0.78) st.grid[r * cols + c] = Math.floor(Math.random() * 7);
+                  }
+                  st.piece = null; st.flashRows = []; st.flashT = -1; st.inv = false;
               }
-              if (tInvA > tS.lastInv) { tS.invertUntil = nowSec + 1.4; tS.lastInv = tInvA; }
-              const invert = nowSec < tS.invertUntil;
-              tS.dir = invert ? -1 : 1;
-              const collide = (cells: number[][], px: number, py: number) => {
-                  for (const c of cells) {
-                      const gx = px + c[0], gy = Math.floor(py) + c[1];
-                      if (gx < 0 || gx >= tCols) return true;
-                      if (gy >= tRows) return true;
-                      if (gy >= 0 && tS.grid[gy * tCols + gx] >= 0) return true;
+              const grid: number[] = st.grid;
+              if (actionFired(st.acts, 'inv', Number(ms.gravity_invert ?? 0))) st.inv = !st.inv;
+              if (actionFired(st.acts, 'clear', Number(ms.line_clear ?? 0))) {
+                  const rs: number[] = [];
+                  for (let r = 0; r < rows; r++) { let n = 0; for (let c = 0; c < cols; c++) if (grid[r * cols + c] >= 0) n++; if (n > cols * 0.4) rs.push(r); }
+                  if (rs.length) { st.flashRows = rs; st.flashT = nowSec + 0.28; }
+              }
+              const dirDown = st.inv ? -1 : 1;
+
+              if (!st.piece) {
+                  const k = Math.floor(Math.random() * 7);
+                  let m = SHAPES[k];
+                  const turns = Math.floor(Math.random() * 4);
+                  for (let i = 0; i < turns; i++) m = rot(m);
+                  st.piece = { k, m, x: Math.floor((cols - m[0].length) / 2), y: st.inv ? rows - m.length : 0, t: 0 };
+              }
+              const pc = st.piece;
+              const collides = (m: number[][], px: number, py: number) => {
+                  for (let r = 0; r < m.length; r++) for (let c = 0; c < m[r].length; c++) {
+                      if (!m[r][c]) continue;
+                      const gx = px + c, gy = py + r;
+                      if (gx < 0 || gx >= cols || gy < 0 || gy >= rows) return true;
+                      if (grid[gy * cols + gx] >= 0) return true;
                   }
                   return false;
               };
-              const pc = tS.piece;
-              pc.vy += (invert ? -1 : 1) * tFall * dtS * 22;
-              pc.vy = Math.max(-14, Math.min(16, pc.vy));
-              let ny = pc.yf + pc.vy * dtS * 3.4;
-              if (!collide(pc.cells, pc.x, ny)) { pc.yf = ny; pc.y = Math.floor(ny); }
-              else {
-                  if (Math.abs(pc.vy) > 3 && tBounce > 0.05 && pc.settling < 2) { pc.vy = -pc.vy * tBounce * 0.55; pc.settling++; }
-                  else {
-                      for (const c of pc.cells) { const gx = pc.x + c[0], gy = Math.floor(pc.yf) + c[1]; if (gy >= 0 && gy < tRows && gx >= 0 && gx < tCols) tS.grid[gy * tCols + gx] = pc.ci; }
-                      // check full rows
-                      for (let r = 0; r < tRows; r++) { let full = true; for (let c = 0; c < tCols; c++) if (tS.grid[r * tCols + c] < 0) { full = false; break; } if (full) tS.flashRows.push(r); }
-                      if (tS.flashRows.length) tS.flashT = nowSec + 0.35;
-                      tS.piece = newPiece();
+              pc.t += dt * fall * 3.2;
+              while (pc.t >= 1) {
+                  pc.t -= 1;
+                  if (collides(pc.m, pc.x, pc.y + dirDown)) {
+                      for (let r = 0; r < pc.m.length; r++) for (let c = 0; c < pc.m[r].length; c++) {
+                          if (pc.m[r][c]) { const gy = pc.y + r, gx = pc.x + c; if (gy >= 0 && gy < rows) grid[gy * cols + gx] = pc.k; }
+                      }
+                      const full: number[] = [];
+                      for (let r = 0; r < rows; r++) { let n = 0; for (let c = 0; c < cols; c++) if (grid[r * cols + c] >= 0) n++; if (n === cols) full.push(r); }
+                      if (full.length) { st.flashRows = full; st.flashT = nowSec + 0.28; }
+                      st.piece = null;
+                      break;
+                  }
+                  pc.y += dirDown;
+              }
+              if (st.flashRows.length && nowSec > st.flashT) {
+                  const rem: number[] = Array.from(new Set<number>(st.flashRows)).sort((a: number, b: number) => a - b);
+                  for (const r of rem) {
+                      if (st.inv) { for (let rr = r; rr < rows - 1; rr++) for (let c = 0; c < cols; c++) grid[rr * cols + c] = grid[(rr + 1) * cols + c]; for (let c = 0; c < cols; c++) grid[(rows - 1) * cols + c] = -1; }
+                      else { for (let rr = r; rr > 0; rr--) for (let c = 0; c < cols; c++) grid[rr * cols + c] = grid[(rr - 1) * cols + c]; for (let c = 0; c < cols; c++) grid[c] = -1; }
+                  }
+                  st.flashRows = [];
+              }
+
+              const wellW = cellPx * cols, wellH = cellPx * rows;
+              const ox = Math.floor((BW - wellW) / 2), oy = Math.floor((BH - wellH) / 2);
+              pxRect(g, cBg, 0, 0, BW, BH);
+              for (let c = 0; c <= cols; c++) pxRect(g, cGrid, ox + c * cellPx, oy, 1, wellH);
+              for (let r = 0; r <= rows; r++) pxRect(g, cGrid, ox, oy + r * cellPx, wellW, 1);
+              const cellAt = (col: string, cx: number, cy: number) => {
+                  const x = ox + cx * cellPx, y = oy + cy * cellPx;
+                  pxRect(g, col, x + 1, y + 1, cellPx - 1, cellPx - 1);
+                  if (bevel) { pxRect(g, cFlash, x + 1, y + 1, cellPx - 1, 1); pxRect(g, cFlash, x + 1, y + 1, 1, cellPx - 1); }
+              };
+              const flashOn = st.flashRows.length > 0 && Math.floor(nowSec * 20) % 2 === 0;
+              for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+                  const v = grid[r * cols + c];
+                  if (v < 0) continue;
+                  cellAt(flashOn && st.flashRows.includes(r) ? cFlash : pieceCols[v % 7], c, r);
+              }
+              if (st.piece) {
+                  for (let r = 0; r < pc.m.length; r++) for (let c = 0; c < pc.m[r].length; c++) {
+                      if (pc.m[r][c] && pc.y + r >= 0 && pc.y + r < rows) cellAt(pieceCols[pc.k % 7], pc.x + c, pc.y + r);
                   }
               }
-              if (tClearA > tS.lastClear) {
-                  tS.lastClear = tClearA;
-                  for (let r = 0; r < tRows; r++) { let cnt = 0; for (let c = 0; c < tCols; c++) if (tS.grid[r * tCols + c] >= 0) cnt++; if (cnt >= tCols - 2) tS.flashRows.push(r); }
-                  if (tS.flashRows.length) tS.flashT = nowSec + 0.35;
-              }
-              if (tS.flashRows.length && nowSec > tS.flashT) {
-                  const rem = [...new Set(tS.flashRows)].sort((a, b) => a - b);
-                  for (const r of rem) { for (let rr = r; rr > 0; rr--) for (let c = 0; c < tCols; c++) tS.grid[rr * tCols + c] = tS.grid[(rr - 1) * tCols + c]; for (let c = 0; c < tCols; c++) tS.grid[c] = -1; }
-                  tS.flashRows = [];
-              }
-              const cellPx = Math.min(targetW / tCols, targetH / tRows);
-              const wellW = cellPx * tCols, wellH = cellPx * tRows;
-              const wx0 = (targetW - wellW) / 2, wy0 = (targetH - wellH) / 2;
-              ctx.fillStyle = tBg; ctx.fillRect(0, 0, targetW, targetH);
-              ctx.strokeStyle = tGrid; ctx.lineWidth = 1; ctx.globalAlpha = 0.5;
-              ctx.beginPath();
-              for (let c = 0; c <= tCols; c++) { ctx.moveTo(wx0 + c * cellPx, wy0); ctx.lineTo(wx0 + c * cellPx, wy0 + wellH); }
-              for (let r = 0; r <= tRows; r++) { ctx.moveTo(wx0, wy0 + r * cellPx); ctx.lineTo(wx0 + wellW, wy0 + r * cellPx); }
-              ctx.stroke(); ctx.globalAlpha = 1;
-              const flashSet = new Set(tS.flashRows);
-              const drawCell = (gx: number, gy: number, col: string) => {
-                  const x = wx0 + gx * cellPx, y = wy0 + gy * cellPx;
-                  ctx.fillStyle = col; ctx.fillRect(x + 1, y + 1, cellPx - 2, cellPx - 2);
-                  ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fillRect(x + 1, y + 1, cellPx - 2, Math.max(1, cellPx * 0.18));
-              };
-              for (let r = 0; r < tRows; r++) for (let c = 0; c < tCols; c++) {
-                  const v = tS.grid[r * tCols + c];
-                  if (v < 0) continue;
-                  drawCell(c, r, flashSet.has(r) ? tFlash : (v === 0 ? tBlk : tCol(v)));
-              }
-              for (const c of pc.cells) {
-                  const gx = pc.x + c[0], gy = Math.floor(pc.yf) + c[1];
-                  if (gy >= 0) drawCell(gx, gy, pc.ci === 0 ? tBlk : tCol(pc.ci));
-              }
+              blitPixelBuf(ctx, buf, targetW, targetH);
               element = canvas;
           } else if (def.uuid === 'hillscape-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
               const canvas = sphereCanvasRef.current[layer.id];
               if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
               const ctx = canvas.getContext('2d')!;
-              const S = Math.min(targetW, targetH);
-              const hs = modifiedSettings;
-              const hSky = resolvedGenerativeColors['background'] || '#1a2a4a';
-              const hTer = resolvedGenerativeColors['terrain'] || '#3aa856';
-              const hStr = resolvedGenerativeColors['structures'] || '#2e7d32';
-              const hCoin = resolvedGenerativeColors['coins'] || '#ffd23f';
-              const hRough = Math.max(0, Math.min(1, hs.terrain_roughness ?? 0.5));
-              const hGrav = Math.max(0.2, hs.jump_gravity ?? 1);
-              const hPipe = Math.max(0, Math.min(1, hs.pipe_density ?? 0.4));
-              const hPar = Math.max(0, Math.min(1, hs.cloud_parallax ?? 0.5));
-              const hCoinA = Number(hs.coin_burst ?? 0), hRushA = Number(hs.scroll_rush ?? 0);
-              const dtH = Math.min(0.05, (deltaTime || 16.7) / 1000);
-              let hS = hillscapeStateRef.current[layer.id];
-              if (!hS) hS = hillscapeStateRef.current[layer.id] = { scroll: 0, rushUntil: 0, coins: [] as any[], hopX: targetW * 0.32, hopY: 0, vy: 0, onG: true, lastCoin: hCoinA, lastRush: hRushA };
-              if (hRushA > hS.lastRush) { hS.rushUntil = nowSec + 2.5; hS.lastRush = hRushA; }
-              const rush = nowSec < hS.rushUntil;
-              const baseSpd = (rush ? 3.2 : 1) * (0.6 + hPar) * S * 0.6;
-              hS.scroll += baseSpd * dtH;
-              const nz = (x: number) => { const s = Math.sin(x * 12.9898) * 43758.5453; return s - Math.floor(s); };
-              const terrainY = (wx: number) => {
-                  const x = wx * 0.004;
-                  const lo = (Math.sin(x * 0.7) * 0.5 + 0.5);
-                  const mid = (nz(Math.floor(x)) * (1 - (x - Math.floor(x))) + nz(Math.floor(x) + 1) * (x - Math.floor(x)));
-                  return targetH * (0.62 - hRough * 0.22 * (lo * 0.6 + mid * 0.9) - 0.06 * Math.sin(x * 2.3));
-              };
-              const grav = 2600 * hGrav;
-              hS.vy += grav * dtH;
-              const groundAt = terrainY(hS.scroll + hS.hopX) - S * 0.03;
-              hS.hopY += hS.vy * dtH;
-              if (hS.hopY >= groundAt) { hS.hopY = groundAt; hS.vy = -900 - Math.random() * 350; }
-              if (hCoinA > hS.lastCoin) {
-                  hS.lastCoin = hCoinA;
-                  for (let k = 0; k < 10; k++) hS.coins.push({ x: hS.hopX + (Math.random() - 0.5) * 40, y: hS.hopY - S * 0.05, vx: (Math.random() - 0.5) * 260, vy: -420 - Math.random() * 380, t: 0 });
-              }
-              for (const c of hS.coins) { c.vy += 1800 * dtH; c.x += c.vx * dtH; c.y += c.vy * dtH; c.t += dtH; }
-              hS.coins = hS.coins.filter((c: any) => c.t < 2.2 && c.y < targetH + 40);
+              const ms = modifiedSettings;
+              // deltaTime is milliseconds; these sims all run in seconds.
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const cSky = resolvedGenerativeColors['background'] || '#1b2140';
+              const cTer = resolvedGenerativeColors['terrain'] || '#ffcf5c';
+              const cStr = resolvedGenerativeColors['structures'] || '#ff7a2e';
+              const cCoin = resolvedGenerativeColors['coins'] || '#ffffff';
 
-              const grd = ctx.createLinearGradient(0, 0, 0, targetH);
-              grd.addColorStop(0, hSky); grd.addColorStop(1, '#000010');
-              ctx.fillStyle = grd; ctx.fillRect(0, 0, targetW, targetH);
-              // clouds (parallax)
-              ctx.fillStyle = 'rgba(255,255,255,0.5)';
-              for (let i = 0; i < 6; i++) {
-                  const cx = ((i * 320 - hS.scroll * (0.15 + hPar * 0.25)) % (targetW + 300) + targetW + 300) % (targetW + 300) - 150;
-                  const cy = targetH * (0.12 + 0.07 * i % 0.3);
-                  ctx.beginPath(); ctx.arc(cx, cy, S * 0.04, 0, 6.283); ctx.arc(cx + S * 0.04, cy + 4, S * 0.03, 0, 6.283); ctx.arc(cx - S * 0.035, cy + 4, S * 0.028, 0, 6.283); ctx.fill();
+              const buf = getPixelBuf(hillscapeStateRef.current, layer.id + '_buf', targetW, targetH, (ms.pixel_size ?? 3) * 2);
+              const g = buf.g, BW = buf.w, BH = buf.h;
+              const rough = Math.max(0, Math.min(1, ms.terrain_roughness ?? 0.5));
+              const dens = Math.max(0, Math.min(1, ms.structure_density ?? 0.4));
+              const par = Math.max(0, Math.min(1, ms.parallax ?? 0.6));
+              const showStars = (ms.stars ?? 1) > 0.5;
+              const spd = Math.max(0, Math.min(4, ms.scroll_speed ?? 1));
+
+              const st = (hillscapeStateRef.current[layer.id] ||= { acts: {}, scroll: 0, coins: [] });
+              if (actionFired(st.acts, 'rush', Number(ms.scroll_rush ?? 0))) st.rushT = nowSec + 1.4;
+              const rush = nowSec < (st.rushT ?? -1) ? 4 : 1;
+              st.scroll += dt * spd * 22 * rush;
+              const sc = st.scroll;
+
+              const ground = (wx: number) => {
+                  const n = vnoise1(wx * 0.035, 1) * 0.6 + vnoise1(wx * 0.011, 7) * 0.4;
+                  const amp = 0.12 + rough * 0.3;
+                  return Math.floor(BH * (0.62 - (n - 0.5) * amp * 2));
+              };
+              if (actionFired(st.acts, 'burst', Number(ms.coin_burst ?? 0))) {
+                  for (let i = 0; i < 26; i++) st.coins.push({ x: BW * 0.5 + (Math.random() - 0.5) * BW * 0.5, y: BH * 0.4, vx: (Math.random() - 0.5) * 26, vy: -30 - Math.random() * 30, t: nowSec });
               }
-              // back hills
-              ctx.fillStyle = hStr; ctx.globalAlpha = 0.45;
-              ctx.beginPath(); ctx.moveTo(0, targetH);
-              for (let x = 0; x <= targetW; x += 8) ctx.lineTo(x, terrainY(hS.scroll * 0.4 + x) + S * 0.09);
-              ctx.lineTo(targetW, targetH); ctx.closePath(); ctx.fill(); ctx.globalAlpha = 1;
-              // terrain
-              ctx.fillStyle = hTer;
-              ctx.beginPath(); ctx.moveTo(0, targetH);
-              for (let x = 0; x <= targetW; x += 6) ctx.lineTo(x, terrainY(hS.scroll + x));
-              ctx.lineTo(targetW, targetH); ctx.closePath(); ctx.fill();
-              // pipes + ? blocks
-              const period = 340 - hPipe * 180;
-              for (let k = -1; k < targetW / period + 2; k++) {
-                  const wx = k * period - (hS.scroll % period);
-                  const seed = Math.floor((hS.scroll + wx) / period);
-                  if (nz(seed * 3.3) < hPipe) {
-                      const gy = terrainY(hS.scroll + wx);
-                      const pw = S * 0.06, phh = S * (0.08 + 0.12 * nz(seed * 7.7));
-                      ctx.fillStyle = hStr; ctx.fillRect(wx - pw / 2, gy - phh, pw, phh);
-                      ctx.fillRect(wx - pw / 2 - 4, gy - phh, pw + 8, S * 0.03);
-                  }
-                  if (nz(seed * 5.1 + 2) < hPipe * 0.8) {
-                      const by = terrainY(hS.scroll + wx) - S * (0.24 + 0.08 * nz(seed));
-                      ctx.fillStyle = hCoin; ctx.fillRect(wx - S * 0.03, by, S * 0.06, S * 0.06);
-                      ctx.fillStyle = hStr; ctx.font = `${S * 0.045}px monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-                      ctx.fillText('?', wx, by + S * 0.032);
+              st.coins = st.coins.filter((c: any) => {
+                  c.vy += 60 * dt; c.x += c.vx * dt; c.y += c.vy * dt;
+                  return nowSec - c.t < 2.4 && c.y < BH;
+              });
+
+              pxRect(g, cSky, 0, 0, BW, BH);
+              if (showStars) {
+                  for (let i = 0; i < 46; i++) {
+                      const sx = Math.floor((vnoise1(i * 3.7, 21) * BW * 2 - sc * 0.06) % BW + BW) % BW;
+                      const sy = Math.floor(vnoise1(i * 5.3, 33) * BH * 0.45);
+                      if (Math.floor(nowSec * 2 + i) % 7 !== 0) pxRect(g, cCoin, sx, sy, 1, 1);
                   }
               }
-              // hopper
-              ctx.fillStyle = hCoin;
-              ctx.fillRect(hS.hopX - S * 0.022, hS.hopY - S * 0.03, S * 0.044, S * 0.03);
-              ctx.fillStyle = hTer; ctx.fillRect(hS.hopX - S * 0.022, hS.hopY - S * 0.03, S * 0.044, S * 0.008);
-              // coins
-              for (const c of hS.coins) {
-                  ctx.fillStyle = hCoin; ctx.globalAlpha = Math.max(0, 1 - c.t / 2.2);
-                  const sc = Math.abs(Math.cos(c.t * 12));
-                  ctx.fillRect(c.x - S * 0.014 * sc, c.y - S * 0.014, S * 0.028 * sc, S * 0.028);
+              // Far hills are the terrain colour dithered onto the sky — a mid-tone
+              // out of a four-colour palette without adding a fifth colour.
+              if (par > 0.02) {
+                  for (let x = 0; x < BW; x++) {
+                      const wx = (x + sc * 0.35) * 0.6;
+                      const n = vnoise1(wx * 0.02, 55);
+                      const gTop = ground(x + sc);
+                      const top = Math.min(gTop, Math.floor(BH * (0.58 - n * 0.16 * par)));
+                      // only the sky band: the near terrain is drawn solid over the rest
+                      pxDither(g, cTer, x, top, 1, Math.min(16, Math.max(0, gTop - top)), x % 2);
+                  }
               }
-              ctx.globalAlpha = 1;
+              for (let x = 0; x < BW; x++) {
+                  const wx = x + sc;
+                  const top = ground(wx);
+                  pxRect(g, cTer, x, top, 1, BH - top);
+                  pxRect(g, cCoin, x, top, 1, 1);
+                  pxDither(g, cStr, x, top + 2, 1, Math.min(5, BH - top - 2), Math.floor(wx));
+                  if (vnoise1(wx * 0.5, 71) > 0.86) pxRect(g, cStr, x, top + 7 + Math.floor(vnoise1(wx * 0.9, 5) * 12), 1, 2);
+              }
+              const tile = 8;
+              const first = Math.floor(sc / tile) - 1;
+              for (let i = 0; i < Math.ceil(BW / tile) + 3; i++) {
+                  const gi = first + i;
+                  const wx = gi * tile;
+                  const x = Math.floor(wx - sc);
+                  const h = vnoise1(gi * 1.7, 91);
+                  if (h < dens * 0.85) {
+                      const top = ground(wx + tile / 2);
+                      const ph = Math.floor(6 + h * 40);
+                      pxRect(g, cStr, x, top - ph, tile, ph);
+                      pxRect(g, cCoin, x, top - ph, tile, 1);
+                      pxRect(g, cSky, x + 2, top - ph + 2, tile - 4, ph - 2);
+                  } else if (h > 1 - dens * 0.35) {
+                      const by = Math.floor(BH * 0.24 + vnoise1(gi * 2.9, 13) * BH * 0.12);
+                      pxRect(g, cStr, x, by, tile, tile);
+                      pxRect(g, cSky, x + 1, by + 1, tile - 2, tile - 2);
+                      pxRect(g, cCoin, x + Math.floor(tile / 2) - 1, by + 2, 2, tile - 4);
+                  }
+              }
+              for (const c of st.coins) {
+                  const w = Math.abs(Math.cos((nowSec - c.t) * 9)) * 2 + 1;
+                  pxRect(g, cCoin, c.x - w / 2, c.y - 2, w, 4);
+              }
+              blitPixelBuf(ctx, buf, targetW, targetH);
               element = canvas;
           } else if (def.uuid === 'orbit-deflection-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
               const canvas = sphereCanvasRef.current[layer.id];
               if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
               const ctx = canvas.getContext('2d')!;
-              const S = Math.min(targetW, targetH);
-              const os = modifiedSettings;
-              const oBg = resolvedGenerativeColors['background'] || '#12131f';
-              const oBrk = resolvedGenerativeColors['bricks'] || '#7aa2f7';
-              const oBall = resolvedGenerativeColors['ball'] || '#f7768e';
-              const oPad = resolvedGenerativeColors['paddle'] || '#bb9af7';
-              const oRings = Math.max(1, Math.min(8, Math.round(os.brick_ring_count ?? 4)));
-              const oAccel = Math.max(1, Math.min(1.15, os.ball_speed_multiplier ?? 1.03));
-              const oCurve = Math.max(0, Math.min(1, os.paddle_curvature ?? 0.5));
-              const oVisc = Math.max(0, Math.min(1, os.trail_viscosity ?? 0.5));
-              const oMultA = Number(os.multi_ball ?? 0), oDetA = Number(os.brick_detonation ?? 0);
-              const dtO = Math.min(0.05, (deltaTime || 16.7) / 1000);
-              const cx = targetW / 2, cy = targetH / 2;
-              const segPerRing = 22;
-              let oS = orbitDeflectionStateRef.current[layer.id];
-              if (!oS || oS.rings !== oRings) {
-                  const bricks: number[] = [];
-                  for (let r = 0; r < oRings; r++) for (let s = 0; s < segPerRing; s++) bricks.push(1 + ((r + s) % 2));
-                  oS = { rings: oRings, bricks, balls: [{ x: cx, y: cy - S * 0.05, a: Math.random() * 6.28, sp: S * 0.42 }], pad: 0, lastMulti: oMultA, lastDet: oDetA };
-                  orbitDeflectionStateRef.current[layer.id] = oS;
+              const ms = modifiedSettings;
+              // deltaTime is milliseconds; these sims all run in seconds.
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const cBg = resolvedGenerativeColors['background'] || '#1a1b26';
+              const cBrk = resolvedGenerativeColors['bricks'] || '#f7768e';
+              const cBall = resolvedGenerativeColors['ball'] || '#7aa2f7';
+              const cPad = resolvedGenerativeColors['paddle'] || '#bb9af7';
+              const cTrail = resolvedGenerativeColors['trail'] || '#7dcfff';
+
+              const buf = getPixelBuf(orbitDeflectionStateRef.current, layer.id + '_buf', targetW, targetH, (ms.pixel_size ?? 3) * 2);
+              const g = buf.g, BW = buf.w, BH = buf.h;
+              const rings = Math.max(1, Math.min(6, Math.round(ms.brick_rings ?? 3)));
+              const bspd = Math.max(0.2, Math.min(3, ms.ball_speed ?? 1));
+              const span = Math.max(0.05, Math.min(0.5, ms.paddle_span ?? 0.18));
+              const trailAmt = Math.max(0, Math.min(1, ms.trail ?? 0.5));
+              const showPad = (ms.paddle ?? 1) > 0.5;
+
+              const cx = BW / 2, cy = BH / 2;
+              const rOuter = Math.min(BW, BH) * 0.44;
+              const SEG = 24;
+              const st = (orbitDeflectionStateRef.current[layer.id] ||= { acts: {}, balls: [], trail: [] });
+              if (st.rings !== rings) {
+                  st.rings = rings;
+                  st.brick = new Array(rings * SEG).fill(true);
+                  st.balls = [];
               }
-              oS.pad += dtO * 1.1;
-              const r0 = S * 0.14, dr = S * 0.045;
-              const arenaR = r0 + oRings * dr + S * 0.06;
-              if (oMultA > oS.lastMulti) {
-                  oS.lastMulti = oMultA;
-                  const add: any[] = [];
-                  for (const b of oS.balls.slice(0, 4)) for (const off of [-0.4, 0.4]) add.push({ x: b.x, y: b.y, a: b.a + off, sp: b.sp });
-                  oS.balls.push(...add);
-                  if (oS.balls.length > 14) oS.balls = oS.balls.slice(-14);
+              if (actionFired(st.acts, 'multi', Number(ms.multi_ball ?? 0))) st.balls.push(null);
+              if (actionFired(st.acts, 'boom', Number(ms.brick_detonation ?? 0))) {
+                  for (let i = 0; i < st.brick.length; i++) if (Math.random() < 0.4) st.brick[i] = false;
               }
-              if (oDetA > oS.lastDet) {
-                  oS.lastDet = oDetA;
-                  for (let i = 0; i < oS.bricks.length; i++) if (oS.bricks[i] === 1 && Math.random() < 0.6) oS.bricks[i] = 0;
-              }
-              ctx.fillStyle = oBg;
-              if (oVisc > 0.02) { ctx.globalAlpha = 1 - oVisc * 0.82; ctx.fillRect(0, 0, targetW, targetH); ctx.globalAlpha = 1; }
-              else ctx.fillRect(0, 0, targetW, targetH);
-              // bricks
-              for (let r = 0; r < oRings; r++) {
-                  const ir = r0 + r * dr, orr = ir + dr * 0.86;
-                  for (let s = 0; s < segPerRing; s++) {
-                      const hp = oS.bricks[r * segPerRing + s];
-                      if (hp <= 0) continue;
-                      const a0 = (s / segPerRing) * 6.283 + oS.pad * 0.05 * (r % 2 ? 1 : -1);
-                      const a1 = a0 + 6.283 / segPerRing * 0.9;
-                      ctx.beginPath();
-                      ctx.arc(cx, cy, ir, a0, a1); ctx.arc(cx, cy, orr, a1, a0, true); ctx.closePath();
-                      ctx.fillStyle = hp === 2 ? oBrk : oPad; ctx.globalAlpha = hp === 2 ? 0.95 : 0.6;
-                      ctx.fill();
+              if (!st.brick.some((b: boolean) => b)) st.brick.fill(true);
+              while (st.balls.length < 1) st.balls.push(null);
+              for (let i = 0; i < st.balls.length; i++) {
+                  if (!st.balls[i]) {
+                      const a = Math.random() * 6.283;
+                      st.balls[i] = { x: cx, y: cy, vx: Math.cos(a) * 30, vy: Math.sin(a) * 30 };
                   }
               }
-              ctx.globalAlpha = 1;
-              // paddles (2 orbiting arcs)
-              ctx.strokeStyle = oPad; ctx.lineWidth = S * 0.02; ctx.lineCap = 'round';
-              for (let pi = 0; pi < 2; pi++) {
-                  const pa = oS.pad + pi * Math.PI;
-                  ctx.beginPath(); ctx.arc(cx, cy, arenaR, pa - 0.28, pa + 0.28); ctx.stroke();
-              }
-              // balls
-              for (const b of oS.balls) {
-                  b.x += Math.cos(b.a) * b.sp * dtO;
-                  b.y += Math.sin(b.a) * b.sp * dtO;
-                  const dx = b.x - cx, dy = b.y - cy, dist = Math.hypot(dx, dy) || 1;
-                  // brick collision
-                  if (dist > r0 - dr && dist < r0 + oRings * dr) {
-                      const rr = Math.floor((dist - r0) / dr);
-                      let ang = Math.atan2(dy, dx) - oS.pad * 0.05 * (rr % 2 ? 1 : -1);
-                      ang = ((ang % 6.283) + 6.283) % 6.283;
-                      const ss = Math.floor(ang / (6.283 / segPerRing));
-                      const bi = rr * segPerRing + ss;
-                      if (rr >= 0 && rr < oRings && oS.bricks[bi] > 0) {
-                          oS.bricks[bi]--;
-                          b.a = Math.atan2(dy, dx) + Math.PI + (Math.random() - 0.5) * 0.3;
-                          b.sp = Math.min(S * 1.1, b.sp * oAccel);
-                      }
+              if (st.balls.length > 6) st.balls.length = 6;
+
+              const ringGap = rOuter * 0.62 / rings;
+              const rInner = rOuter * 0.30;
+              for (const b of st.balls) {
+                  b.x += b.vx * bspd * dt * 1.6;
+                  b.y += b.vy * bspd * dt * 1.6;
+                  const dx = b.x - cx, dy = b.y - cy;
+                  const d = Math.hypot(dx, dy) || 1;
+                  const ang = Math.atan2(dy, dx);
+                  const segI = ((Math.floor((ang + Math.PI) / (6.283 / SEG)) % SEG) + SEG) % SEG;
+                  const ri = Math.floor((d - rInner) / ringGap);
+                  if (ri >= 0 && ri < rings && st.brick[ri * SEG + segI]) {
+                      st.brick[ri * SEG + segI] = false;
+                      const nx = dx / d, ny = dy / d;
+                      const dot = b.vx * nx + b.vy * ny;
+                      b.vx -= 2 * dot * nx; b.vy -= 2 * dot * ny;
                   }
-                  // paddle / wall bounce
-                  if (dist > arenaR) {
-                      const nrm = Math.atan2(dy, dx);
-                      let hitPad = false;
-                      for (let pi = 0; pi < 2; pi++) { let da = ((nrm - (oS.pad + pi * Math.PI)) + Math.PI * 3) % (Math.PI * 2) - Math.PI; if (Math.abs(da) < 0.30) { hitPad = true; b.a = nrm + Math.PI + da * oCurve * 2.4; break; } }
-                      if (!hitPad) b.a = nrm + Math.PI + (Math.random() - 0.5) * 0.2;
-                      b.x = cx + Math.cos(nrm) * (arenaR - 2); b.y = cy + Math.sin(nrm) * (arenaR - 2);
-                      b.sp = Math.min(S * 1.1, b.sp * (hitPad ? oAccel : 1));
+                  if (d > rOuter) {
+                      const nx = dx / d, ny = dy / d;
+                      const dot = b.vx * nx + b.vy * ny;
+                      b.vx -= 2 * dot * nx; b.vy -= 2 * dot * ny;
+                      b.x = cx + nx * (rOuter - 1); b.y = cy + ny * (rOuter - 1);
                   }
-                  ctx.fillStyle = oBall; ctx.shadowColor = oBall; ctx.shadowBlur = S * 0.02;
-                  ctx.beginPath(); ctx.arc(b.x, b.y, S * 0.012, 0, 6.283); ctx.fill();
+                  if (trailAmt > 0.02) st.trail.push({ x: b.x, y: b.y, t: nowSec });
               }
-              ctx.shadowBlur = 0;
-              // regrow bricks slowly
-              if (Math.random() < 0.02) { const i = (Math.random() * oS.bricks.length) | 0; if (oS.bricks[i] === 0) oS.bricks[i] = 1; }
+              const trailLife = 0.15 + trailAmt * 1.1;
+              st.trail = st.trail.filter((p: any) => nowSec - p.t < trailLife);
+              if (st.trail.length > 900) st.trail.splice(0, st.trail.length - 900);
+
+              const lead = st.balls[0];
+              const padAng = Math.atan2(lead.y - cy, lead.x - cx);
+              st.pad = st.pad === undefined ? padAng : st.pad + Math.atan2(Math.sin(padAng - st.pad), Math.cos(padAng - st.pad)) * Math.min(1, dt * 4);
+
+              pxRect(g, cBg, 0, 0, BW, BH);
+              const TAU = Math.PI * 2;
+              const fillSeg = (r0: number, r1: number, a0: number, a1: number, col: string) => {
+                  const bx0 = Math.max(0, Math.floor(cx - r1)), bx1 = Math.min(BW - 1, Math.ceil(cx + r1));
+                  const by0 = Math.max(0, Math.floor(cy - r1)), by1 = Math.min(BH - 1, Math.ceil(cy + r1));
+                  g.fillStyle = col;
+                  for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) {
+                      const dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+                      const d = Math.sqrt(dx * dx + dy * dy);
+                      if (d < r0 || d >= r1) continue;
+                      let a = Math.atan2(dy, dx);
+                      while (a < a0) a += TAU;
+                      if (a > a1) continue;
+                      g.fillRect(x, y, 1, 1);
+                  }
+              };
+              const segSpan = TAU / SEG;
+              for (let ri = 0; ri < rings; ri++) {
+                  const r = rInner + ri * ringGap;
+                  for (let sI = 0; sI < SEG; sI++) {
+                      if (!st.brick[ri * SEG + sI]) continue;
+                      const a0 = -Math.PI + sI * segSpan;
+                      fillSeg(r + 1, r + ringGap - 1, a0 + 0.035, a0 + segSpan - 0.035, cBrk);
+                  }
+              }
+              for (const p of st.trail) {
+                  if (Math.random() < (nowSec - p.t) / trailLife) continue;
+                  pxRect(g, cTrail, p.x, p.y, 1, 1);
+              }
+              if (showPad) fillSeg(rOuter - 1, rOuter + 3, st.pad - span * Math.PI, st.pad + span * Math.PI, cPad);
+              for (const b of st.balls) pxRect(g, cBall, b.x - 1.5, b.y - 1.5, 3, 3);
+              blitPixelBuf(ctx, buf, targetW, targetH);
               element = canvas;
           } else if (def.uuid === 'centipede-garden-canvas-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
               const canvas = sphereCanvasRef.current[layer.id];
               if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
               const ctx = canvas.getContext('2d')!;
-              const S = Math.min(targetW, targetH);
-              const gs = modifiedSettings;
-              const gBg = resolvedGenerativeColors['background'] || '#071206';
-              const gWorm = resolvedGenerativeColors['worm'] || '#39ff88';
-              const gObs = resolvedGenerativeColors['obstacles'] || '#b15cff';
-              const gAcc = resolvedGenerativeColors['accent'] || '#e6ff5c';
-              const gSeg = Math.max(4, Math.min(40, Math.round(gs.segment_count ?? 16)));
-              const gObsD = Math.max(0, Math.min(1, gs.obstacle_density ?? 0.4));
-              const gTurn = Math.max(0, Math.min(1, gs.turn_radius ?? 0.3));
-              const gSpore = Math.max(0, gs.spore_growth_rate ?? 1);
-              const gSplitA = Number(gs.segment_split ?? 0), gBloomA = Number(gs.spore_bloom ?? 0);
-              const dtC = Math.min(0.05, (deltaTime || 16.7) / 1000);
-              const gc = 22, gr = Math.max(10, Math.round(22 * targetH / Math.max(1, targetW)));
-              const cellS = targetW / gc;
-              let cS = centipedeStateRef.current[layer.id];
-              const spawnWorm = (headC: number, dir: number) => {
-                  const seg: number[][] = [];
-                  for (let i = 0; i < gSeg; i++) seg.push([headC - dir * i * 0.0, -2 - i]);
-                  return { seg, dir, down: 0, cd: 0, speed: 3.2 + Math.random() * 1.5 };
-              };
-              if (!cS || cS.gc !== gc) {
-                  const obs: any[] = [];
-                  const nObs = Math.round(gc * gr * 0.16 * gObsD * 2.2);
-                  for (let i = 0; i < nObs; i++) obs.push({ c: (Math.random() * gc) | 0, r: 2 + ((Math.random() * (gr - 4)) | 0), hp: 3, sz: 1, variant: (Math.random() * 3) | 0, grow: 1 });
-                  cS = { gc, gr, worms: [spawnWorm((gc / 2) | 0, 1), spawnWorm(3, 1)], obs, bloomUntil: 0, lastSplit: gSplitA, lastBloom: gBloomA };
-                  centipedeStateRef.current[layer.id] = cS;
-              }
-              if (gBloomA > cS.lastBloom) { cS.bloomUntil = nowSec + 3; cS.lastBloom = gBloomA; }
-              if (gSplitA > cS.lastSplit) {
-                  cS.lastSplit = gSplitA;
-                  const w = cS.worms[(Math.random() * cS.worms.length) | 0];
-                  if (w && w.seg.length > 6) {
-                      const half = w.seg.splice(w.seg.length >> 1);
-                      cS.worms.push({ seg: half.reverse(), dir: -w.dir, down: 0, cd: 0, speed: w.speed });
-                  }
-              }
-              const bloom = nowSec < cS.bloomUntil;
-              const obsAt = (c: number, r: number) => cS.obs.find((o: any) => o.hp > 0 && Math.round(o.c) === c && Math.round(o.r) === r);
-              for (const w of cS.worms) {
-                  w.cd -= dtC * w.speed * (bloom ? 0.7 : 1);
-                  if (w.cd <= 0) {
-                      w.cd = 1;
-                      const head = w.seg[0];
-                      let nc = head[0] + w.dir, nr = head[1];
-                      const blocked = nc < 0 || nc >= gc || obsAt(Math.round(nc), Math.round(nr));
-                      if (blocked) { w.dir = -w.dir; nr = head[1] + 1; nc = head[0] + w.dir; if (nc < 0) nc = 0; if (nc >= gc) nc = gc - 1; if (obsAt(Math.round(nc), Math.round(nr))) { const o = obsAt(Math.round(nc), Math.round(nr)); if (o) o.hp--; } }
-                      if (nr > gr + 2) { nr = -2; nc = (Math.random() * gc) | 0; }
-                      w.seg.unshift([nc, nr]);
-                      w.seg.pop();
-                  }
-              }
-              // obstacle regrow / respawn
-              cS.obs = cS.obs.filter((o: any) => o.hp > 0 || (o.dead = (o.dead || 0) + dtC) < 8 / Math.max(0.2, gSpore));
-              for (const o of cS.obs) {
-                  if (o.hp <= 0 && (o.dead || 0) > 3 / Math.max(0.2, gSpore)) { o.hp = 3; o.variant = (Math.random() * 3) | 0; o.dead = 0; }
-                  const target = (bloom ? 2 : 1);
-                  o.grow += (target - o.grow) * Math.min(1, dtC * 4);
-              }
-              const wantObs = Math.round(gc * gr * 0.14 * gObsD * 2.4);
-              if (cS.obs.filter((o: any) => o.hp > 0).length < wantObs && Math.random() < gSpore * dtC * 3) {
-                  cS.obs.push({ c: (Math.random() * gc) | 0, r: 2 + ((Math.random() * (gr - 4)) | 0), hp: 3, sz: 1, variant: (Math.random() * 3) | 0, grow: 0.2 });
-              }
+              const ms = modifiedSettings;
+              // deltaTime is milliseconds; these sims all run in seconds.
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const cBg = resolvedGenerativeColors['background'] || '#0a0a12';
+              const cWorm = resolvedGenerativeColors['worm'] || '#8b6cf0';
+              const cMush = resolvedGenerativeColors['obstacles'] || '#f0a0d8';
+              const cAcc = resolvedGenerativeColors['accent'] || '#ffffff';
 
-              ctx.fillStyle = gBg; ctx.fillRect(0, 0, targetW, targetH);
-              // obstacles
-              for (const o of cS.obs) {
-                  if (o.hp <= 0) continue;
-                  const x = (o.c + 0.5) * cellS, y = (o.r + 0.5) * cellS, rad = cellS * 0.42 * o.grow;
-                  ctx.fillStyle = o.variant === 0 ? gObs : (o.variant === 1 ? gAcc : gWorm);
-                  ctx.globalAlpha = 0.35 + 0.2 * o.hp;
-                  ctx.beginPath(); ctx.arc(x, y, rad, 0, 6.283); ctx.fill();
-                  ctx.globalAlpha = 1;
-                  ctx.fillStyle = gBg;
-                  ctx.beginPath(); ctx.arc(x, y, rad * 0.45, 0, 6.283); ctx.fill();
+              const buf = getPixelBuf(centipedeStateRef.current, layer.id + '_buf', targetW, targetH, (ms.pixel_size ?? 3) * 2);
+              const g = buf.g, BW = buf.w, BH = buf.h;
+              const segN = Math.max(4, Math.min(40, Math.round(ms.segment_count ?? 16)));
+              const mDens = Math.max(0, Math.min(1, ms.mushroom_density ?? 0.35));
+              const crawl = Math.max(0.2, Math.min(3, ms.crawl_speed ?? 1));
+              const showBlaster = (ms.blaster ?? 1) > 0.5;
+
+              const CELL = 6;
+              const cols = Math.max(8, Math.floor(BW / CELL));
+              const rows = Math.max(8, Math.floor(BH / CELL));
+              const ox = Math.floor((BW - cols * CELL) / 2), oy = Math.floor((BH - rows * CELL) / 2);
+              const MUSH = [
+                  ['..XX..', '.XXXX.', 'XXXXXX', '..XX..', '..XX..', '.X..X.'],
+                  ['..XX..', '.XXXX.', 'XX.XXX', '..XX..', '..XX..', '.X..X.'],
+                  ['..XX..', '.X.XX.', 'XX..XX', '..XX..', '..XX..', '.X..X.'],
+                  ['..X...', '.X.X..', 'X...X.', '..XX..', '..XX..', '.X..X.'],
+              ];
+              // 5px sprites inside a 6px cell, so adjacent segments keep a 1px gap
+              // and the body reads as a chain rather than a solid bar.
+              const HEAD = ['.XXX.', 'XXXXX', 'X.X.X', 'XXXXX', '.X.X.'];
+              const BODY = ['.XXX.', 'XXXXX', 'XXXXX', 'XXXXX', '.XXX.'];
+              const BLAST = ['..XX..', '..XX..', '.XXXX.', 'XXXXXX', 'XX..XX'];
+
+              const st = (centipedeStateRef.current[layer.id] ||= { acts: {}, shots: [], spores: [] });
+              // Tolerance on density: it arrives eased, so an exact compare would rebuild
+              // the field (and wipe the crawler) on every single frame.
+              if (st.cols !== cols || st.rows !== rows || Math.abs((st.dens ?? -1) - mDens) > 0.02) {
+                  const gridChanged = st.cols !== cols || st.rows !== rows;
+                  st.cols = cols; st.rows = rows; st.dens = mDens;
+                  st.mush = new Array(cols * rows).fill(0);
+                  for (let r = 2; r < rows - 3; r++) for (let c = 0; c < cols; c++) {
+                      if (Math.random() < mDens * 0.35) st.mush[r * cols + c] = 1 + Math.floor(Math.random() * 2);
+                  }
+                  if (gridChanged) st.worms = null;
               }
-              // worms
-              for (const w of cS.worms) {
-                  for (let i = w.seg.length - 1; i >= 0; i--) {
-                      const s = w.seg[i];
-                      const x = (s[0] + 0.5) * cellS, y = (s[1] + 0.5) * cellS;
-                      ctx.fillStyle = i === 0 ? gAcc : gWorm;
-                      ctx.shadowColor = gWorm; ctx.shadowBlur = i === 0 ? S * 0.02 : S * 0.008;
-                      ctx.beginPath(); ctx.arc(x, y, cellS * (i === 0 ? 0.5 : 0.42), 0, 6.283); ctx.fill();
+              if (!st.worms) st.worms = [{ head: 0, row: 0, dir: 1, len: segN, t: 0, trail: [] as number[][] }];
+              for (const w of st.worms) w.len = segN;
+              if (actionFired(st.acts, 'split', Number(ms.segment_split ?? 0)) && st.worms.length < 5) {
+                  const w = st.worms[Math.floor(Math.random() * st.worms.length)];
+                  st.worms.push({ head: w.head, row: Math.max(0, w.row - 2), dir: -w.dir, len: Math.max(3, Math.floor(w.len / 2)), t: 0, trail: [] });
+                  w.len = Math.max(3, Math.floor(w.len / 2));
+              }
+              if (actionFired(st.acts, 'bloom', Number(ms.spore_bloom ?? 0))) {
+                  for (let i = 0; i < 40; i++) {
+                      const c = Math.floor(Math.random() * cols), r = 2 + Math.floor(Math.random() * (rows - 5));
+                      if (!st.mush[r * cols + c]) st.mush[r * cols + c] = 1;
+                      st.spores.push({ x: c * CELL + ox, y: r * CELL + oy, t: nowSec });
                   }
               }
-              ctx.shadowBlur = 0;
+              st.spores = st.spores.filter((s: any) => nowSec - s.t < 1.2);
+
+              const solid = (c: number, r: number) => c >= 0 && c < cols && r >= 0 && r < rows && st.mush[r * cols + c] > 0;
+              for (const w of st.worms) {
+                  w.t += dt * crawl * 9;
+                  while (w.t >= 1) {
+                      w.t -= 1;
+                      w.trail.unshift([w.head, w.row]);
+                      if (w.trail.length > 42) w.trail.length = 42;
+                      const nx = w.head + w.dir;
+                      if (nx < 0 || nx >= cols || solid(nx, w.row)) {
+                          w.dir *= -1;
+                          w.row += 1;
+                          if (w.row >= rows - 2) { w.row = 0; }
+                      } else w.head = nx;
+                  }
+              }
+              if (showBlaster) {
+                  st.bx = st.bx ?? cols / 2;
+                  const target = st.worms[0].head;
+                  st.bx += Math.max(-1, Math.min(1, target - st.bx)) * dt * 14;
+                  st.shotAcc = (st.shotAcc ?? 0) + dt * 3.2;
+                  while (st.shotAcc >= 1) { st.shotAcc -= 1; st.shots.push({ c: Math.round(st.bx), y: rows - 3 }); }
+              }
+              st.shots = st.shots.filter((s: any) => {
+                  s.y -= dt * 34;
+                  const r = Math.round(s.y);
+                  if (r < 0) return false;
+                  if (solid(s.c, r)) { st.mush[r * cols + s.c] = Math.min(4, st.mush[r * cols + s.c] + 1); if (st.mush[r * cols + s.c] >= 4) st.mush[r * cols + s.c] = 0; return false; }
+                  return true;
+              });
+
+              pxRect(g, cBg, 0, 0, BW, BH);
+              for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+                  const v = st.mush[r * cols + c];
+                  if (!v) continue;
+                  drawSprite(g, MUSH[Math.min(3, v - 1)], ox + c * CELL, oy + r * CELL, { X: cMush });
+              }
+              for (const w of st.worms) {
+                  for (let i = Math.min(w.len, w.trail.length) - 1; i >= 1; i--) {
+                      const [c, r] = w.trail[i];
+                      drawSprite(g, BODY, ox + c * CELL, oy + r * CELL, { X: cWorm });
+                  }
+                  drawSprite(g, HEAD, ox + w.head * CELL, oy + w.row * CELL, { X: cAcc }, w.dir < 0);
+              }
+              for (const s of st.shots) pxRect(g, cAcc, ox + s.c * CELL + 2, oy + s.y * CELL, 2, 3);
+              for (const s of st.spores) {
+                  const k = (nowSec - s.t) / 1.2;
+                  pxRect(g, cAcc, s.x + 2 + Math.sin(k * 12) * 2, s.y + 2 - k * 8, 1, 1);
+              }
+              if (showBlaster) drawSprite(g, BLAST, ox + Math.round(st.bx) * CELL, oy + (rows - 3) * CELL, { X: cAcc });
+              blitPixelBuf(ctx, buf, targetW, targetH);
               element = canvas;
           } else if (def.uuid === '3d-polygon-neon-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
@@ -10334,7 +10540,7 @@ export default function App() {
                           st.spanTarget = Math.min(MAX_SPAN_MS, st.spanTarget * 1.5);
                       }
                   }
-                  st.span += (st.spanTarget - st.span) * Math.min(1, deltaTime * 4);   // eased zoom-out
+                  st.span += (st.spanTarget - st.span) * Math.min(1, (deltaTime / 1000) * 4);   // eased zoom-out
                   const spanMs = Math.max(1000, st.span);
                   const tStart = Math.max(st.viewStart, tEnd - spanMs);
 
@@ -16247,10 +16453,10 @@ return (
                                    if (uuid === 'vein-labyrinth-canvas-1') return '🌿';
                                    if (uuid === 'voronoi-cells-canvas-1') return '🕸️';
                                    if (uuid === 'contour-lines-canvas-1') return '🗺️';
-                                   if (uuid === 'neon-labyrinth-canvas-1') return '👾';
-                                   if (uuid === 'pixel-swarm-canvas-1') return '🛸';
+                                   if (uuid === 'neon-labyrinth-canvas-1') return '🕹️';
+                                   if (uuid === 'pixel-swarm-canvas-1') return '👾';
                                    if (uuid === 'tetromino-cascade-canvas-1') return '🧱';
-                                   if (uuid === 'hillscape-canvas-1') return '🍄';
+                                   if (uuid === 'hillscape-canvas-1') return '⛰️';
                                    if (uuid === 'orbit-deflection-canvas-1') return '🎯';
                                    if (uuid === 'centipede-garden-canvas-1') return '🐛';
                                    if (uuid === 'orb-cluster-canvas-1') return '🍇';

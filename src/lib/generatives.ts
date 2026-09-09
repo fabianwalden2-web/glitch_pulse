@@ -1383,18 +1383,20 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "cyberpunk_neon",
   "parameters": [
-    { "name": "corridor_density", "min": 0.0, "max": 1.0, "default": 0.55, "type": "number" },
-    { "name": "ghost_aggression", "min": 0.0, "max": 1.0, "default": 0.5,  "type": "number" },
-    { "name": "glow_decay",       "min": 0.0, "max": 1.0, "default": 0.6,  "type": "number" },
-    { "name": "wrap_frequency",   "min": 0.0, "max": 6.0, "default": 2.0,  "type": "number" },
-    { "name": "power_surge",  "default": 0, "type": "action" },
-    { "name": "grid_reseed",  "default": 0, "type": "action" }
+    { "name": "maze_scale", "min": 6, "max": 24, "default": 13, "type": "number" },
+    { "name": "ghosts", "min": 0, "max": 6, "default": 4, "type": "number" },
+    { "name": "speed", "min": 0.2, "max": 3, "default": 1, "type": "number" },
+    { "name": "pixel_size", "min": 1, "max": 8, "default": 3, "type": "number" },
+    { "name": "pellets", "default": 1, "type": "boolean" },
+    { "name": "power_surge", "default": 0, "type": "action" },
+    { "name": "grid_reseed", "default": 0, "type": "action" }
   ],
   "elements": [
-    { "id": "background", "name": "Void", "defaultColor": "#05060f" },
-    { "id": "walls", "name": "Maze Walls", "defaultColor": "#2b1a63" },
-    { "id": "pellets", "name": "Pellets", "defaultColor": "#ffe600" },
-    { "id": "ghosts", "name": "Entities & Trail", "defaultColor": "#ff2e88" }
+    { "id": "background", "name": "Void", "defaultColor": "#0a0a12" },
+    { "id": "walls", "name": "Maze Walls", "defaultColor": "#ff007f" },
+    { "id": "pellets", "name": "Pellets", "defaultColor": "#00f0ff" },
+    { "id": "ghosts", "name": "Ghosts", "defaultColor": "#ffe600" },
+    { "id": "player", "name": "Runner", "defaultColor": "#7000ff" }
   ],
   "uuid": "neon-labyrinth-canvas-1"
 }*/`,
@@ -1408,18 +1410,20 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "acid_matrix",
   "parameters": [
-    { "name": "march_speed",     "min": 0.1, "max": 4.0, "default": 1.0, "type": "number" },
-    { "name": "row_spacing",     "min": 0.4, "max": 2.0, "default": 1.0, "type": "number" },
-    { "name": "barrage_rate",    "min": 0.0, "max": 3.0, "default": 1.0, "type": "number" },
-    { "name": "jitter_amplitude","min": 0.0, "max": 1.0, "default": 0.15,"type": "number" },
-    { "name": "step_down",     "default": 0, "type": "action" },
-    { "name": "scatter_strike","default": 0, "type": "action" }
+    { "name": "march_speed", "min": 0.1, "max": 4, "default": 1, "type": "number" },
+    { "name": "formation_cols", "min": 4, "max": 14, "default": 9, "type": "number" },
+    { "name": "formation_rows", "min": 2, "max": 7, "default": 5, "type": "number" },
+    { "name": "barrage_rate", "min": 0, "max": 3, "default": 1, "type": "number" },
+    { "name": "pixel_size", "min": 1, "max": 8, "default": 3, "type": "number" },
+    { "name": "bunkers", "default": 1, "type": "boolean" },
+    { "name": "step_down", "default": 0, "type": "action" },
+    { "name": "scatter_strike", "default": 0, "type": "action" }
   ],
   "elements": [
-    { "id": "background", "name": "Background", "defaultColor": "#04120a" },
-    { "id": "invaders", "name": "Invaders", "defaultColor": "#39ff88" },
-    { "id": "bullets", "name": "Barrage", "defaultColor": "#eaffea" },
-    { "id": "accent", "name": "Accent", "defaultColor": "#00b34a" }
+    { "id": "background", "name": "Background", "defaultColor": "#0d1117" },
+    { "id": "invaders", "name": "Invaders", "defaultColor": "#39d353" },
+    { "id": "bullets", "name": "Barrage", "defaultColor": "#00ff66" },
+    { "id": "accent", "name": "Cannon & Bunkers", "defaultColor": "#2ea043" }
   ],
   "uuid": "pixel-swarm-canvas-1"
 }*/`,
@@ -1429,22 +1433,24 @@ void main(void) {
     header: `/*{
   "description": "Tetromino Cascade",
   "category": "Retro",
-  "color": "black",
+  "color": "white",
   "movement": true,
   "defaultPaletteId": "bauhaus_primary",
   "parameters": [
-    { "name": "fall_velocity",     "min": 0.2, "max": 6.0, "default": 1.6, "type": "number" },
-    { "name": "grid_chaos",        "min": 0.0, "max": 1.0, "default": 0.15,"type": "number" },
-    { "name": "settle_bounciness", "min": 0.0, "max": 1.0, "default": 0.3, "type": "number" },
-    { "name": "line_density",      "min": 0.0, "max": 0.9, "default": 0.25,"type": "number" },
-    { "name": "line_clear",     "default": 0, "type": "action" },
+    { "name": "fall_velocity", "min": 0.2, "max": 6, "default": 1.6, "type": "number" },
+    { "name": "well_width", "min": 6, "max": 20, "default": 12, "type": "number" },
+    { "name": "line_density", "min": 0, "max": 0.9, "default": 0.25, "type": "number" },
+    { "name": "pixel_size", "min": 1, "max": 8, "default": 3, "type": "number" },
+    { "name": "bevel", "default": 1, "type": "boolean" },
+    { "name": "line_clear", "default": 0, "type": "action" },
     { "name": "gravity_invert", "default": 0, "type": "action" }
   ],
   "elements": [
-    { "id": "background", "name": "Chamber", "defaultColor": "#0c0c10" },
+    { "id": "background", "name": "Chamber", "defaultColor": "#ffffff" },
     { "id": "blocks", "name": "Blocks", "defaultColor": "#e63946" },
     { "id": "grid", "name": "Well Grid", "defaultColor": "#1d3557" },
-    { "id": "flash", "name": "Clear Flash", "defaultColor": "#f1faee" }
+    { "id": "flash", "name": "Clear Flash", "defaultColor": "#f1faee" },
+    { "id": "accent", "name": "Accent Blocks", "defaultColor": "#457b9d" }
   ],
   "uuid": "tetromino-cascade-canvas-1"
 }*/`,
@@ -1456,20 +1462,22 @@ void main(void) {
   "category": "Retro",
   "color": "black",
   "movement": true,
-  "defaultPaletteId": "retro_amber",
+  "defaultPaletteId": "ember_glow",
   "parameters": [
-    { "name": "terrain_roughness", "min": 0.0, "max": 1.0, "default": 0.5, "type": "number" },
-    { "name": "jump_gravity",      "min": 0.2, "max": 2.5, "default": 1.0, "type": "number" },
-    { "name": "pipe_density",      "min": 0.0, "max": 1.0, "default": 0.4, "type": "number" },
-    { "name": "cloud_parallax",    "min": 0.0, "max": 1.0, "default": 0.5, "type": "number" },
-    { "name": "coin_burst",   "default": 0, "type": "action" },
-    { "name": "scroll_rush",  "default": 0, "type": "action" }
+    { "name": "scroll_speed", "min": 0, "max": 4, "default": 1, "type": "number" },
+    { "name": "terrain_roughness", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "structure_density", "min": 0, "max": 1, "default": 0.4, "type": "number" },
+    { "name": "parallax", "min": 0, "max": 1, "default": 0.6, "type": "number" },
+    { "name": "pixel_size", "min": 1, "max": 8, "default": 3, "type": "number" },
+    { "name": "stars", "default": 1, "type": "boolean" },
+    { "name": "coin_burst", "default": 0, "type": "action" },
+    { "name": "scroll_rush", "default": 0, "type": "action" }
   ],
   "elements": [
-    { "id": "background", "name": "Sky", "defaultColor": "#1a2a4a" },
-    { "id": "terrain", "name": "Terrain", "defaultColor": "#3aa856" },
-    { "id": "structures", "name": "Pipes & Blocks", "defaultColor": "#2e7d32" },
-    { "id": "coins", "name": "Coins & Sprites", "defaultColor": "#ffd23f" }
+    { "id": "background", "name": "Sky", "defaultColor": "#1b2140" },
+    { "id": "terrain", "name": "Terrain", "defaultColor": "#ffcf5c" },
+    { "id": "structures", "name": "Pipes & Blocks", "defaultColor": "#ff7a2e" },
+    { "id": "coins", "name": "Coins & Stars", "defaultColor": "#ffffff" }
   ],
   "uuid": "hillscape-canvas-1"
 }*/`,
@@ -1483,18 +1491,21 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "tokyo_synth",
   "parameters": [
-    { "name": "brick_ring_count",     "min": 1.0, "max": 8.0,  "default": 4.0, "type": "number" },
-    { "name": "ball_speed_multiplier","min": 1.0, "max": 1.15, "default": 1.03,"type": "number" },
-    { "name": "paddle_curvature",     "min": 0.0, "max": 1.0,  "default": 0.5, "type": "number" },
-    { "name": "trail_viscosity",      "min": 0.0, "max": 1.0,  "default": 0.5, "type": "number" },
-    { "name": "multi_ball",       "default": 0, "type": "action" },
+    { "name": "brick_rings", "min": 1, "max": 6, "default": 3, "type": "number" },
+    { "name": "ball_speed", "min": 0.2, "max": 3, "default": 1, "type": "number" },
+    { "name": "paddle_span", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "trail", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "pixel_size", "min": 1, "max": 8, "default": 3, "type": "number" },
+    { "name": "paddle", "default": 1, "type": "boolean" },
+    { "name": "multi_ball", "default": 0, "type": "action" },
     { "name": "brick_detonation", "default": 0, "type": "action" }
   ],
   "elements": [
-    { "id": "background", "name": "Arena", "defaultColor": "#12131f" },
-    { "id": "bricks", "name": "Brick Rings", "defaultColor": "#7aa2f7" },
-    { "id": "ball", "name": "Projectiles", "defaultColor": "#f7768e" },
-    { "id": "paddle", "name": "Paddles", "defaultColor": "#bb9af7" }
+    { "id": "background", "name": "Arena", "defaultColor": "#1a1b26" },
+    { "id": "bricks", "name": "Brick Rings", "defaultColor": "#f7768e" },
+    { "id": "ball", "name": "Projectiles", "defaultColor": "#7aa2f7" },
+    { "id": "paddle", "name": "Paddle", "defaultColor": "#bb9af7" },
+    { "id": "trail", "name": "Trail", "defaultColor": "#7dcfff" }
   ],
   "uuid": "orbit-deflection-canvas-1"
 }*/`,
@@ -1506,20 +1517,21 @@ void main(void) {
   "category": "Retro",
   "color": "black",
   "movement": true,
-  "defaultPaletteId": "acid_matrix",
+  "defaultPaletteId": "aurora_glow",
   "parameters": [
-    { "name": "segment_count",    "min": 4.0,  "max": 40.0, "default": 16.0, "type": "number" },
-    { "name": "obstacle_density", "min": 0.0,  "max": 1.0,  "default": 0.4,  "type": "number" },
-    { "name": "turn_radius",      "min": 0.0,  "max": 1.0,  "default": 0.3,  "type": "number" },
-    { "name": "spore_growth_rate","min": 0.0,  "max": 3.0,  "default": 1.0,  "type": "number" },
+    { "name": "segment_count", "min": 4, "max": 40, "default": 16, "type": "number" },
+    { "name": "mushroom_density", "min": 0, "max": 1, "default": 0.35, "type": "number" },
+    { "name": "crawl_speed", "min": 0.2, "max": 3, "default": 1, "type": "number" },
+    { "name": "pixel_size", "min": 1, "max": 8, "default": 3, "type": "number" },
+    { "name": "blaster", "default": 1, "type": "boolean" },
     { "name": "segment_split", "default": 0, "type": "action" },
-    { "name": "spore_bloom",   "default": 0, "type": "action" }
+    { "name": "spore_bloom", "default": 0, "type": "action" }
   ],
   "elements": [
-    { "id": "background", "name": "Field", "defaultColor": "#071206" },
-    { "id": "worm", "name": "Crawlers", "defaultColor": "#39ff88" },
-    { "id": "obstacles", "name": "Obstacle Nodes", "defaultColor": "#b15cff" },
-    { "id": "accent", "name": "Spores", "defaultColor": "#e6ff5c" }
+    { "id": "background", "name": "Field", "defaultColor": "#0a0a12" },
+    { "id": "worm", "name": "Crawler", "defaultColor": "#8b6cf0" },
+    { "id": "obstacles", "name": "Mushrooms", "defaultColor": "#f0a0d8" },
+    { "id": "accent", "name": "Spores & Blaster", "defaultColor": "#ffffff" }
   ],
   "uuid": "centipede-garden-canvas-1"
 }*/`,
