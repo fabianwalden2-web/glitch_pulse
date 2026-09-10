@@ -50,6 +50,8 @@ import {
   Check,
   Copy,
   Sparkles,
+  Dices,
+  Eraser,
   Mic,
   Webcam,
   Move3d,
@@ -451,6 +453,46 @@ const DEFAULT_NOTE_SETTINGS: NoteSettings = {
 const DEFAULT_TRIGGER_TYPE: 'momentary' | 'toggle' = 'momentary';
 
 
+
+/** One-click listening bands. These are frequency windows on whatever is playing,
+ *  which is why "kick / snare / hats" works on a file, the mic or tab audio with no
+ *  separation step. Real separated stems slot in later as extra stemIds; the ranges
+ *  below stay exactly the same, they just get pointed at a narrower source. */
+export interface AudioBand {
+  id: string;
+  name: string;
+  range: [number, number];
+  engine: 'level' | 'transient';
+  sensitivity?: number;
+  decayMs?: number;
+  threshold?: number;
+  mode?: 'fast' | 'smooth';
+  hint: string;
+}
+
+export const AUDIO_BANDS: AudioBand[] = [
+  { id: 'kick',   name: 'Kick',   range: [40, 110],     engine: 'transient', sensitivity: 0.78, decayMs: 150, hint: 'Low-end thump' },
+  { id: 'bass',   name: 'Bass',   range: [60, 250],     engine: 'level',     threshold: 0.16, mode: 'smooth', hint: 'Sustained low end' },
+  { id: 'snare',  name: 'Snare',  range: [180, 400],    engine: 'transient', sensitivity: 0.70, decayMs: 200, hint: 'Snare body' },
+  { id: 'clap',   name: 'Clap',   range: [1500, 4000],  engine: 'transient', sensitivity: 0.66, decayMs: 180, hint: 'Snare crack and claps' },
+  { id: 'hats',   name: 'Hats',   range: [7000, 14000], engine: 'transient', sensitivity: 0.62, decayMs: 110, hint: 'Hi-hats and cymbals' },
+  { id: 'melody', name: 'Melody', range: [400, 4000],   engine: 'level',     threshold: 0.18, mode: 'smooth', hint: 'Vocals and leads' },
+  { id: 'full',   name: 'Full',   range: [20, 20000],   engine: 'level',     threshold: 0.12, mode: 'fast',   hint: 'The whole mix' },
+];
+
+/** A band carries its own detector settings, so picking one is enough to react well. */
+export const audioBandPatch = (b: AudioBand): Partial<AudioMapping> => ({
+  enabled: true,
+  freqRange: b.range,
+  engine: b.engine,
+  sensitivity: b.sensitivity ?? 0.7,
+  decayMs: b.decayMs ?? 200,
+  threshold: b.threshold ?? 0.12,
+  mode: b.mode ?? 'fast',
+});
+
+export const matchAudioBand = (r?: [number, number]): AudioBand | undefined =>
+  r ? AUDIO_BANDS.find(b => Math.abs(b.range[0] - r[0]) < 12 && Math.abs(b.range[1] - r[1]) < 80) : undefined;
 
 export const DEFAULT_AUDIO_MAPPING: AudioMapping = {
   enabled: false,
@@ -1644,6 +1686,81 @@ function MultiSelect({ values, options, onToggle, onSetAll, onSetNone, emptyLabe
         document.body
       )}
     </>
+  );
+}
+
+type TriggerKind = 'Audio' | 'MIDI' | 'Rhythm';
+
+/** What is driving this mapping, and from where — the one line the list shows. */
+function describeTrigger(m: any): { kind: TriggerKind; detail: string } {
+  if (m?.audioMapping?.enabled) {
+    const band = matchAudioBand(m.audioMapping.freqRange);
+    const r = m.audioMapping.freqRange || [20, 20000];
+    const where = band ? band.name : `${Math.round(r[0])}–${Math.round(r[1])} Hz`;
+    const how = (m.audioMapping.engine || 'level') === 'transient' ? 'hits' : 'level';
+    return { kind: 'Audio', detail: `${where} · ${how}` };
+  }
+  if (m?.rhythmMapping?.enabled) {
+    return { kind: 'Rhythm', detail: `${m.rhythmMapping.pattern || 'pattern'} · ${m.rhythmMapping.bpm || 120} bpm` };
+  }
+  const bits: string[] = [];
+  if (m?.devices?.length) bits.push(m.devices.map((d: MidiDeviceRef) => d.name).join(', '));
+  const ch = m?.channels;
+  if (ch && ch.length > 0 && ch.length < 16) bits.push(`Ch ${ch.map((c: number) => c + 1).join(',')}`);
+  if ((m?.noteStart ?? 0) > 0 || (m?.noteEnd ?? 127) < 127) bits.push(`notes ${m.noteStart}–${m.noteEnd}`);
+  return { kind: 'MIDI', detail: bits.join(' · ') || 'any note' };
+}
+
+/** Every trigger currently live on a layer, flattened for the summary list. */
+function collectLayerTriggers(layer: any): { id: string; label: string; kind: TriggerKind; detail: string }[] {
+  if (!layer) return [];
+  const out: { id: string; label: string; kind: TriggerKind; detail: string }[] = [];
+  const push = (id: string, label: string, m: any) => { const d = describeTrigger(m); out.push({ id, label, kind: d.kind, detail: d.detail }); };
+
+  const layerLive = layer.midiMode || layer.audioMapping?.enabled || layer.rhythmMapping?.enabled;
+  if (layerLive) {
+    const lm = { ...(layer.triggerMapping || {}), audioMapping: layer.audioMapping, rhythmMapping: layer.rhythmMapping };
+    push('__layer__', isMusicLayer(layer) ? 'Note source' : 'Layer visibility', lm);
+  }
+  for (const m of (layer.generativeMappings || [])) {
+    if (!layer.generativeTriggerActive?.[m.id]) continue;
+    push(`generative-${m.id}`, m.id === 'palette_cycle' ? 'Palette cycle' : String(m.id), m);
+  }
+  for (const m of (layer.threeDMappings || [])) {
+    if (!layer.threeDTriggerActive?.[m.id]) continue;
+    push(`3d-${m.id}`, `3D · ${m.id}`, m);
+  }
+  for (const m of (layer.mappings || [])) {
+    if (m.active || m.manualActive) push(m.id, m.name || m.id, m);
+    for (const pname of Object.keys(m.triggerActive || {})) {
+      if (m.triggerActive[pname]) push(`effect-${m.id}-${pname}`, `${m.name || m.id} · ${pname}`, m);
+    }
+  }
+  for (const pname of Object.keys(layer.transformTriggerActive || {})) {
+    if (layer.transformTriggerActive[pname]) push(`transform-${pname}`, `Transform · ${pname}`, layer.triggerMapping || {});
+  }
+  return out;
+}
+
+function BandPresetRow({ value, onPick }: { value?: [number, number]; onPick: (b: AudioBand) => void }) {
+  const cur = matchAudioBand(value);
+  return (
+    <div className="space-y-1">
+      <label className="text-[8px] uppercase tracking-widest opacity-40 block">Listen to</label>
+      <div className="flex flex-wrap gap-1">
+        {AUDIO_BANDS.map(b => (
+          <button
+            key={b.id}
+            type="button"
+            onClick={() => onPick(b)}
+            title={b.hint}
+            className={`px-2 py-1 rounded text-[9px] uppercase tracking-widest border transition-colors ${cur?.id === b.id ? 'bg-red-600 border-red-500 text-white' : 'bg-black/40 border-white/10 text-white/50 hover:border-white/30'}`}
+          >
+            {b.name}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -3164,6 +3281,83 @@ export default function App() {
   };
 
   // --- MIDI Logic ---
+
+  /** Wire three random parameters of this layer to Kick / Snare / Hats. The trigger
+   *  amount matters as much as the mapping: a connected knob with amount 0 looks
+   *  completely dead, which is the usual reason audio reactivity "does not work". */
+  const autoAssignAudio = useCallback((layerId: string) => {
+    const layer = layersRef.current.find(l => l.id === layerId);
+    if (!layer) return;
+    const def = generativesRef.current.find(g => g.uuid === layer.generativeId);
+    const params: any[] = (def?.parameters || []).filter((p: any) => p.name !== 'demo');
+    if (!params.length) return;
+
+    const pool = [...params];
+    for (let i = pool.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; const t = pool[i]; pool[i] = pool[j]; pool[j] = t; }
+    // Prefer things that visibly move: numbers and actions before toggles.
+    pool.sort((a, b) => (a.type === 'boolean' ? 1 : 0) - (b.type === 'boolean' ? 1 : 0));
+    const picks = pool.slice(0, 3);
+    const bands = ['kick', 'snare', 'hats'].map(id => AUDIO_BANDS.find(b => b.id === id)!).filter(Boolean);
+
+    setLayers(prev => prev.map(l => {
+      if (l.id !== layerId) return l;
+      const maps = [...(l.generativeMappings || [])];
+      const active = { ...(l.generativeTriggerActive || {}) };
+      const amount = { ...(l.generativeTriggerAmount || {}) };
+      picks.forEach((p: any, i: number) => {
+        const band = bands[i % bands.length];
+        active[p.name] = true;
+        amount[p.name] = (p.type === 'action' || p.type === 'boolean') ? 0 : (0.45 + Math.random() * 0.45);
+        const entry: any = {
+          ...INITIAL_MAPPINGS[0],
+          id: p.name,
+          name: p.name,
+          active: true,
+          triggerBehavior: 'momentary',
+          noteSettings: { ...DEFAULT_NOTE_SETTINGS },
+          channels: Array.from({ length: 16 }, (_, k) => k),
+          devices: [],
+          audioMapping: { ...DEFAULT_AUDIO_MAPPING, ...audioBandPatch(band), stemId: '' },
+          rhythmMapping: { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) },
+        };
+        const idx = maps.findIndex((m: any) => m.id === p.name);
+        if (idx >= 0) maps[idx] = { ...maps[idx], ...entry }; else maps.push(entry);
+      });
+      return { ...l, generativeMappings: maps, generativeTriggerActive: active, generativeTriggerAmount: amount };
+    }));
+    setStatus(`AUTO-MAP: ${picks.map((p: any) => p.name).join(', ')}`);
+  }, []);
+
+  /** Strip every trigger off a layer — audio, MIDI and rhythm, at every level. */
+  const clearLayerTriggers = useCallback((layerId: string) => {
+    setLayers(prev => prev.map(l => {
+      if (l.id !== layerId) return l;
+      return {
+        ...l,
+        generativeMappings: [],
+        generativeTriggerActive: {},
+        generativeTriggerAmount: {},
+        threeDMappings: [],
+        threeDTriggerActive: {},
+        threeDTriggerAmount: {},
+        transformTriggerActive: {},
+        transformTriggerAmount: {},
+        mappings: l.mappings.map(m => ({
+          ...m,
+          active: false,
+          manualActive: false,
+          triggerActive: {},
+          audioMapping: { ...(m.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false },
+          rhythmMapping: { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) },
+        })),
+        audioMapping: { ...(l.audioMapping || DEFAULT_AUDIO_MAPPING), enabled: false },
+        rhythmMapping: { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) },
+      };
+    }));
+    setSelectedEffectId(null);
+    setSelectedLayerForEffect(null);
+    setStatus('TRIGGERS CLEARED');
+  }, []);
 
   const requestMidiAccess = useCallback(() => {
     if (navigator.requestMIDIAccess) {
@@ -14387,7 +14581,11 @@ export default function App() {
                                    const newState = !isTriggerActive;
                                    const targetId = isGen ? `generative-${p.name}` : `effect-${m.id}-${p.name}`;
                                    if (isGen) {
-                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [p.name]: newState } } : l));
+                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [p.name]: newState },
+                                        // A freshly connected knob with amount 0 looks dead; give it a usable swing.
+                                        generativeTriggerAmount: (newState && !(l.generativeTriggerAmount?.[p.name] > 0) && p.type !== 'action' && p.type !== 'boolean')
+                                          ? { ...(l.generativeTriggerAmount || {}), [p.name]: 0.6 }
+                                          : l.generativeTriggerAmount } : l));
                                       const hasMapping = layerTarget.generativeMappings?.find((gm: any) => gm.id === p.name);
                                       if (newState && !hasMapping) {
                                          const targetM = {
@@ -14452,7 +14650,11 @@ export default function App() {
                                    const newState = !isTriggerActive;
                                    const targetId = isGen ? `generative-${p.name}` : `effect-${m.id}-${p.name}`;
                                    if (isGen) {
-                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [p.name]: newState } } : l));
+                                      setLayers(prev => prev.map(l => l.id === layerTarget.id ? { ...l, generativeTriggerActive: { ...(l.generativeTriggerActive || {}), [p.name]: newState },
+                                        // A freshly connected knob with amount 0 looks dead; give it a usable swing.
+                                        generativeTriggerAmount: (newState && !(l.generativeTriggerAmount?.[p.name] > 0) && p.type !== 'action' && p.type !== 'boolean')
+                                          ? { ...(l.generativeTriggerAmount || {}), [p.name]: 0.6 }
+                                          : l.generativeTriggerAmount } : l));
                                       const hasMapping = layerTarget.generativeMappings?.find((gm: any) => gm.id === p.name);
                                       if (newState && !hasMapping) {
                                          const targetM = { 
@@ -14971,7 +15173,25 @@ return (
                     {/* Generative Parameters */}
                     {activeLayer.type === 'generative' && activeLayer.generativeId && generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.parameters.length > 0 && (
                       <div className="space-y-4">
-                        <CollapseHead id="params" label={`Parameters — ${generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.description || 'Script'}`} />
+                        <div className="relative">
+                          <CollapseHead id="params" label={`Parameters — ${generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.description || 'Script'}`} />
+                          <div className="absolute right-7 top-0 flex items-center gap-1">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); autoAssignAudio(activeLayer.id); setBelowPanel('params'); }}
+                              title="Auto-map: connect three parameters to Kick, Snare and Hats"
+                              className="p-1 rounded text-white/35 hover:text-red-400 hover:bg-white/10 transition-colors"
+                            >
+                              <Dices size={13} />
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); clearLayerTriggers(activeLayer.id); }}
+                              title="Clear every trigger on this layer"
+                              className="p-1 rounded text-white/35 hover:text-red-400 hover:bg-white/10 transition-colors"
+                            >
+                              <Eraser size={13} />
+                            </button>
+                          </div>
+                        </div>
                         {belowPanel === 'params' && (
                         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
                           {sortParamsForDisplay((generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.parameters || [])
@@ -15853,6 +16073,11 @@ return (
                                   )}
                                 </div>
 
+                                <BandPresetRow
+                                  value={mapping.audioMapping?.freqRange}
+                                  onPick={(b) => patchAudio(audioBandPatch(b))}
+                                />
+
                                 <AudioSpectrogram
                                   stemId={mapping.audioMapping?.stemId}
                                   freqRange={mapping.audioMapping?.freqRange || [20, 20000]}
@@ -16108,6 +16333,11 @@ return (
                                 )}
                                </div>
 
+                               <BandPresetRow
+                                  value={layerTarget.audioMapping?.freqRange}
+                                  onPick={(b) => patchLayerAudio(audioBandPatch(b))}
+                               />
+
                                <AudioSpectrogram
                                   stemId={layerTarget.audioMapping?.stemId}
                                   freqRange={layerTarget.audioMapping?.freqRange || [20, 20000]}
@@ -16175,6 +16405,49 @@ return (
                 })()}
              </div>
              </Section>
+
+             {(() => {
+               const lay = layers.find(l => l.id === activeLayerId);
+               const trigs = collectLayerTriggers(lay);
+               const tone: Record<TriggerKind, string> = {
+                 Audio: 'text-emerald-400 border-emerald-500/40',
+                 MIDI: 'text-red-400 border-red-500/40',
+                 Rhythm: 'text-sky-400 border-sky-500/40',
+               };
+               return (
+                 <div className="mx-3 mb-3 rounded border border-white/10 bg-black/30">
+                   <div className="flex items-center justify-between px-3 pt-2 pb-1">
+                     <span className="text-[9px] uppercase tracking-widest text-white/40">Active triggers</span>
+                     <span className="text-[9px] font-mono text-white/25">{trigs.length}</span>
+                   </div>
+                   {!lay ? (
+                     <p className="px-3 pb-2 text-[9px] italic text-white/20">No layer selected</p>
+                   ) : trigs.length === 0 ? (
+                     <p className="px-3 pb-2 text-[9px] italic text-white/20">Nothing connected. Use the dice on the Parameters header to auto-map three.</p>
+                   ) : (
+                     <div className="pb-1 max-h-44 overflow-y-auto custom-scrollbar">
+                       {trigs.map(t => (
+                         <button
+                           key={t.id}
+                           onClick={() => {
+                             if (t.id === '__layer__') { setSelectedEffectId(null); setSelectedLayerForEffect(null); }
+                             else { setSelectedEffectId(t.id); setSelectedLayerForEffect(lay.id); }
+                             setSidebarTab('triggers');
+                             setRightSection('triggers');
+                           }}
+                           className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-white/5 transition-colors"
+                           title={`${t.label} — ${t.kind}: ${t.detail}`}
+                         >
+                           <span className={`shrink-0 px-1.5 py-0.5 rounded border text-[8px] uppercase tracking-widest bg-black/40 ${tone[t.kind]}`}>{t.kind}</span>
+                           <span className="text-[10px] uppercase tracking-widest text-white/70 truncate">{t.label}</span>
+                           <span className="ml-auto text-[9px] font-mono text-white/30 truncate max-w-[45%]">{t.detail}</span>
+                         </button>
+                       ))}
+                     </div>
+                   )}
+                 </div>
+               );
+             })()}
 
            </div>
         </aside>
