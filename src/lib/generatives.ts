@@ -2448,6 +2448,118 @@ void main(void) {
   "uuid": "double-slit-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Orbital Resonance",
+  "category": "Science",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "obsidian_gold",
+  "parameters": [
+    { "name": "time_dilation", "min": 0, "max": 4, "default": 1, "type": "number" },
+    { "name": "star_mass", "min": 0.3, "max": 3, "default": 1, "type": "number" },
+    { "name": "planet_count", "min": 2, "max": 8, "default": 5, "type": "number" },
+    { "name": "eccentricity_scale", "min": 0, "max": 1, "default": 0.25, "type": "number" },
+    { "name": "camera_tilt", "min": 0, "max": 1, "default": 0.45, "type": "number" },
+    { "name": "spirograph", "default": 0, "type": "action" },
+    { "name": "rogue_comet", "default": 0, "type": "action" },
+    { "name": "syzygy", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Deep Sky", "defaultColor": "#121212" },
+    { "id": "star", "name": "Star", "defaultColor": "#d4af37" },
+    { "id": "orbit", "name": "Orbit Paths", "defaultColor": "#5b4511" },
+    { "id": "planet", "name": "Planets", "defaultColor": "#f3e5ab" },
+    { "id": "tracer", "name": "Resonance Web", "defaultColor": "#aa7c11" }
+  ],
+  "uuid": "planetarium-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Ballistic Dispersion",
+  "category": "Science",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "coral_reef",
+  "parameters": [
+    { "name": "launch_angle", "min": 10, "max": 80, "default": 45, "type": "number" },
+    { "name": "muzzle_velocity", "min": 0.3, "max": 2, "default": 1, "type": "number" },
+    { "name": "air_density", "min": 0, "max": 1, "default": 0.3, "type": "number" },
+    { "name": "wind_strength", "min": -1, "max": 1, "default": 0.15, "type": "number" },
+    { "name": "gravity", "min": 0.2, "max": 2.5, "default": 1, "type": "number" },
+    { "name": "single_shot", "default": 0, "type": "action" },
+    { "name": "salvo", "default": 0, "type": "action" },
+    { "name": "clear_trails", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Sky", "defaultColor": "#2a1206" },
+    { "id": "ground", "name": "Ground", "defaultColor": "#c23b06" },
+    { "id": "shell", "name": "Projectiles", "defaultColor": "#ffae5c" },
+    { "id": "trail", "name": "Trajectories", "defaultColor": "#e0560f" },
+    { "id": "vacuum", "name": "Vacuum Arc", "defaultColor": "#f4f0e4" }
+  ],
+  "uuid": "ballistics-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Markov Chain",
+  "category": "Science",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "tokyo_synth",
+  "parameters": [
+    { "name": "node_count", "min": 4, "max": 14, "default": 8, "type": "number" },
+    { "name": "entropy_weight", "min": 0, "max": 1, "default": 0.35, "type": "number" },
+    { "name": "flow_speed", "min": 0.2, "max": 4, "default": 1, "type": "number" },
+    { "name": "edge_tension", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "token_decay", "min": 0, "max": 1, "default": 0.15, "type": "number" },
+    { "name": "spawn_burst", "default": 0, "type": "action" },
+    { "name": "randomize_matrix", "default": 0, "type": "action" },
+    { "name": "steady_state", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Field", "defaultColor": "#1a1b26" },
+    { "id": "node", "name": "States", "defaultColor": "#7aa2f7" },
+    { "id": "edge", "name": "Transitions", "defaultColor": "#bb9af7" },
+    { "id": "token", "name": "Tokens", "defaultColor": "#f7768e" },
+    { "id": "label", "name": "Stationary Mass", "defaultColor": "#7dcfff" }
+  ],
+  "uuid": "markov-net-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Gradient Descent",
+  "category": "Science",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "nordic_ice",
+  "parameters": [
+    { "name": "poly_degree", "min": 1, "max": 9, "default": 3, "type": "number" },
+    { "name": "learning_rate", "min": 0.001, "max": 0.4, "default": 0.06, "type": "number" },
+    { "name": "momentum", "min": 0, "max": 0.98, "default": 0.85, "type": "number" },
+    { "name": "regularization", "min": 0, "max": 1, "default": 0.02, "type": "number" },
+    { "name": "noise_variance", "min": 0, "max": 1, "default": 0.25, "type": "number" },
+    { "name": "resample_data", "default": 0, "type": "action" },
+    { "name": "inject_outliers", "default": 0, "type": "action" },
+    { "name": "reset_optimizer", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Plot Ground", "defaultColor": "#2e3440" },
+    { "id": "data", "name": "Samples", "defaultColor": "#88c0d0" },
+    { "id": "fit", "name": "Fitted Curve", "defaultColor": "#eceff4" },
+    { "id": "truth", "name": "Ground Truth", "defaultColor": "#5e81ac" },
+    { "id": "loss", "name": "Loss Landscape", "defaultColor": "#81a1c1" }
+  ],
+  "uuid": "sgd-regression-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   }
 ];
 
@@ -2529,6 +2641,10 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'game-of-life-1': 'Science',
   'pendulum-wave-1': 'Science',
   'double-slit-1': 'Science',
+  'planetarium-1': 'Science',
+  'ballistics-1': 'Science',
+  'markov-net-1': 'Science',
+  'sgd-regression-1': 'Science',
 };
 
 export const GENERATIVE_CATEGORY_ORDER = ['Music', 'Science', 'Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];
