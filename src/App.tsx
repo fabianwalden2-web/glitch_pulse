@@ -686,6 +686,19 @@ export function isTransparentColor(c?: string): boolean {
 // as real pixel art at any canvas size instead of smooth shapes scaled down.
 interface PixelBuf { c: HTMLCanvasElement; g: CanvasRenderingContext2D; w: number; h: number; px: number }
 
+/** A persistent per-layer canvas that fades instead of clearing, so particle
+ *  paths leave trails. Returns the context ready to draw into. */
+function getTrailBuf(store: Record<string, any>, id: string, w: number, h: number, fade: number) {
+  let e = store[id];
+  if (!e) e = store[id] = { c: document.createElement('canvas') };
+  const c: HTMLCanvasElement = e.c;
+  let cleared = false;
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; cleared = true; }
+  const g = c.getContext('2d')!;
+  if (cleared) { g.clearRect(0, 0, w, h); }
+  return { c, g, cleared, fade };
+}
+
 function getPixelBuf(store: Record<string, any>, id: string, targetW: number, targetH: number, chunk: number): PixelBuf {
   const px = Math.max(2, Math.round(chunk));
   const w = Math.max(16, Math.ceil(targetW / px));
@@ -2864,6 +2877,11 @@ export default function App() {
   const tonnetzStateRef = useRef<Record<string, any>>({});
   const shapeOfSongStateRef = useRef<Record<string, any>>({});
   const pianoRollStateRef = useRef<Record<string, any>>({});
+  const galtonStateRef = useRef<Record<string, any>>({});
+  const electronStateRef = useRef<Record<string, any>>({});
+  const nBodyStateRef = useRef<Record<string, any>>({});
+  const brownianStateRef = useRef<Record<string, any>>({});
+  const lorenzStateRef = useRef<Record<string, any>>({});
   const dragonTextStateRef = useRef<Record<string, any>>({});
 
   // Accumulation Mode Refs
@@ -10225,6 +10243,560 @@ export default function App() {
               ctx.restore();
               ctx.globalAlpha = 1;
               element = canvas;
+          } else if (def.uuid === 'galton-board-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || '#2e3440';
+              const cPeg = resolvedGenerativeColors['pegs'] || '#88c0d0';
+              const cPart = resolvedGenerativeColors['particles'] || '#eceff4';
+              const cBin = resolvedGenerativeColors['bins'] || '#81a1c1';
+              const cCurve = resolvedGenerativeColors['curve'] || '#5e81ac';
+
+              const rows = Math.max(6, Math.min(24, Math.round(ms.peg_rows ?? 14)));
+              const bias = Math.max(-1, Math.min(1, ms.peg_bias ?? 0));
+              const elast = Math.max(0, Math.min(1, ms.elasticity ?? 0.35));
+              const flow = Math.max(0.1, Math.min(4, ms.flow_rate ?? 1));
+              const memory = Math.max(0, Math.min(1, ms.bin_memory ?? 0.85));
+
+              const st = (galtonStateRef.current[layer.id] ||= { acts: {}, parts: [], bins: null, spawnAcc: 0, invertT: -99 });
+              if (actionFired(st.acts, 'burst', Number(ms.burst ?? 0))) st.burstN = (st.burstN ?? 0) + 90;
+              if (actionFired(st.acts, 'inv', Number(ms.invert_gravity ?? 0))) st.invertT = nowSec + 2.5;
+              const inverted = nowSec < st.invertT;
+
+              const nBins = rows + 1;
+              if (!st.bins || st.bins.length !== nBins) st.bins = new Float32Array(nBins);
+
+              // Board geometry: a triangular peg lattice above a row of collection bins.
+              const topY = targetH * 0.10, botY = targetH * 0.72;
+              const rowGap = (botY - topY) / rows;
+              const colGap = Math.min(rowGap * 1.8, (targetW * 0.88) / (rows + 1));
+              const cx = targetW / 2;
+              const pegXY = (r: number, i: number) => ({
+                  x: cx + (i - r / 2) * colGap,
+                  y: topY + r * rowGap,
+              });
+
+              // spawn
+              st.spawnAcc += dt * flow * 30;
+              let toSpawn = Math.floor(st.spawnAcc);
+              st.spawnAcc -= toSpawn;
+              if (st.burstN > 0) { const b = Math.min(st.burstN, 14); toSpawn += b; st.burstN -= b; }
+              for (let i = 0; i < toSpawn && st.parts.length < 1400; i++) {
+                  st.parts.push({ x: cx + (Math.random() - 0.5) * colGap * 0.12, y: topY - rowGap * 0.8, vx: 0, vy: 0, row: 0, done: false });
+              }
+
+              // The physical point: each peg is one Bernoulli trial, so the pile of
+              // outcomes at the base converges on a binomial distribution.
+              const g = (inverted ? -1 : 1) * 900 * sc;
+              for (const p of st.parts) {
+                  p.vy += g * dt;
+                  p.x += p.vx * dt;
+                  p.y += p.vy * dt;
+                  if (!p.done && !inverted && p.row < rows) {
+                      const targetYr = topY + p.row * rowGap;
+                      if (p.y >= targetYr) {
+                          // One Bernoulli trial per peg. The horizontal speed is solved from
+                          // the fall time to the next row so the hop lands exactly half a
+                          // column over — that is what makes the pile a true binomial.
+                          const goRight = Math.random() < 0.5 + bias * 0.45;
+                          p.vy = -Math.abs(p.vy) * elast * 0.5;
+                          const tFall = (-p.vy + Math.sqrt(p.vy * p.vy + 2 * g * rowGap)) / g;
+                          p.vx = (goRight ? 1 : -1) * (colGap * 0.5) / Math.max(0.008, tFall);
+                          p.row++;
+                      }
+                  }
+                  if (!p.done && p.y > botY) {
+                      p.done = true;
+                      const slot = Math.max(0, Math.min(nBins - 1, Math.round((p.x - cx) / colGap + rows / 2)));
+                      st.bins[slot] += 1;
+                      p.slot = slot;
+                  }
+                  if (inverted && p.done) p.done = false;
+              }
+              st.parts = st.parts.filter((p: any) => p.y > -targetH * 0.3 && p.y < targetH * 1.2 && !(p.done && p.y > botY + rowGap));
+
+              // bins decay so the histogram breathes rather than saturating
+              // Half-life in seconds, not per frame: the histogram should linger for a
+              // long while at high memory instead of evaporating between frames.
+              const decay = Math.exp(-dt / (0.25 + memory * 14));
+              let peak = 1;
+              for (let i = 0; i < nBins; i++) { st.bins[i] *= decay; if (st.bins[i] > peak) peak = st.bins[i]; }
+
+              ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+
+              // pegs
+              ctx.fillStyle = cPeg;
+              ctx.globalAlpha = 0.55;
+              for (let r = 1; r <= rows; r++) {
+                  for (let i = 0; i <= r; i++) {
+                      const q = pegXY(r, i);
+                      ctx.beginPath(); ctx.arc(q.x, q.y, 3 * sc, 0, 6.283); ctx.fill();
+                  }
+              }
+              ctx.globalAlpha = 1;
+
+              // bins
+              const binH = targetH - botY - 6 * sc;
+              for (let i = 0; i < nBins; i++) {
+                  const h = (st.bins[i] / peak) * binH;
+                  const x = cx + (i - rows / 2) * colGap - colGap * 0.42;
+                  ctx.fillStyle = cBin;
+                  ctx.globalAlpha = 0.85;
+                  ctx.fillRect(x, botY + binH - h + 6 * sc, colGap * 0.84, h);
+              }
+              ctx.globalAlpha = 1;
+
+              // the binomial these trials are converging on, drawn over the histogram
+              ctx.strokeStyle = cCurve; ctx.lineWidth = 2.6 * sc; ctx.globalAlpha = 0.9;
+              ctx.beginPath();
+              const pRight = 0.5 + bias * 0.45;
+              const lnFact = (n: number) => { let v = 0; for (let k = 2; k <= n; k++) v += Math.log(k); return v; };
+              let maxPk = 0;
+              const pk: number[] = [];
+              for (let i = 0; i < nBins; i++) {
+                  const lp = lnFact(rows) - lnFact(i) - lnFact(rows - i) + i * Math.log(pRight + 1e-9) + (rows - i) * Math.log(1 - pRight + 1e-9);
+                  const v = Math.exp(lp);
+                  pk.push(v); if (v > maxPk) maxPk = v;
+              }
+              for (let i = 0; i < nBins; i++) {
+                  const x = cx + (i - rows / 2) * colGap;
+                  const y = botY + binH + 6 * sc - (pk[i] / maxPk) * binH;
+                  i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+              }
+              ctx.stroke();
+              ctx.globalAlpha = 1;
+
+              // particles
+              ctx.fillStyle = cPart;
+              for (const p of st.parts) {
+                  ctx.beginPath(); ctx.arc(p.x, p.y, 3.6 * sc, 0, 6.283); ctx.fill();
+              }
+              element = canvas;
+          } else if (def.uuid === 'electron-cloud-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || '#0a0a12';
+              const cPos = resolvedGenerativeColors['lobe_pos'] || '#8b6cf0';
+              const cNeg = resolvedGenerativeColors['lobe_neg'] || '#f0a0d8';
+              const cNuc = resolvedGenerativeColors['nucleus'] || '#ffffff';
+              const rgbP = hexToRgb(cPos), rgbN = hexToRgb(cNeg);
+
+              // (n, l, m) in the order a spectroscopist would meet them.
+              const ORBITALS: [number, number, number, string][] = [
+                  [1, 0, 0, '1s'], [2, 0, 0, '2s'], [2, 1, 0, '2p'], [3, 1, 1, '3p'],
+                  [3, 2, 0, '3d'], [3, 2, 2, '3d'], [4, 2, 1, '4d'], [4, 3, 0, '4f'], [4, 3, 3, '4f'],
+              ];
+              const st = (electronStateRef.current[layer.id] ||= { acts: {}, pts: null, idx: -1, pulseT: -99, spin: 0 });
+              if (actionFired(st.acts, 'exc', Number(ms.excite ?? 0))) st.bump = ((st.bump ?? 0) + 1) % ORBITALS.length;
+              if (actionFired(st.acts, 'pul', Number(ms.energy_pulse ?? 0))) st.pulseT = nowSec;
+
+              const sel = (Math.round(ms.orbital ?? 3) + (st.bump ?? 0)) % ORBITALS.length;
+              const [nQ, lQ, mQ, label] = ORBITALS[sel];
+              const jitter = Math.max(0, Math.min(1, ms.uncertainty ?? 0.25));
+              const rScale = Math.max(0.3, Math.min(2, ms.radial_scale ?? 1));
+              const density = Math.max(0.1, Math.min(1, ms.density ?? 0.6));
+              const spin = Math.max(-2, Math.min(2, ms.spin_speed ?? 0.35));
+
+              // Real angular parts: |Y_lm| shapes for the orbitals above, and a radial
+              // envelope with the n-l-1 nodes hydrogen actually has.
+              const angular = (l: number, m: number, ct: number, phi: number) => {
+                  const stt = Math.sqrt(Math.max(0, 1 - ct * ct));
+                  if (l === 0) return 1;
+                  if (l === 1) return m === 0 ? ct : stt * Math.cos(phi);
+                  if (l === 2) {
+                      if (m === 0) return 0.5 * (3 * ct * ct - 1);
+                      if (m === 1) return stt * ct * Math.cos(phi);
+                      return stt * stt * Math.cos(2 * phi);
+                  }
+                  if (m === 0) return 0.5 * ct * (5 * ct * ct - 3);
+                  return stt * stt * stt * Math.cos(3 * phi);
+              };
+              const radial = (r: number, n: number, l: number) => {
+                  const rho = 2 * r / n;
+                  let poly = 1;
+                  const nodes = n - l - 1;
+                  if (nodes === 1) poly = 1 - rho / 2;
+                  else if (nodes === 2) poly = 1 - rho + rho * rho / 6;
+                  else if (nodes === 3) poly = 1 - 1.5 * rho + 0.6 * rho * rho - rho * rho * rho / 24;
+                  return Math.pow(rho, l) * poly * Math.exp(-rho / 2);
+              };
+
+              // Rejection-sample the cloud once per orbital: the shape is static, only
+              // the viewing angle and jitter change per frame.
+              if (st.idx !== sel) {
+                  st.idx = sel;
+                  const rMax = 4 + nQ * nQ * 2.2;
+                  const draw = () => {
+                      const r = Math.pow(Math.random(), 0.45) * rMax;
+                      const ct = Math.random() * 2 - 1;
+                      const phi = Math.random() * 6.283;
+                      const psi = radial(r, nQ, lQ) * angular(lQ, mQ, ct, phi);
+                      return { r, ct, phi, psi, p2: psi * psi * r * r };
+                  };
+                  // Scan for the peak of |psi|^2 r^2 first, so the rejection test has the
+                  // same acceptance rate whatever orbital is selected.
+                  let pMax = 1e-9;
+                  for (let i = 0; i < 6000; i++) { const c = draw(); if (c.p2 > pMax) pMax = c.p2; }
+                  const pts: any[] = [];
+                  let guard = 0;
+                  while (pts.length < 6000 && guard++ < 400000) {
+                      const c = draw();
+                      const q = c.p2 / pMax;
+                      if (Math.random() < q) {
+                          const stt = Math.sqrt(Math.max(0, 1 - c.ct * c.ct));
+                          pts.push({
+                              x: c.r * stt * Math.cos(c.phi), y: c.r * c.ct, z: c.r * stt * Math.sin(c.phi),
+                              s: Math.sign(c.psi) || 1, a: 0.35 + 0.65 * Math.sqrt(q),
+                          });
+                      }
+                  }
+                  // Frame on where the density actually lives, not on the sampling
+                  // cut-off: most of a 3d cloud sits well inside rMax.
+                  const radii = pts.map(p => Math.hypot(p.x, p.y, p.z)).sort((a, b) => a - b);
+                  st.pts = pts;
+                  st.rMax = rMax;
+                  st.rView = radii[Math.floor(radii.length * 0.93)] || rMax;
+              }
+
+              st.spin += dt * spin;
+              const pulse = nowSec - st.pulseT < 1.2 ? Math.sin(Math.PI * (nowSec - st.pulseT) / 1.2) : 0;
+              const zoom = (Math.min(targetW, targetH) * 0.43) / (st.rView * rScale) * (1 + pulse * 0.35);
+              const cx = targetW / 2, cy = targetH / 2;
+              const cosA = Math.cos(st.spin), sinA = Math.sin(st.spin);
+
+              ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+              ctx.globalCompositeOperation = 'lighter';
+              // Spin about the quantisation axis, then a fixed elevation so lobes that
+              // ring that axis are seen from three-quarters instead of edge-on.
+              const EL = 0.46, ce = Math.cos(EL), se = Math.sin(EL);
+              const jAmp = jitter * st.rView * 0.09;
+              for (const p of st.pts) {
+                  const px = p.x + jAmp * (Math.random() - 0.5);
+                  const py = p.y + jAmp * (Math.random() - 0.5);
+                  const pz = p.z + jAmp * (Math.random() - 0.5);
+                  const x1 = px * cosA - pz * sinA;
+                  const z1 = px * sinA + pz * cosA;
+                  const y2 = py * ce - z1 * se;
+                  const z2 = py * se + z1 * ce;
+                  const depth = 0.5 + 0.5 * (z2 / st.rView + 1) / 2;
+                  const sx = cx + x1 * zoom;
+                  const sy = cy - y2 * zoom;
+                  const rgb = p.s > 0 ? rgbP : rgbN;
+                  ctx.fillStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${(p.a * density * depth).toFixed(3)})`;
+                  const rad = (1 + p.a * 1.9) * sc * depth;
+                  ctx.fillRect(sx - rad, sy - rad, rad * 2, rad * 2);
+              }
+              ctx.globalCompositeOperation = 'source-over';
+
+              ctx.fillStyle = cNuc;
+              ctx.globalAlpha = 0.9;
+              ctx.beginPath(); ctx.arc(cx, cy, 2.5 * sc, 0, 6.283); ctx.fill();
+              ctx.globalAlpha = 0.5;
+              ctx.font = `600 ${Math.round(13 * sc)}px ui-sans-serif, system-ui, sans-serif`;
+              ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+              ctx.fillText(`${label}   n=${nQ}  l=${lQ}  m=${mQ}`, 14 * sc, 12 * sc);
+              ctx.globalAlpha = 1;
+              element = canvas;
+          } else if (def.uuid === 'n-body-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.04, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || '#121212';
+              const cStar = resolvedGenerativeColors['star'] || '#d4af37';
+              const cOrb = resolvedGenerativeColors['orbiter'] || '#aa7c11';
+              const cTrail = resolvedGenerativeColors['trail'] || '#f3e5ab';
+              const cRogue = resolvedGenerativeColors['rogue'] || '#5b4511';
+
+              const G = Math.max(0.1, Math.min(3, ms.gravity ?? 1));
+              const swarmN = Math.max(40, Math.min(600, Math.round(ms.swarm ?? 260)));
+              const ecc = Math.max(0, Math.min(1, ms.eccentricity ?? 0.35));
+              const fade = Math.max(0, Math.min(1, ms.trail_fade ?? 0.82));
+              const drag = Math.max(0, Math.min(1, ms.drag ?? 0.08));
+
+              const st = (nBodyStateRef.current[layer.id] ||= { acts: {}, stars: [], bodies: [], flipT: -99 });
+              if (actionFired(st.acts, 'spawn', Number(ms.spawn_star ?? 0))) st.wantStar = true;
+              if (actionFired(st.acts, 'flip', Number(ms.flip_polarity ?? 0))) st.flipT = nowSec + 1.6;
+              const polarity = nowSec < st.flipT ? -1 : 1;
+
+              const S = Math.min(targetW, targetH);
+              // Standard gravitational parameter picked so a body at r = 0.2 S circles
+              // in a few seconds — fast enough to read as an orbit, slow enough to watch.
+              const GMU = G * S * S * 14;
+              if (!st.stars.length) {
+                  st.stars.push({ x: targetW / 2, y: targetH / 2, m: 1.0 });
+              }
+              if (st.wantStar) {
+                  st.wantStar = false;
+                  const a = Math.random() * 6.283, r = S * (0.18 + Math.random() * 0.22);
+                  st.stars.push({ x: targetW / 2 + Math.cos(a) * r, y: targetH / 2 + Math.sin(a) * r, m: 0.45 + Math.random() * 0.7 });
+                  if (st.stars.length > 4) st.stars.shift();
+              }
+
+              // Keep the swarm at the requested size, seeding new bodies on near-circular
+              // orbits so the disc forms instead of immediately collapsing.
+              while (st.bodies.length < swarmN) {
+                  const s0 = st.stars[(Math.random() * st.stars.length) | 0];
+                  const a = Math.random() * 6.283;
+                  const r = S * (0.06 + Math.random() * 0.32);
+                  const vC = Math.sqrt(GMU * s0.m / r);
+                  const e = 1 + (Math.random() - 0.5) * ecc * 1.3;
+                  st.bodies.push({
+                      x: s0.x + Math.cos(a) * r, y: s0.y + Math.sin(a) * r,
+                      vx: -Math.sin(a) * vC * e, vy: Math.cos(a) * vC * e, rogue: false,
+                  });
+              }
+              if (st.bodies.length > swarmN) st.bodies.length = swarmN;
+
+              for (const b of st.bodies) {
+                  let ax = 0, ay = 0;
+                  for (const s0 of st.stars) {
+                      const dx = s0.x - b.x, dy = s0.y - b.y;
+                      const soft = S * 0.035;
+                      const d2 = dx * dx + dy * dy + soft * soft;   // softening keeps it stable at the centre
+                      const inv = (GMU * s0.m * polarity) / (d2 * Math.sqrt(d2));
+                      ax += dx * inv; ay += dy * inv;
+                  }
+                  b.vx += ax * dt; b.vy += ay * dt;
+                  const k = 1 - drag * 0.5 * dt;
+                  b.vx *= k; b.vy *= k;
+                  b.x += b.vx * dt; b.y += b.vy * dt;
+                  if (b.x < -S || b.x > targetW + S || b.y < -S || b.y > targetH + S) {
+                      const s0 = st.stars[0];
+                      const a = Math.random() * 6.283, r = S * 0.2;
+                      const vC = Math.sqrt(GMU * s0.m / r);
+                      b.x = s0.x + Math.cos(a) * r; b.y = s0.y + Math.sin(a) * r;
+                      b.vx = -Math.sin(a) * vC; b.vy = Math.cos(a) * vC;
+                  }
+              }
+
+              const tb = getTrailBuf(nBodyStateRef.current, layer.id + '_trail', targetW, targetH, fade);
+              // Erase a frame-rate-independent fraction so trail_fade means a duration.
+              tb.g.fillStyle = `rgba(0,0,0,${(1 - Math.exp(-dt / (0.08 + fade * 3.5))).toFixed(4)})`;
+              tb.g.globalCompositeOperation = 'destination-out';
+              tb.g.fillRect(0, 0, targetW, targetH);
+              tb.g.globalCompositeOperation = 'source-over';
+              tb.g.fillStyle = polarity < 0 ? cRogue : cTrail;
+              tb.g.globalAlpha = 0.6;
+              for (const b of st.bodies) tb.g.fillRect(b.x - 0.9 * sc, b.y - 0.9 * sc, 1.8 * sc, 1.8 * sc);
+              tb.g.globalAlpha = 1;
+
+              ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+              ctx.drawImage(tb.c, 0, 0);
+              ctx.fillStyle = cOrb;
+              for (const b of st.bodies) { ctx.fillRect(b.x - 1.4 * sc, b.y - 1.4 * sc, 2.8 * sc, 2.8 * sc); }
+              for (const s0 of st.stars) {
+                  const rad = (5 + s0.m * 7) * sc;
+                  const gr = ctx.createRadialGradient(s0.x, s0.y, 0, s0.x, s0.y, rad * 4);
+                  gr.addColorStop(0, cStar);
+                  gr.addColorStop(1, 'rgba(0,0,0,0)');
+                  ctx.fillStyle = gr;
+                  ctx.beginPath(); ctx.arc(s0.x, s0.y, rad * 4, 0, 6.283); ctx.fill();
+                  ctx.fillStyle = cStar;
+                  ctx.beginPath(); ctx.arc(s0.x, s0.y, rad * 0.5, 0, 6.283); ctx.fill();
+              }
+              element = canvas;
+          } else if (def.uuid === 'brownian-walk-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || '#ede9e2';
+              const walkCols = [
+                  resolvedGenerativeColors['walk_a'] || '#d9557a',
+                  resolvedGenerativeColors['walk_b'] || '#3a5ba0',
+                  resolvedGenerativeColors['walk_c'] || '#3c7a52',
+              ];
+              const cTracer = resolvedGenerativeColors['tracer'] || '#e08a2e';
+              const cGrid = resolvedGenerativeColors['grid'] || '#234a30';
+
+              const temp = Math.max(0, Math.min(2, ms.temperature ?? 0.7));
+              const visc = Math.max(0, Math.min(1, ms.viscosity ?? 0.3));
+              const wantN = Math.max(20, Math.min(400, Math.round(ms.walkers ?? 160)));
+              const trail = Math.max(0, Math.min(1, ms.trail_length ?? 0.6));
+              const drift = Math.max(-1, Math.min(1, ms.drift ?? 0));
+
+              const st = (brownianStateRef.current[layer.id] ||= { acts: {}, w: [], waves: [] });
+              if (actionFired(st.acts, 'shock', Number(ms.shockwave ?? 0))) {
+                  st.waves.push({ x: Math.random() * targetW, y: Math.random() * targetH, r: 0, t: nowSec });
+              }
+              if (actionFired(st.acts, 'inject', Number(ms.inject_tracers ?? 0))) {
+                  for (let i = 0; i < 26; i++) {
+                      st.w.push({ x: targetW / 2, y: targetH / 2, vx: 0, vy: 0, c: -1, born: nowSec });
+                  }
+              }
+              st.waves = st.waves.filter((wv: any) => nowSec - wv.t < 1.6);
+
+              while (st.w.length < wantN) {
+                  st.w.push({ x: Math.random() * targetW, y: Math.random() * targetH, vx: 0, vy: 0, c: (Math.random() * 3) | 0, born: nowSec });
+              }
+              // trim only ordinary walkers so injected tracers survive a size change
+              while (st.w.length > wantN + 40) { const i = st.w.findIndex((p: any) => p.c >= 0); if (i < 0) break; st.w.splice(i, 1); }
+
+              const step = temp * 260 * sc;
+              for (const p of st.w) {
+                  // Gaussian-ish kick via two uniforms, then viscous damping: that is a
+                  // discrete Langevin step, which is what real diffusion looks like.
+                  const g1 = (Math.random() + Math.random() + Math.random() - 1.5) * 2;
+                  const g2 = (Math.random() + Math.random() + Math.random() - 1.5) * 2;
+                  p.vx += g1 * step * dt * (p.c < 0 ? 1.8 : 1);
+                  p.vy += g2 * step * dt * (p.c < 0 ? 1.8 : 1);
+                  p.vx += drift * 90 * sc * dt;
+                  const damp = 1 - Math.min(0.95, visc * 4 * dt + 0.6 * dt);
+                  p.vx *= damp; p.vy *= damp;
+                  for (const wv of st.waves) {
+                      const dx = p.x - wv.x, dy = p.y - wv.y;
+                      const d = Math.hypot(dx, dy) || 1;
+                      const ring = (nowSec - wv.t) * targetW * 0.55;
+                      if (Math.abs(d - ring) < 26 * sc) { p.vx += (dx / d) * 900 * sc * dt * 12; p.vy += (dy / d) * 900 * sc * dt * 12; }
+                  }
+                  p.x += p.vx * dt; p.y += p.vy * dt;
+                  if (p.x < 0) { p.x = 0; p.vx = Math.abs(p.vx); }
+                  if (p.x > targetW) { p.x = targetW; p.vx = -Math.abs(p.vx); }
+                  if (p.y < 0) { p.y = 0; p.vy = Math.abs(p.vy); }
+                  if (p.y > targetH) { p.y = targetH; p.vy = -Math.abs(p.vy); }
+              }
+              st.w = st.w.filter((p: any) => p.c >= 0 || nowSec - p.born < 9);
+
+              const tb = getTrailBuf(brownianStateRef.current, layer.id + '_trail', targetW, targetH, trail);
+              tb.g.globalCompositeOperation = 'destination-out';
+              tb.g.fillStyle = `rgba(0,0,0,${(1 - Math.exp(-dt / (0.05 + trail * 5))).toFixed(4)})`;
+              tb.g.fillRect(0, 0, targetW, targetH);
+              tb.g.globalCompositeOperation = 'source-over';
+              for (const p of st.w) {
+                  tb.g.fillStyle = p.c < 0 ? cTracer : walkCols[p.c];
+                  tb.g.globalAlpha = p.c < 0 ? 0.9 : 0.55;
+                  const r = (p.c < 0 ? 2.1 : 1.5) * sc;
+                  tb.g.fillRect(p.x - r, p.y - r, r * 2, r * 2);
+              }
+              tb.g.globalAlpha = 1;
+
+              ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+              const gStep = Math.max(40, Math.min(targetW, targetH) / 9);
+              ctx.strokeStyle = cGrid; ctx.globalAlpha = 0.10; ctx.lineWidth = 1;
+              ctx.beginPath();
+              for (let x = gStep; x < targetW; x += gStep) { ctx.moveTo(x, 0); ctx.lineTo(x, targetH); }
+              for (let y = gStep; y < targetH; y += gStep) { ctx.moveTo(0, y); ctx.lineTo(targetW, y); }
+              ctx.stroke();
+              ctx.globalAlpha = 1;
+              ctx.drawImage(tb.c, 0, 0);
+              for (const wv of st.waves) {
+                  const ring = (nowSec - wv.t) * targetW * 0.55;
+                  ctx.strokeStyle = cTracer;
+                  ctx.globalAlpha = Math.max(0, 1 - (nowSec - wv.t) / 1.6) * 0.6;
+                  ctx.lineWidth = 2 * sc;
+                  ctx.beginPath(); ctx.arc(wv.x, wv.y, ring, 0, 6.283); ctx.stroke();
+              }
+              ctx.globalAlpha = 1;
+              element = canvas;
+          } else if (def.uuid === 'lorenz-attractor-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.04, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || '#1f1427';
+              const cL = resolvedGenerativeColors['wing_l'] || '#f25c54';
+              const cR = resolvedGenerativeColors['wing_r'] || '#f7b267';
+              const cSpark = resolvedGenerativeColors['spark'] || '#f4845f';
+
+              const sigma = Math.max(1, Math.min(20, ms.sigma ?? 10));
+              const rho = Math.max(1, Math.min(60, ms.rho ?? 28));
+              const beta = Math.max(0.5, Math.min(5, ms.beta ?? 2.667));
+              const spin = Math.max(-2, Math.min(2, ms.spin_speed ?? 0.3));
+              const fade = Math.max(0, Math.min(1, ms.trail_fade ?? 0.9));
+
+              const HIST = 96, WANT = 220;
+              const st = (lorenzStateRef.current[layer.id] ||= { acts: {}, p: [], spin: 0, flatT: -99 });
+              if (actionFired(st.acts, 'inj', Number(ms.inject ?? 0))) st.injectN = (st.injectN ?? 0) + 120;
+              if (actionFired(st.acts, 'poi', Number(ms.poincare ?? 0))) st.flatT = nowSec + 4;
+              const flatten = nowSec < st.flatT ? Math.min(1, (nowSec - (st.flatT - 4)) * 2.5) : 0;
+
+              const seed = () => ({
+                  x: (Math.random() - 0.5) * 2, y: (Math.random() - 0.5) * 2, z: 8 + Math.random() * 24,
+                  born: nowSec, h: new Float32Array(HIST * 3), n: 0,
+              });
+              while (st.p.length < WANT) st.p.push(seed());
+              if (st.injectN > 0) { const k = Math.min(st.injectN, 10); for (let i = 0; i < k; i++) st.p.push(seed()); st.injectN -= k; }
+              if (st.p.length > 620) st.p.splice(0, st.p.length - 620);
+
+              // Integrate the Lorenz system itself: x' = s(y-x), y' = x(r-z)-y, z' = xy-bz.
+              // Substeps keep the explicit step stable when the frame rate dips, which
+              // matters because neighbouring trajectories separate exponentially.
+              const steps = 4;
+              const h = Math.min(0.005, dt / steps);
+              for (const p of st.p) {
+                  for (let k = 0; k < steps; k++) {
+                      const dx = sigma * (p.y - p.x);
+                      const dy = p.x * (rho - p.z) - p.y;
+                      const dz = p.x * p.y - beta * p.z;
+                      p.x += dx * h; p.y += dy * h; p.z += dz * h;
+                  }
+                  if (!isFinite(p.x) || Math.abs(p.x) > 300 || Math.abs(p.z) > 300) { Object.assign(p, seed()); continue; }
+                  const o = (p.n % HIST) * 3;
+                  p.h[o] = p.x; p.h[o + 1] = p.y; p.h[o + 2] = p.z;
+                  p.n++;
+              }
+
+              st.spin += dt * spin;
+              const ca = Math.cos(st.spin), sa = Math.sin(st.spin);
+              const zoom = Math.min(targetW, targetH) / 64;
+              const cx = targetW / 2, cy = targetH * 0.60;
+              const tail = Math.max(3, Math.round(6 + fade * (HIST - 8)));
+
+              ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+              ctx.lineWidth = 1.15 * sc;
+              ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+              ctx.globalCompositeOperation = 'lighter';
+
+              // Each trajectory is redrawn from its own history every frame, so the
+              // rotation stays coherent instead of smearing an accumulated buffer.
+              const paths: [string, Path2D][] = [[cL, new Path2D()], [cR, new Path2D()], [cSpark, new Path2D()]];
+              for (const p of st.p) {
+                  const have = Math.min(p.n, HIST);
+                  if (have < 2) continue;
+                  const len = Math.min(have, tail);
+                  const fresh = nowSec - p.born < 0.9;
+                  const path = paths[fresh ? 2 : (p.x < 0 ? 0 : 1)][1];
+                  for (let i = 0; i < len; i++) {
+                      const idx = ((p.n - len + i) % HIST) * 3;
+                      const hx = p.h[idx], hy = p.h[idx + 1] * (1 - flatten), hz = p.h[idx + 2];
+                      const sx = cx + (hx * ca - hy * sa) * zoom;
+                      const sy = cy - (hz - 25) * zoom;
+                      i ? path.lineTo(sx, sy) : path.moveTo(sx, sy);
+                  }
+              }
+              for (const [col, path] of paths) {
+                  ctx.strokeStyle = col;
+                  ctx.globalAlpha = col === cSpark ? 0.85 : 0.42;
+                  ctx.stroke(path);
+              }
+              ctx.globalAlpha = 1;
+              ctx.globalCompositeOperation = 'source-over';
+              element = canvas;
           } else if (def.uuid === 'pitch-clock-1' || def.uuid === 'circle-of-fifths-1'
                   || def.uuid === 'tonnetz-viz-1' || def.uuid === 'shape-of-song-1'
                   || def.uuid === 'piano-roll-1') {
@@ -16962,6 +17534,11 @@ return (
                                    if (uuid === 'ember-core-1') return '☄️';
                                    if (uuid === 'wire-canyon-1') return '🏔️';
                                    if (uuid === 'ring-tunnel-1') return '🌀';
+                                   if (uuid === 'galton-board-1') return '🎲';
+                                   if (uuid === 'electron-cloud-1') return '⚛️';
+                                   if (uuid === 'n-body-1') return '🪐';
+                                   if (uuid === 'brownian-walk-1') return '🌡️';
+                                   if (uuid === 'lorenz-attractor-1') return '🦋';
                                    if (uuid === 'pitch-clock-1') return '🕛';
                                    if (uuid === 'circle-of-fifths-1') return '🎼';
                                    if (uuid === 'tonnetz-viz-1') return '🔺';

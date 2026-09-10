@@ -2204,6 +2204,140 @@ void main(void) {
   "uuid": "piano-roll-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Galton Board",
+  "category": "Science",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "nordic_ice",
+  "parameters": [
+    { "name": "peg_rows", "min": 6, "max": 24, "default": 14, "type": "number" },
+    { "name": "peg_bias", "min": -1, "max": 1, "default": 0, "type": "number" },
+    { "name": "elasticity", "min": 0, "max": 1, "default": 0.35, "type": "number" },
+    { "name": "flow_rate", "min": 0.1, "max": 4, "default": 1, "type": "number" },
+    { "name": "bin_memory", "min": 0, "max": 1, "default": 0.85, "type": "number" },
+    { "name": "burst", "default": 0, "type": "action" },
+    { "name": "invert_gravity", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#2e3440" },
+    { "id": "pegs", "name": "Pegs", "defaultColor": "#88c0d0" },
+    { "id": "particles", "name": "Particles", "defaultColor": "#eceff4" },
+    { "id": "bins", "name": "Distribution", "defaultColor": "#81a1c1" },
+    { "id": "curve", "name": "Binomial Curve", "defaultColor": "#5e81ac" }
+  ],
+  "uuid": "galton-board-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Electron Cloud",
+  "category": "Science",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "aurora_glow",
+  "parameters": [
+    { "name": "orbital", "min": 0, "max": 8, "default": 5, "type": "number" },
+    { "name": "uncertainty", "min": 0, "max": 1, "default": 0.25, "type": "number" },
+    { "name": "radial_scale", "min": 0.3, "max": 2, "default": 1, "type": "number" },
+    { "name": "density", "min": 0.1, "max": 1, "default": 0.6, "type": "number" },
+    { "name": "spin_speed", "min": -2, "max": 2, "default": 0.35, "type": "number" },
+    { "name": "excite", "default": 0, "type": "action" },
+    { "name": "energy_pulse", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Void", "defaultColor": "#0a0a12" },
+    { "id": "lobe_pos", "name": "Positive Phase", "defaultColor": "#8b6cf0" },
+    { "id": "lobe_neg", "name": "Negative Phase", "defaultColor": "#f0a0d8" },
+    { "id": "nucleus", "name": "Nucleus", "defaultColor": "#ffffff" }
+  ],
+  "uuid": "electron-cloud-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "N-Body Gravity",
+  "category": "Science",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "obsidian_gold",
+  "parameters": [
+    { "name": "gravity", "min": 0.1, "max": 3, "default": 1, "type": "number" },
+    { "name": "swarm", "min": 40, "max": 600, "default": 260, "type": "number" },
+    { "name": "eccentricity", "min": 0, "max": 1, "default": 0.35, "type": "number" },
+    { "name": "trail_fade", "min": 0, "max": 1, "default": 0.82, "type": "number" },
+    { "name": "drag", "min": 0, "max": 1, "default": 0.08, "type": "number" },
+    { "name": "spawn_star", "default": 0, "type": "action" },
+    { "name": "flip_polarity", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Deep Space", "defaultColor": "#121212" },
+    { "id": "star", "name": "Stars", "defaultColor": "#d4af37" },
+    { "id": "orbiter", "name": "Orbiters", "defaultColor": "#aa7c11" },
+    { "id": "trail", "name": "Trails", "defaultColor": "#f3e5ab" },
+    { "id": "rogue", "name": "Rogue Bodies", "defaultColor": "#5b4511" }
+  ],
+  "uuid": "n-body-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Brownian Motion",
+  "category": "Science",
+  "color": "white",
+  "movement": true,
+  "defaultPaletteId": "plotter_bands",
+  "parameters": [
+    { "name": "temperature", "min": 0, "max": 2, "default": 0.7, "type": "number" },
+    { "name": "viscosity", "min": 0, "max": 1, "default": 0.3, "type": "number" },
+    { "name": "walkers", "min": 20, "max": 400, "default": 160, "type": "number" },
+    { "name": "trail_length", "min": 0, "max": 1, "default": 0.6, "type": "number" },
+    { "name": "drift", "min": -1, "max": 1, "default": 0, "type": "number" },
+    { "name": "shockwave", "default": 0, "type": "action" },
+    { "name": "inject_tracers", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Medium", "defaultColor": "#ede9e2" },
+    { "id": "walk_a", "name": "Walkers A", "defaultColor": "#d9557a" },
+    { "id": "walk_b", "name": "Walkers B", "defaultColor": "#3a5ba0" },
+    { "id": "walk_c", "name": "Walkers C", "defaultColor": "#3c7a52" },
+    { "id": "tracer", "name": "Hot Tracers", "defaultColor": "#e08a2e" },
+    { "id": "grid", "name": "Lattice", "defaultColor": "#234a30" }
+  ],
+  "uuid": "brownian-walk-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Lorenz Attractor",
+  "category": "Science",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "warm_sunset",
+  "parameters": [
+    { "name": "sigma", "min": 1, "max": 20, "default": 10, "type": "number" },
+    { "name": "rho", "min": 1, "max": 60, "default": 28, "type": "number" },
+    { "name": "beta", "min": 0.5, "max": 5, "default": 2.667, "type": "number" },
+    { "name": "spin_speed", "min": -2, "max": 2, "default": 0.3, "type": "number" },
+    { "name": "trail_fade", "min": 0, "max": 1, "default": 0.9, "type": "number" },
+    { "name": "inject", "default": 0, "type": "action" },
+    { "name": "poincare", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Phase Space", "defaultColor": "#1f1427" },
+    { "id": "wing_l", "name": "Left Wing", "defaultColor": "#f25c54" },
+    { "id": "wing_r", "name": "Right Wing", "defaultColor": "#f7b267" },
+    { "id": "spark", "name": "Fresh Particles", "defaultColor": "#f4845f" }
+  ],
+  "uuid": "lorenz-attractor-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   }
 ];
 
@@ -2274,9 +2408,16 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'tonnetz-viz-1': 'Music',
   'shape-of-song-1': 'Music',
   'piano-roll-1': 'Music',
+
+  // Science — physical models rendered honestly enough to be worth watching
+  'galton-board-1': 'Science',
+  'electron-cloud-1': 'Science',
+  'n-body-1': 'Science',
+  'brownian-walk-1': 'Science',
+  'lorenz-attractor-1': 'Science',
 };
 
-export const GENERATIVE_CATEGORY_ORDER = ['Music', 'Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];
+export const GENERATIVE_CATEGORY_ORDER = ['Music', 'Science', 'Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];
 
 export function parseGeneratives(): GenerativeDefinition[] {
   return GENERATIVES_DATA.map(g => {
