@@ -2882,6 +2882,10 @@ export default function App() {
   const nBodyStateRef = useRef<Record<string, any>>({});
   const brownianStateRef = useRef<Record<string, any>>({});
   const lorenzStateRef = useRef<Record<string, any>>({});
+  const grayScottStateRef = useRef<Record<string, any>>({});
+  const golStateRef = useRef<Record<string, any>>({});
+  const pendulumStateRef = useRef<Record<string, any>>({});
+  const slitStateRef = useRef<Record<string, any>>({});
   const dragonTextStateRef = useRef<Record<string, any>>({});
 
   // Accumulation Mode Refs
@@ -10797,6 +10801,561 @@ export default function App() {
               ctx.globalAlpha = 1;
               ctx.globalCompositeOperation = 'source-over';
               element = canvas;
+          } else if (def.uuid === 'gray-scott-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+
+              const cBg = hexToRgb(resolvedGenerativeColors['background'] || '#1b2140');
+              const cLow = hexToRgb(resolvedGenerativeColors['low'] || '#ffcf5c');
+              const cMid = hexToRgb(resolvedGenerativeColors['mid'] || '#ff7a2e');
+              const cHigh = hexToRgb(resolvedGenerativeColors['high'] || '#ffffff');
+
+              const dRatio = Math.max(1.2, Math.min(4, ms.diffusion_ratio ?? 2));
+              const iters = Math.max(1, Math.min(24, Math.round(ms.reaction_speed ?? 12)));
+              const palSpeed = Math.max(0, Math.min(2, ms.palette_speed ?? 0.25));
+              let F = Math.max(0.01, Math.min(0.09, ms.feed_rate ?? 0.037));
+              let K = Math.max(0.03, Math.min(0.075, ms.kill_rate ?? 0.06));
+
+              // The classic corners of the Gray-Scott (F, k) parameter map.
+              const ZONES: [number, number][] = [
+                  [0.0367, 0.0649], [0.0545, 0.0620], [0.0300, 0.0620],
+                  [0.0290, 0.0570], [0.0580, 0.0650], [0.0260, 0.0510],
+              ];
+              const st = (grayScottStateRef.current[layer.id] ||= { acts: {}, gw: 0, gh: 0, zone: -1 });
+              if (actionFired(st.acts, 'zone', Number(ms.morph_preset ?? 0))) {
+                  st.zone = (st.zone + 1) % ZONES.length; st.lockF = F; st.lockK = K;
+              }
+              if (st.zone >= 0) {
+                  // A preset stays in charge until the operator actually turns a knob.
+                  if (Math.abs(F - st.lockF) > 0.0015 || Math.abs(K - st.lockK) > 0.0015) st.zone = -1;
+                  else { F = ZONES[st.zone][0]; K = ZONES[st.zone][1]; }
+              }
+
+              const gw = 190;
+              const gh = Math.max(40, Math.round(gw * targetH / Math.max(1, targetW)));
+              const N = gw * gh;
+              const seedAt = (cxi: number, cyi: number, rad: number) => {
+                  for (let y = Math.max(0, cyi - rad); y < Math.min(gh, cyi + rad); y++) {
+                      for (let x = Math.max(0, cxi - rad); x < Math.min(gw, cxi + rad); x++) {
+                          if ((x - cxi) * (x - cxi) + (y - cyi) * (y - cyi) < rad * rad) {
+                              st.u[y * gw + x] = 0.5; st.v[y * gw + x] = 0.25;
+                          }
+                      }
+                  }
+              };
+              const wipe = () => {
+                  st.u.fill(1); st.v.fill(0);
+                  seedAt(gw >> 1, gh >> 1, Math.max(3, Math.round(gh * 0.06)));
+              };
+              if (st.gw !== gw || st.gh !== gh) {
+                  st.gw = gw; st.gh = gh;
+                  st.u = new Float32Array(N); st.v = new Float32Array(N);
+                  st.nu = new Float32Array(N); st.nv = new Float32Array(N);
+                  st.buf = document.createElement('canvas'); st.buf.width = gw; st.buf.height = gh;
+                  st.img = st.buf.getContext('2d')!.createImageData(gw, gh);
+                  wipe();
+              }
+              if (actionFired(st.acts, 'reset', Number(ms.reset_substrate ?? 0))) wipe();
+              if (actionFired(st.acts, 'seed', Number(ms.seed_burst ?? 0))) {
+                  const r = Math.max(2, Math.round(gh * 0.035));
+                  for (let i = 0; i < 14; i++) seedAt((Math.random() * gw) | 0, (Math.random() * gh) | 0, r);
+              }
+
+              // u' = Du.lap(u) - u.v^2 + F(1-u);  v' = Dv.lap(v) + u.v^2 - (F+k)v
+              const u = st.u, v = st.v, nu = st.nu, nv = st.nv;
+              const Du = 0.21 * dRatio, Dv = 0.105;
+              for (let it = 0; it < iters; it++) {
+                  for (let y = 0; y < gh; y++) {
+                      const yUp = ((y - 1 + gh) % gh) * gw, yDn = ((y + 1) % gh) * gw, yC = y * gw;
+                      for (let x = 0; x < gw; x++) {
+                          const xL = (x - 1 + gw) % gw, xR = (x + 1) % gw, i = yC + x;
+                          const lu = 0.2 * (u[yC + xL] + u[yC + xR] + u[yUp + x] + u[yDn + x])
+                                   + 0.05 * (u[yUp + xL] + u[yUp + xR] + u[yDn + xL] + u[yDn + xR]) - u[i];
+                          const lv = 0.2 * (v[yC + xL] + v[yC + xR] + v[yUp + x] + v[yDn + x])
+                                   + 0.05 * (v[yUp + xL] + v[yUp + xR] + v[yDn + xL] + v[yDn + xR]) - v[i];
+                          const uvv = u[i] * v[i] * v[i];
+                          nu[i] = u[i] + (Du * lu - uvv + F * (1 - u[i]));
+                          nv[i] = v[i] + (Dv * lv + uvv - (F + K) * v[i]);
+                      }
+                  }
+                  u.set(nu); v.set(nv);
+              }
+
+              // Three-stop ramp through the palette, rotating slowly if asked.
+              // The ramp cycles only through the three chemical colours; unreacted
+              // substrate stays the background colour whatever palette_speed is doing.
+              const shift = (nowSec * palSpeed * 0.22) % 1;
+              const px = st.img.data;
+              for (let i = 0; i < N; i++) {
+                  let d = v[i] * 3.4; d = d < 0 ? 0 : d > 1 ? 1 : d;
+                  const t = (d + shift) % 1;
+                  let a, b, f;
+                  if (t < 0.34) { a = cLow; b = cMid; f = t / 0.34; }
+                  else if (t < 0.67) { a = cMid; b = cHigh; f = (t - 0.34) / 0.33; }
+                  else { a = cHigh; b = cLow; f = (t - 0.67) / 0.33; }
+                  const mix = d < 0.12 ? d / 0.12 : 1;
+                  const o = i << 2;
+                  px[o] = cBg.r + ((a.r + (b.r - a.r) * f) - cBg.r) * mix;
+                  px[o + 1] = cBg.g + ((a.g + (b.g - a.g) * f) - cBg.g) * mix;
+                  px[o + 2] = cBg.b + ((a.b + (b.b - a.b) * f) - cBg.b) * mix;
+                  px[o + 3] = 255;
+              }
+              st.buf.getContext('2d')!.putImageData(st.img, 0, 0);
+              ctx.imageSmoothingEnabled = true;
+              ctx.drawImage(st.buf, 0, 0, targetW, targetH);
+              element = canvas;
+          } else if (def.uuid === 'game-of-life-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+
+              const cBg = hexToRgb(resolvedGenerativeColors['background'] || '#0d1117');
+              const cAlive = hexToRgb(resolvedGenerativeColors['alive'] || '#39d353');
+              const cAge = hexToRgb(resolvedGenerativeColors['aging'] || '#2ea043');
+              const cNew = hexToRgb(resolvedGenerativeColors['glow'] || '#00ff66');
+
+              const gens = Math.max(0, Math.min(30, ms.simulation_speed ?? 11));
+              const rule = Math.max(0, Math.min(4, Math.round(ms.rule_set ?? 0)));
+              const radius = Math.max(1, Math.min(5, Math.round(ms.kernel_radius ?? 1)));
+              const glow = Math.max(0, Math.min(1, ms.afterglow ?? 0.55));
+              const zoom = Math.max(1, Math.min(14, ms.zoom_level ?? 5));
+
+              const cell = Math.max(2, Math.round(zoom));
+              const gw = Math.max(24, Math.min(420, Math.round(targetW / cell)));
+              const gh = Math.max(24, Math.min(420, Math.round(targetH / cell)));
+              const N = gw * gh;
+
+              const st = (golStateRef.current[layer.id] ||= { acts: {}, gw: 0, gh: 0, acc: 0 });
+              const scatter = (density: number) => {
+                  for (let i = 0; i < N; i++) if (Math.random() < density) st.a[i] = 1;
+              };
+              if (st.gw !== gw || st.gh !== gh) {
+                  st.gw = gw; st.gh = gh;
+                  st.a = new Uint8Array(N); st.b = new Uint8Array(N);
+                  st.born = new Uint8Array(N);
+                  st.age = new Float32Array(N);
+                  st.buf = document.createElement('canvas'); st.buf.width = gw; st.buf.height = gh;
+                  st.img = st.buf.getContext('2d')!.createImageData(gw, gh);
+                  scatter(0.18);
+              }
+
+              // Stamps are written as coordinate lists. The surrounding cells are
+              // cleared first — dropped into a live soup a glider gun is eaten before it
+              // fires once, so the action would look like it did nothing.
+              const stamp = (cells: number[][], ox: number, oy: number, margin = 6) => {
+                  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+                  for (const [dx, dy] of cells) {
+                      if (dx < x0) x0 = dx; if (dx > x1) x1 = dx;
+                      if (dy < y0) y0 = dy; if (dy > y1) y1 = dy;
+                  }
+                  for (let y = y0 - margin; y <= y1 + margin; y++) {
+                      const yy = ((oy + y) % gh + gh) % gh;
+                      for (let x = x0 - margin; x <= x1 + margin; x++) {
+                          st.a[yy * gw + (((ox + x) % gw + gw) % gw)] = 0;
+                      }
+                  }
+                  for (const [dx, dy] of cells) {
+                      const x = ((ox + dx) % gw + gw) % gw, y = ((oy + dy) % gh + gh) % gh;
+                      st.a[y * gw + x] = 1;
+                  }
+              };
+              if (actionFired(st.acts, 'gun', Number(ms.glider_gun ?? 0))) {
+                  const G = [[24,0],[22,1],[24,1],[12,2],[13,2],[20,2],[21,2],[34,2],[35,2],
+                             [11,3],[15,3],[20,3],[21,3],[34,3],[35,3],[0,4],[1,4],[10,4],[16,4],[20,4],[21,4],
+                             [0,5],[1,5],[10,5],[14,5],[16,5],[17,5],[22,5],[24,5],[10,6],[16,6],[24,6],
+                             [11,7],[15,7],[12,8],[13,8]];
+                  stamp(G, 8 + ((Math.random() * Math.max(1, gw - 52)) | 0), 8 + ((Math.random() * Math.max(1, gh - 24)) | 0), 8);
+              }
+              if (actionFired(st.acts, 'puls', Number(ms.pulsar ?? 0))) {
+                  const P: number[][] = [];
+                  for (const s of [-6, -1, 1, 6]) for (const d of [-4, -3, -2, 2, 3, 4]) { P.push([s, d]); P.push([d, s]); }
+                  stamp(P, gw >> 1, gh >> 1);
+              }
+              if (actionFired(st.acts, 'noise', Number(ms.noise_burst ?? 0))) {
+                  const r = Math.max(4, Math.round(Math.min(gw, gh) * 0.13));
+                  for (let i = 0; i < r * r * 2; i++) {
+                      const x = (gw >> 1) + ((Math.random() * 2 - 1) * r) | 0;
+                      const y = (gh >> 1) + ((Math.random() * 2 - 1) * r) | 0;
+                      if (x >= 0 && x < gw && y >= 0 && y < gh) st.a[y * gw + x] = 1;
+                  }
+              }
+
+              // Conway and friends at r = 1; Larger-than-Life thresholds beyond that,
+              // where the same birth/survival fractions grow gliders into solitons.
+              const RULES = [[0b1000, 0b1100], [0b1001000, 0b1100], [0b1000, 0b11110], [0b11001000, 0b111011000], [0b111101000, 0b111100000]];
+              const [birthMask, surviveMask] = RULES[rule];
+              const area = (2 * radius + 1) * (2 * radius + 1) - 1;
+              const bLo = area * 0.34, bHi = area * 0.45, sLo = area * 0.34, sHi = area * 0.58;
+
+              st.acc += dt * gens;
+              let steps = Math.min(4, Math.floor(st.acc));
+              st.acc -= steps;
+              while (steps-- > 0) {
+                  const a = st.a, b = st.b;
+                  for (let y = 0; y < gh; y++) {
+                      for (let x = 0; x < gw; x++) {
+                          let n = 0;
+                          for (let dy = -radius; dy <= radius; dy++) {
+                              const yy = ((y + dy) % gh + gh) % gh;
+                              for (let dx = -radius; dx <= radius; dx++) {
+                                  if (!dx && !dy) continue;
+                                  n += a[yy * gw + (((x + dx) % gw + gw) % gw)];
+                              }
+                          }
+                          const alive = a[y * gw + x];
+                          let next: number;
+                          if (radius === 1) next = alive ? ((surviveMask >> n) & 1) : ((birthMask >> n) & 1);
+                          else next = alive ? (n >= sLo && n <= sHi ? 1 : 0) : (n >= bLo && n <= bHi ? 1 : 0);
+                          b[y * gw + x] = next;
+                          st.born[y * gw + x] = next && !alive ? 1 : 0;
+                      }
+                  }
+                  st.a = b; st.b = a;
+                  const age = st.age, cur = st.a;
+                  for (let i = 0; i < N; i++) age[i] = cur[i] ? 1 : age[i] * (0.30 + glow * 0.66);
+              }
+
+              const px = st.img.data, cur = st.a, age = st.age, born = st.born;
+              for (let i = 0; i < N; i++) {
+                  const o = i << 2;
+                  let r: number, g: number, bl: number;
+                  if (cur[i]) {
+                      const c = born[i] ? cNew : cAlive;
+                      r = c.r; g = c.g; bl = c.b;
+                  } else {
+                      const t = age[i];
+                      r = cBg.r + (cAge.r - cBg.r) * t;
+                      g = cBg.g + (cAge.g - cBg.g) * t;
+                      bl = cBg.b + (cAge.b - cBg.b) * t;
+                  }
+                  px[o] = r; px[o + 1] = g; px[o + 2] = bl; px[o + 3] = 255;
+              }
+              st.buf.getContext('2d')!.putImageData(st.img, 0, 0);
+              ctx.imageSmoothingEnabled = false;
+              ctx.drawImage(st.buf, 0, 0, targetW, targetH);
+              element = canvas;
+          } else if (def.uuid === 'pendulum-wave-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.04, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || '#1a1b26';
+              const cRig = resolvedGenerativeColors['rig'] || '#7aa2f7';
+              const cStr = resolvedGenerativeColors['string'] || '#bb9af7';
+              const cBob = hexToRgb(resolvedGenerativeColors['bob_a'] || '#f7768e');
+              const cTrace = resolvedGenerativeColors['trace'] || '#7dcfff';
+              const cTraceRgb = hexToRgb(cTrace);
+
+              const count = Math.max(8, Math.min(48, Math.round(ms.pendulum_count ?? 30)));
+              const dOmega = Math.max(0.2, Math.min(3, ms.frequency_delta ?? 1));
+              const damp = Math.max(0, Math.min(1, ms.damping ?? 0.08));
+              const couple = Math.max(0, Math.min(1, ms.coupling ?? 0));
+              const tilt = Math.max(0, Math.min(1, ms.perspective_tilt ?? 0.45));
+
+              const st = (pendulumStateRef.current[layer.id] ||= { acts: {}, n: 0, th: null, w: null });
+              // Each pendulum is one step further up the frequency ladder, so the array
+              // re-forms the same serpentine every 2*pi/dOmega seconds.
+              const w0 = 3.4;
+              const omega = (i: number) => w0 + i * dOmega * 0.085;
+              if (st.n !== count) {
+                  st.n = count;
+                  st.th = new Float32Array(count); st.w = new Float32Array(count);
+                  for (let i = 0; i < count; i++) st.th[i] = 0.55;
+              }
+              if (actionFired(st.acts, 'rel', Number(ms.release ?? 0))) {
+                  for (let i = 0; i < count; i++) { st.th[i] = 0.55; st.w[i] = 0; }
+              }
+              if (actionFired(st.acts, 'kick', Number(ms.impulse_kick ?? 0))) {
+                  for (let i = 0; i < count; i += 2) st.w[i] += 1.9;
+              }
+              if (actionFired(st.acts, 'align', Number(ms.align_phase ?? 0))) {
+                  // Rotate every pendulum to the array's mean phase while keeping its own
+                  // amplitude, so the snake snaps flat and then re-forms rather than
+                  // simply stopping dead.
+                  let mx = 0, my = 0;
+                  for (let i = 0; i < count; i++) {
+                      const wi = omega(i);
+                      const p = st.th[i], q = -st.w[i] / wi;
+                      const a = Math.hypot(p, q) || 1e-6;
+                      mx += p / a; my += q / a;
+                  }
+                  const psi = Math.atan2(my, mx);
+                  for (let i = 0; i < count; i++) {
+                      const wi = omega(i);
+                      const A = Math.max(0.25, Math.hypot(st.th[i], -st.w[i] / wi));
+                      st.th[i] = A * Math.cos(psi);
+                      st.w[i] = -A * wi * Math.sin(psi);
+                  }
+              }
+
+              // theta'' = -w^2 sin(theta) - 2*gamma*theta' + K(theta[i-1] - 2 theta[i] + theta[i+1])
+              const gamma = damp * 0.16;
+              const K = couple * w0 * w0 * 0.30;
+              const SUB = 4, h = dt / SUB;
+              const th = st.th, wv = st.w;
+              for (let s = 0; s < SUB; s++) {
+                  for (let i = 0; i < count; i++) {
+                      const wi = omega(i);
+                      const left = i > 0 ? th[i - 1] : th[i];
+                      const right = i < count - 1 ? th[i + 1] : th[i];
+                      const acc = -wi * wi * Math.sin(th[i]) - 2 * gamma * wv[i] + K * (left - 2 * th[i] + right);
+                      wv[i] += acc * h;
+                  }
+                  for (let i = 0; i < count; i++) th[i] += wv[i] * h;
+              }
+              // Damping eventually stops the array; re-pluck it so the layer never
+              // settles into a dead frame on its own.
+              let peak = 0;
+              for (let i = 0; i < count; i++) peak = Math.max(peak, Math.abs(th[i]), Math.abs(wv[i]) * 0.3);
+              if (peak < 0.02) for (let i = 0; i < count; i++) { th[i] = 0.55; wv[i] = 0; }
+
+              // Oblique camera: a fixed yaw keeps the swing readable head-on, and the
+              // pitch knob rolls the view up to a plan view of the wave.
+              const YAW = 0.46, cy0 = Math.cos(YAW), sy0 = Math.sin(YAW);
+              const pitch = 0.20 + tilt * 1.30;
+              const cp = Math.cos(pitch), sp = Math.sin(pitch);
+              const rail = 1000, Lmax = 660;
+              const Lref = 1 / (omega(0) * omega(0));
+              const lenOf = (i: number) => (1 / (omega(i) * omega(i))) / Lref * Lmax;
+              const raw = (X: number, Y: number, Z: number) => {
+                  const x1 = X * cy0 + Z * sy0;
+                  const z1 = -X * sy0 + Z * cy0;
+                  return [x1, Y * cp - z1 * sp] as [number, number];
+              };
+              // Frame on the rig's full swing envelope rather than the current pose, so
+              // the view does not breathe in and out with the wave.
+              const AMP = 0.68;
+              let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+              const see = (p: [number, number]) => {
+                  if (p[0] < minX) minX = p[0]; if (p[0] > maxX) maxX = p[0];
+                  if (p[1] < minY) minY = p[1]; if (p[1] > maxY) maxY = p[1];
+              };
+              for (let i = 0; i < count; i++) {
+                  const X0 = (i / Math.max(1, count - 1) - 0.5) * rail, L0 = lenOf(i);
+                  see(raw(X0, 0, 0));
+                  for (const a of [-AMP, 0, AMP]) see(raw(X0, L0 * Math.cos(a), L0 * Math.sin(a)));
+              }
+              const fit = Math.min(targetW * 0.88 / Math.max(1, maxX - minX), targetH * 0.88 / Math.max(1, maxY - minY));
+              const offX = targetW / 2 - (minX + maxX) / 2 * fit;
+              const offY = targetH / 2 - (minY + maxY) / 2 * fit;
+              const project = (X: number, Y: number, Z: number) => {
+                  const p = raw(X, Y, Z);
+                  return [offX + p[0] * fit, offY + p[1] * fit] as [number, number];
+              };
+
+              ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+
+              const pts: [number, number][] = [];
+              const pivots: [number, number][] = [];
+              for (let i = 0; i < count; i++) {
+                  const L = lenOf(i);
+                  const X = (i / Math.max(1, count - 1) - 0.5) * rail;
+                  const p = project(X, 0, 0);
+                  const b = project(X, L * Math.cos(th[i]), L * Math.sin(th[i]));
+                  pivots.push(p); pts.push(b);
+              }
+
+              ctx.strokeStyle = cRig; ctx.lineWidth = 2.5 * sc; ctx.globalAlpha = 0.8;
+              ctx.beginPath(); ctx.moveTo(pivots[0][0], pivots[0][1]);
+              ctx.lineTo(pivots[count - 1][0], pivots[count - 1][1]); ctx.stroke();
+
+              ctx.strokeStyle = cStr; ctx.lineWidth = 1.1 * sc; ctx.globalAlpha = 0.45;
+              ctx.beginPath();
+              for (let i = 0; i < count; i++) { ctx.moveTo(pivots[i][0], pivots[i][1]); ctx.lineTo(pts[i][0], pts[i][1]); }
+              ctx.stroke();
+
+              ctx.strokeStyle = cTrace; ctx.lineWidth = 2 * sc; ctx.globalAlpha = 0.75;
+              ctx.beginPath();
+              for (let i = 0; i < count; i++) i ? ctx.lineTo(pts[i][0], pts[i][1]) : ctx.moveTo(pts[i][0], pts[i][1]);
+              ctx.stroke();
+
+              ctx.globalAlpha = 1;
+              for (let i = 0; i < count; i++) {
+                  const f = i / Math.max(1, count - 1);
+                  const r = Math.round(cBob.r + (cTraceRgb.r - cBob.r) * f);
+                  const g = Math.round(cBob.g + (cTraceRgb.g - cBob.g) * f);
+                  const b = Math.round(cBob.b + (cTraceRgb.b - cBob.b) * f);
+                  ctx.fillStyle = `rgb(${r},${g},${b})`;
+                  ctx.beginPath(); ctx.arc(pts[i][0], pts[i][1], 5.5 * sc, 0, 6.283); ctx.fill();
+              }
+              element = canvas;
+          } else if (def.uuid === 'double-slit-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || '#0a0a12';
+              const cBeam = resolvedGenerativeColors['beam'] || '#00f0ff';
+              const cBar = resolvedGenerativeColors['barrier'] || '#7000ff';
+              const cFringe = resolvedGenerativeColors['fringe'] || '#ff007f';
+              const cDet = resolvedGenerativeColors['detector'] || '#ffe600';
+              const rgbFringe = hexToRgb(cFringe), rgbBeam = hexToRgb(cBeam);
+
+              const sep = Math.max(0.3, Math.min(4, ms.slit_separation ?? 1.3));
+              const width = Math.max(0.06, Math.min(1.2, ms.slit_width ?? 0.32));
+              const lam = Math.max(0.3, Math.min(2.5, ms.wavelength ?? 1));
+              const deco = Math.max(0, Math.min(1, ms.decoherence ?? 0));
+              const waveMix = Math.max(0, Math.min(1, ms.wave_view ?? 0));
+
+              const BINS = 220;
+              const st = (slitStateRef.current[layer.id] ||= { acts: {}, ph: [], bins: new Float32Array(BINS), single: false, acc: 0 });
+              if (actionFired(st.acts, 'burst', Number(ms.photon_burst ?? 0))) st.burstN = (st.burstN ?? 0) + 420;
+              if (actionFired(st.acts, 'slit', Number(ms.close_slit ?? 0))) st.single = !st.single;
+              if (actionFired(st.acts, 'clr', Number(ms.clear_screen ?? 0))) { st.bins.fill(0); st.ph.length = 0; }
+
+              const srcX = targetW * 0.06, barX = targetW * 0.38, detX = targetW * 0.855;
+              const midY = targetH / 2;
+              const D = detX - barX;
+              const scaleY = targetH * 0.11;               // one "unit" of slit geometry in px
+              const yA = midY - sep * 0.5 * scaleY, yB = midY + sep * 0.5 * scaleY;
+
+              // Far-field Fraunhofer intensity: a single-slit sinc^2 envelope times the
+              // two-slit cos^2 term, with decoherence washing the fringes out.
+              const sinc = (x: number) => (Math.abs(x) < 1e-6 ? 1 : Math.sin(x) / x);
+              // q is the Fraunhofer angular variable, scaled so the default geometry's
+              // central diffraction lobe just fills the detector.
+              const Q = 3.6;
+              const intensity = (y: number) => {
+                  const q = ((y - midY) / (targetH * 0.5)) * Q;
+                  const env = Math.pow(sinc(Math.PI * width * q / lam), 2);
+                  if (st.single) return env;
+                  const fringe = Math.pow(Math.cos(Math.PI * sep * q / lam), 2);
+                  return env * (fringe * (1 - deco) + 0.5 * deco);
+              };
+              let iMax = 1e-9;
+              const profile = new Float32Array(BINS);
+              for (let i = 0; i < BINS; i++) {
+                  const y = (i + 0.5) / BINS * targetH;
+                  profile[i] = intensity(y);
+                  if (profile[i] > iMax) iMax = profile[i];
+              }
+
+              st.acc += dt * 90;
+              let emit = Math.floor(st.acc); st.acc -= emit;
+              if (st.burstN > 0) { const b = Math.min(st.burstN, 26); emit += b; st.burstN -= b; }
+              for (let i = 0; i < emit && st.ph.length < 900; i++) {
+                  // Rejection-sample the landing point from the true pattern, then fly
+                  // the photon along the straight line that would have taken it there.
+                  let y = midY, guard = 0;
+                  do { y = Math.random() * targetH; } while (Math.random() * iMax > intensity(y) && guard++ < 60);
+                  const useA = st.single ? true : Math.random() < 0.5;
+                  st.ph.push({ t: 0, y0: midY + (Math.random() - 0.5) * targetH * 0.05, ys: useA ? yA : yB, y1: y, sp: 0.55 + Math.random() * 0.5 });
+              }
+
+              for (const p of st.ph) {
+                  p.t += dt * p.sp;
+                  if (p.t >= 1 && !p.hit) {
+                      p.hit = true;
+                      const bi = Math.max(0, Math.min(BINS - 1, Math.floor(p.y1 / targetH * BINS)));
+                      st.bins[bi] += 1;
+                  }
+              }
+              st.ph = st.ph.filter((p: any) => p.t < 1.05);
+
+              ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+
+              if (waveMix > 0.01) {
+                  // Superposition of two circular waves, sampled on a coarse grid.
+                  const gw = 150, gh = Math.max(40, Math.round(gw * targetH / targetW));
+                  if (!st.wbuf || st.wbuf.width !== gw || st.wbuf.height !== gh) {
+                      st.wbuf = document.createElement('canvas'); st.wbuf.width = gw; st.wbuf.height = gh;
+                      st.wimg = st.wbuf.getContext('2d')!.createImageData(gw, gh);
+                  }
+                  const k = 2 * Math.PI / (lam * scaleY * 0.34);
+                  const phase = nowSec * 9;
+                  // 1/sqrt(r) falls off too fast to stay visible across the tank, so the
+                  // spreading is normalised against a reference distance instead.
+                  const roll = (r: number) => Math.sqrt(230 / (r + 70));
+                  const wpx = st.wimg.data;
+                  for (let gy = 0; gy < gh; gy++) {
+                      const wy = (gy + 0.5) / gh * targetH;
+                      for (let gx = 0; gx < gw; gx++) {
+                          const wx = (gx + 0.5) / gw * targetW;
+                          let amp = 0;
+                          if (wx > barX) {
+                              const r1 = Math.hypot(wx - barX, wy - yA);
+                              amp += Math.cos(k * r1 - phase) * roll(r1);
+                              if (!st.single) {
+                                  const r2 = Math.hypot(wx - barX, wy - yB);
+                                  amp += Math.cos(k * r2 - phase) * roll(r2);
+                              }
+                          } else {
+                              amp = Math.cos(k * (wx - srcX) - phase) * 1.05;
+                          }
+                          const v = Math.min(1, amp * amp * 0.34);
+                          const o = (gy * gw + gx) << 2;
+                          wpx[o] = rgbFringe.r * v; wpx[o + 1] = rgbFringe.g * v; wpx[o + 2] = rgbFringe.b * v;
+                          wpx[o + 3] = 255 * waveMix;
+                      }
+                  }
+                  st.wbuf.getContext('2d')!.putImageData(st.wimg, 0, 0);
+                  ctx.imageSmoothingEnabled = true;
+                  ctx.drawImage(st.wbuf, 0, 0, targetW, targetH);
+              }
+
+              const gsrc = ctx.createRadialGradient(srcX, midY, 0, srcX, midY, 46 * sc);
+              gsrc.addColorStop(0, cBeam); gsrc.addColorStop(1, 'rgba(0,0,0,0)');
+              ctx.fillStyle = gsrc;
+              ctx.beginPath(); ctx.arc(srcX, midY, 46 * sc, 0, 6.283); ctx.fill();
+
+              // barrier with its slit gaps
+              const slitPx = Math.max(3, width * scaleY * 0.5);
+              ctx.fillStyle = cBar;
+              const seg = (y0: number, y1: number) => ctx.fillRect(barX - 4 * sc, y0, 8 * sc, Math.max(0, y1 - y0));
+              if (st.single) {
+                  seg(0, yA - slitPx); seg(yA + slitPx, targetH);
+              } else {
+                  seg(0, yA - slitPx); seg(yA + slitPx, yB - slitPx); seg(yB + slitPx, targetH);
+              }
+
+              ctx.globalAlpha = 1 - waveMix * 0.75;
+              ctx.fillStyle = cBeam;
+              for (const p of st.ph) {
+                  const t = p.t;
+                  let x: number, y: number;
+                  if (t < 0.42) { const u = t / 0.42; x = srcX + (barX - srcX) * u; y = p.y0 + (p.ys - p.y0) * u; }
+                  else { const u = (t - 0.42) / 0.58; x = barX + (detX - barX) * u; y = p.ys + (p.y1 - p.ys) * u; }
+                  ctx.fillRect(x - 1.4 * sc, y - 1.4 * sc, 2.8 * sc, 2.8 * sc);
+              }
+              ctx.globalAlpha = 1;
+
+              // detector screen: accumulated strikes plus the measured profile
+              ctx.fillStyle = cDet; ctx.globalAlpha = 0.35;
+              ctx.fillRect(detX, 0, 3 * sc, targetH);
+              ctx.globalAlpha = 1;
+              let bMax = 1;
+              for (let i = 0; i < BINS; i++) if (st.bins[i] > bMax) bMax = st.bins[i];
+              const bandW = targetW * 0.062;
+              for (let i = 0; i < BINS; i++) {
+                  const a = Math.min(1, st.bins[i] / bMax);
+                  if (a <= 0.004) continue;
+                  ctx.fillStyle = `rgba(${rgbFringe.r},${rgbFringe.g},${rgbFringe.b},${a.toFixed(3)})`;
+                  ctx.fillRect(detX + 4 * sc, i / BINS * targetH, bandW, targetH / BINS + 1);
+              }
+              ctx.strokeStyle = cDet; ctx.lineWidth = 1.8 * sc; ctx.globalAlpha = 0.9;
+              ctx.beginPath();
+              for (let i = 0; i < BINS; i++) {
+                  const x = detX + 4 * sc + (st.bins[i] / bMax) * bandW;
+                  const y = (i + 0.5) / BINS * targetH;
+                  i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+              }
+              ctx.stroke();
+              ctx.globalAlpha = 1;
+              element = canvas;
           } else if (def.uuid === 'pitch-clock-1' || def.uuid === 'circle-of-fifths-1'
                   || def.uuid === 'tonnetz-viz-1' || def.uuid === 'shape-of-song-1'
                   || def.uuid === 'piano-roll-1') {
@@ -17534,6 +18093,10 @@ return (
                                    if (uuid === 'ember-core-1') return '☄️';
                                    if (uuid === 'wire-canyon-1') return '🏔️';
                                    if (uuid === 'ring-tunnel-1') return '🌀';
+                                   if (uuid === 'gray-scott-1') return '🧫';
+                                   if (uuid === 'game-of-life-1') return '🦠';
+                                   if (uuid === 'pendulum-wave-1') return '🕰️';
+                                   if (uuid === 'double-slit-1') return '🌊';
                                    if (uuid === 'galton-board-1') return '🎲';
                                    if (uuid === 'electron-cloud-1') return '⚛️';
                                    if (uuid === 'n-body-1') return '🪐';

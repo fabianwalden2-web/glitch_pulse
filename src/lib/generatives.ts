@@ -2338,6 +2338,116 @@ void main(void) {
   "uuid": "lorenz-attractor-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Reaction Diffusion",
+  "category": "Science",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "ember_glow",
+  "parameters": [
+    { "name": "feed_rate", "min": 0.01, "max": 0.09, "default": 0.037, "type": "number" },
+    { "name": "kill_rate", "min": 0.03, "max": 0.075, "default": 0.06, "type": "number" },
+    { "name": "diffusion_ratio", "min": 1.2, "max": 4, "default": 2, "type": "number" },
+    { "name": "reaction_speed", "min": 1, "max": 24, "default": 12, "type": "number" },
+    { "name": "palette_speed", "min": 0, "max": 2, "default": 0.25, "type": "number" },
+    { "name": "morph_preset", "default": 0, "type": "action" },
+    { "name": "seed_burst", "default": 0, "type": "action" },
+    { "name": "reset_substrate", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Substrate", "defaultColor": "#1b2140" },
+    { "id": "low", "name": "Low Density", "defaultColor": "#ffcf5c" },
+    { "id": "mid", "name": "Mid Density", "defaultColor": "#ff7a2e" },
+    { "id": "high", "name": "High Density", "defaultColor": "#ffffff" }
+  ],
+  "uuid": "gray-scott-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Cellular Automata",
+  "category": "Science",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "acid_matrix",
+  "parameters": [
+    { "name": "simulation_speed", "min": 0, "max": 30, "default": 11, "type": "number" },
+    { "name": "rule_set", "min": 0, "max": 4, "default": 0, "type": "number" },
+    { "name": "kernel_radius", "min": 1, "max": 5, "default": 1, "type": "number" },
+    { "name": "afterglow", "min": 0, "max": 1, "default": 0.55, "type": "number" },
+    { "name": "zoom_level", "min": 1, "max": 14, "default": 5, "type": "number" },
+    { "name": "glider_gun", "default": 0, "type": "action" },
+    { "name": "pulsar", "default": 0, "type": "action" },
+    { "name": "noise_burst", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Dead Space", "defaultColor": "#0d1117" },
+    { "id": "alive", "name": "Live Cells", "defaultColor": "#39d353" },
+    { "id": "aging", "name": "Afterglow", "defaultColor": "#2ea043" },
+    { "id": "glow", "name": "New Births", "defaultColor": "#00ff66" }
+  ],
+  "uuid": "game-of-life-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Pendulum Wave",
+  "category": "Science",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "tokyo_synth",
+  "parameters": [
+    { "name": "pendulum_count", "min": 8, "max": 48, "default": 30, "type": "number" },
+    { "name": "frequency_delta", "min": 0.2, "max": 3, "default": 1, "type": "number" },
+    { "name": "damping", "min": 0, "max": 1, "default": 0.08, "type": "number" },
+    { "name": "coupling", "min": 0, "max": 1, "default": 0, "type": "number" },
+    { "name": "perspective_tilt", "min": 0, "max": 1, "default": 0.45, "type": "number" },
+    { "name": "release", "default": 0, "type": "action" },
+    { "name": "impulse_kick", "default": 0, "type": "action" },
+    { "name": "align_phase", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Backdrop", "defaultColor": "#1a1b26" },
+    { "id": "rig", "name": "Support Rig", "defaultColor": "#7aa2f7" },
+    { "id": "string", "name": "Strings", "defaultColor": "#bb9af7" },
+    { "id": "bob_a", "name": "Bobs", "defaultColor": "#f7768e" },
+    { "id": "trace", "name": "Wave Trace", "defaultColor": "#7dcfff" }
+  ],
+  "uuid": "pendulum-wave-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Double Slit",
+  "category": "Science",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "cyberpunk_neon",
+  "parameters": [
+    { "name": "slit_separation", "min": 0.3, "max": 4, "default": 1.3, "type": "number" },
+    { "name": "slit_width", "min": 0.06, "max": 1.2, "default": 0.32, "type": "number" },
+    { "name": "wavelength", "min": 0.3, "max": 2.5, "default": 1, "type": "number" },
+    { "name": "decoherence", "min": 0, "max": 1, "default": 0, "type": "number" },
+    { "name": "wave_view", "min": 0, "max": 1, "default": 0.35, "type": "number" },
+    { "name": "photon_burst", "default": 0, "type": "action" },
+    { "name": "close_slit", "default": 0, "type": "action" },
+    { "name": "clear_screen", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Vacuum", "defaultColor": "#0a0a12" },
+    { "id": "beam", "name": "Photons", "defaultColor": "#00f0ff" },
+    { "id": "barrier", "name": "Barrier", "defaultColor": "#7000ff" },
+    { "id": "fringe", "name": "Fringes", "defaultColor": "#ff007f" },
+    { "id": "detector", "name": "Detector Screen", "defaultColor": "#ffe600" }
+  ],
+  "uuid": "double-slit-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   }
 ];
 
@@ -2415,6 +2525,10 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'n-body-1': 'Science',
   'brownian-walk-1': 'Science',
   'lorenz-attractor-1': 'Science',
+  'gray-scott-1': 'Science',
+  'game-of-life-1': 'Science',
+  'pendulum-wave-1': 'Science',
+  'double-slit-1': 'Science',
 };
 
 export const GENERATIVE_CATEGORY_ORDER = ['Music', 'Science', 'Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];
