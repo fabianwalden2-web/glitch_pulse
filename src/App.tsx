@@ -50,6 +50,7 @@ import {
   Check,
   Copy,
   Sparkles,
+  Video,
   Dices,
   Eraser,
   Mic,
@@ -2778,6 +2779,9 @@ export default function App() {
   const recordedChunksRef = useRef<Blob[]>([]);
   const recSystemStreamRef = useRef<MediaStream | null>(null);
   const [recAudioSrc, setRecAudioSrc] = useState<'none' | 'app' | 'system'>('app');
+  const [recCodec, setRecCodec] = useState<'vp9' | 'vp8' | 'h264'>('vp9');
+  const [recQuality, setRecQuality] = useState<number>(12_000_000);
+  const [recFps, setRecFps] = useState<number>(30);
   const windowsRef = useRef<{ x: number, y: number, w: number, h: number, id: number, time: number }[]>([]);
   const glitchBoxesRef = useRef<{ x: number, y: number, w: number, h: number, id: number, life: number, value: string }[]>([]);
   const voronoiPointsRef = useRef<{ x: number, y: number, vx: number, vy: number }[]>([]);
@@ -3169,7 +3173,14 @@ export default function App() {
   // --- Recording Logic ---
 
   const pickRecMime = () => {
+    // Preferred codec first, then the rest as fallbacks — support varies by browser.
+    const byCodec: Record<string, string> = {
+      vp9: 'video/webm;codecs=vp9,opus',
+      vp8: 'video/webm;codecs=vp8,opus',
+      h264: 'video/webm;codecs=h264,opus',
+    };
     const cands = [
+      byCodec[recCodec],
       'video/webm;codecs=vp9,opus',
       'video/webm;codecs=vp8,opus',
       'video/webm;codecs=h264,opus',
@@ -3185,7 +3196,7 @@ export default function App() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     try {
-      const vstream = canvas.captureStream(30);
+      const vstream = canvas.captureStream(recFps);
       let audioTracks: MediaStreamTrack[] = [];
 
       if (recAudioSrc === 'app') {
@@ -3220,7 +3231,7 @@ export default function App() {
       const stream = new MediaStream([...vstream.getVideoTracks(), ...audioTracks]);
       const recorder = new MediaRecorder(stream, {
         mimeType: pickRecMime(),
-        videoBitsPerSecond: 12_000_000,
+        videoBitsPerSecond: recQuality,
       });
 
       recorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunksRef.current.push(e.data); };
@@ -13287,6 +13298,8 @@ export default function App() {
   }, []);
 
   // ---- Reusable panel bodies (placed in sidebars / hamburger drawer) ----
+  const micActive = audioStems.some(s => s.id === 'live-mic');
+
   const audioSourcesPanel = (
     <div className="p-4 space-y-4">
       {/* Music player — moved here from under the canvas */}
@@ -13341,29 +13354,37 @@ export default function App() {
           <button
             onClick={async () => {
               const id = 'live-mic';
+              if (micActive) { removeAudioStem(id); return; }
               await engine.addLiveInput(id, 'Live Mic/Line', selectedAudioDevice || undefined);
               setAudioStems(prev => [...prev.filter(s => s.id !== id), { id, name: 'Live Mic/Line', fileUrl: 'live', isMuted: false, isSoloed: false }]);
             }}
-            className="px-4 border border-white/10 rounded bg-transparent hover:border-white hover:bg-white hover:text-black transition-colors flex items-center justify-center"
-            title="Use live microphone / audio interface"
+            className={`px-4 border rounded transition-colors flex items-center justify-center ${micActive ? 'bg-red-600 border-red-500 text-white' : 'border-white/10 bg-transparent hover:border-white hover:bg-white hover:text-black'}`}
+            title={micActive ? 'Stop using the microphone' : 'Use live microphone / audio interface'}
           >
             <Mic size={14} />
           </button>
         </div>
       </div>
 
-      <div className="space-y-1">
-        <label className="text-[8px] uppercase tracking-widest opacity-40 block">Live Input Device</label>
-        <CustomSelect
-          className="font-mono normal-case"
-          value={selectedAudioDevice}
-          onChange={setSelectedAudioDevice}
-          options={[
-            { value: '', label: 'Default Microphone' },
-            ...audioDevices.map(d => ({ value: d.deviceId, label: d.label || `Mic ${d.deviceId.slice(0, 5)}` })),
-          ]}
-        />
-      </div>
+      {/* Only meaningful once the mic is actually on. */}
+      {micActive && (
+        <div className="space-y-1">
+          <label className="text-[8px] uppercase tracking-widest opacity-40 block">Live Input Device</label>
+          <CustomSelect
+            className="font-mono normal-case"
+            value={selectedAudioDevice}
+            onChange={async (v) => {
+              setSelectedAudioDevice(v);
+              // Re-open the input so switching device takes effect immediately.
+              await engine.addLiveInput('live-mic', 'Live Mic/Line', v || undefined);
+            }}
+            options={[
+              { value: '', label: 'Default Microphone' },
+              ...audioDevices.map(d => ({ value: d.deviceId, label: d.label || `Mic ${d.deviceId.slice(0, 5)}` })),
+            ]}
+          />
+        </div>
+      )}
 
       {audioStems.length > 0 && (
         <div className="space-y-2 pt-1 border-t border-white/5">
@@ -13380,8 +13401,12 @@ export default function App() {
         </div>
       )}
 
-      {/* Audio muxed into canvas recordings */}
-      <div className="space-y-1.5 pt-3 border-t border-white/5">
+    </div>
+  );
+
+  const recordingPanel = (
+    <div className="p-4 space-y-4">
+      <div className="space-y-1.5">
         <label className="text-[8px] uppercase tracking-widest opacity-40 block">Record audio</label>
         <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
           {([
@@ -13405,6 +13430,62 @@ export default function App() {
             ? 'Whatever the computer outputs (music in another app, headphones). Asks once to share system/tab audio when you press record.'
             : 'Recordings are silent video only.'}
         </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <label className="text-[8px] uppercase tracking-widest opacity-40 block">Video codec</label>
+        <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+          {([
+            ['vp9', 'VP9'],
+            ['vp8', 'VP8'],
+            ['h264', 'H.264'],
+          ] as const).map(([v, lbl]) => (
+            <button
+              key={v}
+              onClick={() => setRecCodec(v)}
+              className={`flex-1 py-1.5 text-[8px] uppercase tracking-widest transition-colors ${recCodec === v ? 'bg-red-600 text-white font-bold' : 'text-white/40 hover:text-white'}`}
+            >
+              {lbl}
+            </button>
+          ))}
+        </div>
+        <p className="text-[8px] opacity-30 leading-tight">VP9 is the smallest for the same quality. H.264 opens in more editors. All are written into a .webm container.</p>
+      </div>
+
+      <div className="space-y-1.5">
+        <label className="text-[8px] uppercase tracking-widest opacity-40 block">Quality — {(recQuality / 1_000_000).toFixed(0)} Mbps</label>
+        <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+          {([
+            [4_000_000, 'Small'],
+            [8_000_000, 'Medium'],
+            [12_000_000, 'High'],
+            [20_000_000, 'Max'],
+          ] as const).map(([v, lbl]) => (
+            <button
+              key={v}
+              onClick={() => setRecQuality(v)}
+              className={`flex-1 py-1.5 text-[8px] uppercase tracking-widest transition-colors ${recQuality === v ? 'bg-red-600 text-white font-bold' : 'text-white/40 hover:text-white'}`}
+            >
+              {lbl}
+            </button>
+          ))}
+        </div>
+        <p className="text-[8px] opacity-30 leading-tight">Roughly {(recQuality / 8_000_000 * 60).toFixed(0)} MB per minute of video. Drop to Small for long takes.</p>
+      </div>
+
+      <div className="space-y-1.5">
+        <label className="text-[8px] uppercase tracking-widest opacity-40 block">Frame rate</label>
+        <div className="flex bg-black/40 border border-white/10 rounded overflow-hidden">
+          {([24, 30, 60] as const).map(v => (
+            <button
+              key={v}
+              onClick={() => setRecFps(v)}
+              className={`flex-1 py-1.5 text-[8px] uppercase tracking-widest transition-colors ${recFps === v ? 'bg-red-600 text-white font-bold' : 'text-white/40 hover:text-white'}`}
+            >
+              {v} fps
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -13602,6 +13683,15 @@ export default function App() {
               </div>
               <div className="flex-1 overflow-y-auto custom-scrollbar">
 
+
+                <Section
+                  title="Recording"
+                  icon={<Video size={16} />}
+                  isExpanded={settingsSection === 'recording'}
+                  onToggle={() => setSettingsSection(settingsSection === 'recording' ? null : 'recording')}
+                >
+                  {recordingPanel}
+                </Section>
 
                 <Section
                   title="MIDI Devices"
