@@ -3025,7 +3025,7 @@ export default function App() {
       });
 
       const added: { id: string; name: string; fileUrl: string; isMuted: boolean; isSoloed: boolean }[] = [];
-      for (const name of ['drums', 'bass', 'vocals', 'music']) {
+      for (const name of ['drums', 'kick', 'snare', 'bass', 'vocals', 'music']) {
         const url = URL.createObjectURL(new Blob([wavs[name]], { type: 'audio/wav' }));
         const id = `stem-${name}-${Date.now()}`;
         const label = name.charAt(0).toUpperCase() + name.slice(1);
@@ -13457,7 +13457,7 @@ export default function App() {
           >
             <Scissors size={13} className="opacity-60" />
             <span className="text-[10px] uppercase tracking-widest font-bold">
-              {splitBusy ? `Separating… ${Math.round(splitProgress * 100)}%` : 'Drums · Bass · Vocals · Music'}
+              {splitBusy ? `Separating… ${Math.round(splitProgress * 100)}%` : 'Drums · Kick · Snare · Bass · Vocals · Music'}
             </span>
           </button>
           {splitBusy && (
@@ -13467,8 +13467,9 @@ export default function App() {
           )}
           {splitError && <p className="text-[8px] text-red-400 leading-tight">{splitError}</p>}
           <p className="text-[8px] opacity-30 leading-tight">
-            Runs on your machine, nothing is uploaded. Around 10 seconds for a 3-minute track. Separation is
-            spectral, not a trained model — expect some bleed between vocals and other centred instruments.
+            Runs on your machine, nothing is uploaded. Around 40 seconds for a 3-minute track. Kick and snare are
+            carved from the separated drum track, so each can drive its own trigger. Separation is spectral, not a
+            trained model — expect some bleed between vocals and other centred instruments.
           </p>
         </div>
       )}

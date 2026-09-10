@@ -395,24 +395,54 @@ export class AudioEngine {
 
   getRawFrequencyData(stemId: string): Uint8Array | null {
      if (!this.ctx || !this.freqDataArray) return null;
-     let stem = this.stems.get(stemId);
+     let stem = stemId ? this.stems.get(stemId) : undefined;
      if (!stem) {
-       stem = this.stems.values().next().value;
+       // master out: first audible stem, not simply the first one
+       for (const s of this.stems.values()) { if (this.isAudible(s)) { stem = s; break; } }
      }
-     if (!stem || !stem.analyserNode) return null;
+     if (!stem || !stem.analyserNode || !this.isAudible(stem)) return null;
      
      // Pull live array
      stem.analyserNode.getByteFrequencyData(this.freqDataArray as any);
      return this.freqDataArray;
   }
 
+  /** Is this stem actually being heard? A muted or solo-shadowed stem must not
+   *  drive triggers — otherwise visuals keep reacting to a part you removed.
+   *  Master mute is deliberately NOT counted: that is a monitoring control, and
+   *  silencing the room should not stop the show. */
+  private isAudible(s: AudioStemNode): boolean {
+    if (s.isMuted) return false;
+    let anySolo = false;
+    this.stems.forEach(x => { if (x.isSoloed) anySolo = true; });
+    if (anySolo && !s.isSoloed) return false;
+    return true;
+  }
+
   getBandIntensity(stemId: string, freqRange: [number, number]): { intensity: number, flux: number } {
     if (!this.ctx || !this.freqDataArray) return { intensity: 0, flux: 0 };
-    let stem = this.stems.get(stemId);
-    if (!stem) {
-       stem = this.stems.values().next().value;
+
+    const named = stemId ? this.stems.get(stemId) : undefined;
+    if (named) {
+      return this.isAudible(named) ? this.analyseStem(named, freqRange) : { intensity: 0, flux: 0 };
     }
-    if (!stem || !stem.analyserNode || !stem.prevDataArray) return { intensity: 0, flux: 0 };
+
+    // No stem named (or it is gone): this is the "master out" case. Take the
+    // loudest audible stem rather than whichever happens to be first — after a
+    // stem split the first one is the muted original, which used to read silent.
+    let best = { intensity: 0, flux: 0 };
+    this.stems.forEach(s => {
+      if (!this.isAudible(s)) return;
+      const r = this.analyseStem(s, freqRange);
+      if (r.intensity > best.intensity) best.intensity = r.intensity;
+      if (r.flux > best.flux) best.flux = r.flux;
+    });
+    return best;
+  }
+
+  private analyseStem(stem: AudioStemNode, freqRange: [number, number]): { intensity: number, flux: number } {
+    if (!this.ctx || !this.freqDataArray) return { intensity: 0, flux: 0 };
+    if (!stem.analyserNode || !stem.prevDataArray) return { intensity: 0, flux: 0 };
 
     // Pull current frequency data
     stem.analyserNode.getByteFrequencyData(this.freqDataArray as any);
