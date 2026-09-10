@@ -2782,6 +2782,7 @@ export default function App() {
   const [recAudioSrc, setRecAudioSrc] = useState<'none' | 'app' | 'system'>('app');
   const [splitBusy, setSplitBusy] = useState(false);
   const [splitProgress, setSplitProgress] = useState(0);
+  const [splitPhase, setSplitPhase] = useState<'separating' | 'encoding' | 'loading'>('separating');
   const [splitError, setSplitError] = useState<string | null>(null);
   const [recCodec, setRecCodec] = useState<'vp9' | 'vp8' | 'h264'>('vp9');
   const [recQuality, setRecQuality] = useState<number>(12_000_000);
@@ -2997,6 +2998,7 @@ export default function App() {
     setSplitBusy(true);
     setSplitError(null);
     setSplitProgress(0);
+    setSplitPhase('separating');
     let worker: Worker | null = null;
     try {
       const res = await fetch(src.fileUrl);
@@ -3016,7 +3018,7 @@ export default function App() {
       const wavs: Record<string, ArrayBuffer> = await new Promise((resolve, reject) => {
         worker!.onmessage = (e: MessageEvent) => {
           const d = e.data;
-          if (d.type === 'progress') setSplitProgress(d.p);
+          if (d.type === 'progress') { setSplitProgress(d.p); if (d.phase) setSplitPhase(d.phase); }
           else if (d.type === 'done') resolve(d.wavs);
           else if (d.type === 'error') reject(new Error(d.message));
         };
@@ -3025,12 +3027,18 @@ export default function App() {
       });
 
       const added: { id: string; name: string; fileUrl: string; isMuted: boolean; isSoloed: boolean }[] = [];
-      for (const name of ['drums', 'kick', 'snare', 'bass', 'vocals', 'music']) {
+      // Each addStem decodes a full-length WAV, so this tail is slow enough to
+      // need its own slice of the bar rather than sitting at 100%.
+      setSplitPhase('loading');
+      const names = ['drums', 'kick', 'snare', 'bass', 'vocals', 'music'];
+      for (let i = 0; i < names.length; i++) {
+        const name = names[i];
         const url = URL.createObjectURL(new Blob([wavs[name]], { type: 'audio/wav' }));
         const id = `stem-${name}-${Date.now()}`;
         const label = name.charAt(0).toUpperCase() + name.slice(1);
         await engine.addStem(id, label, url);
         added.push({ id, name: label, fileUrl: url, isMuted: false, isSoloed: false });
+        setSplitProgress(0.88 + 0.12 * ((i + 1) / names.length));
       }
       // Mute the original so the split does not double up with it.
       engine.toggleMute(src.id);
@@ -13457,7 +13465,9 @@ export default function App() {
           >
             <Scissors size={13} className="opacity-60" />
             <span className="text-[10px] uppercase tracking-widest font-bold">
-              {splitBusy ? `Separating… ${Math.round(splitProgress * 100)}%` : 'Drums · Kick · Snare · Bass · Vocals · Music'}
+              {splitBusy
+                ? `${splitPhase === 'separating' ? 'Separating' : splitPhase === 'encoding' ? 'Encoding' : 'Loading stems'}… ${Math.round(splitProgress * 100)}%`
+                : 'Drums · Kick · Snare · Bass · Vocals · Music'}
             </span>
           </button>
           {splitBusy && (

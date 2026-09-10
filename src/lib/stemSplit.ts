@@ -431,12 +431,15 @@ export function encodeWav(channels: Float32Array[], sampleRate: number): ArrayBu
   str(36, 'data');
   v.setUint32(40, len * nCh * 2, true);
 
-  let o = 44;
+  // Write samples through an Int16Array rather than DataView.setInt16: this loop
+  // runs once per sample per channel and is a visible part of the wait.
+  const pcm = new Int16Array(buf, 44);
+  let o = 0;
   for (let i = 0; i < len; i++) {
     for (let c = 0; c < nCh; c++) {
-      const s = Math.max(-1, Math.min(1, channels[c][i]));
-      v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-      o += 2;
+      const s = channels[c][i];
+      const q = s < -1 ? -1 : s > 1 ? 1 : s;
+      pcm[o++] = q < 0 ? q * 0x8000 : q * 0x7fff;
     }
   }
   return buf;
