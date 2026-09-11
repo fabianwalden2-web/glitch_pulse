@@ -15266,14 +15266,20 @@ export default function App() {
     const id = parseYouTubeId(ytUrl);
     if (!id) { setStatus('THAT IS NOT A YOUTUBE LINK'); return; }
     setYtId(id);
+
+    // Phones have no getDisplayMedia, so the visuals cannot be driven from the
+    // video's own audio there. The video still plays — the microphone is what
+    // closes the loop, listening to the phone's own speaker.
+    if (!canCaptureOutput) { setStatus('PLAYING — TURN ON THE MIC TO DRIVE THE VISUALS'); return; }
+
     if (!audioStems.some(st => st.id === 'tab-audio')) {
       const r = await engine.addTabAudio('tab-audio', 'YouTube');
-      if (!r.ok) { setStatus(r.error || 'CAPTURE FAILED'); return; }
+      if (!r.ok) { setStatus(r.error || 'PLAYING — CAPTURE DECLINED'); return; }
       setAudioStems(prev => [...prev.filter(st => st.id !== 'tab-audio'),
         { id: 'tab-audio', name: 'YouTube', fileUrl: 'live', isMuted: false, isSoloed: false }]);
     }
     setStatus('YOUTUBE CONNECTED');
-  }, [ytUrl, audioStems]);
+  }, [ytUrl, audioStems, canCaptureOutput]);
 
   const stopYouTube = useCallback(() => {
     setYtId(null); setYtUrl('');
@@ -15393,11 +15399,12 @@ export default function App() {
         )}
       </div>
 
-      {canCaptureOutput && (
-        <div className="space-y-1.5 pt-3 border-t border-white/5">
+      <div className="space-y-1.5 pt-3 border-t border-white/5">
           <label className="text-[8px] uppercase tracking-widest opacity-40 block">YouTube</label>
           <p className="text-[8px] opacity-30 leading-tight">
-            Paste a link — it plays in the app and drives the visuals, like any other track.
+            {canCaptureOutput
+              ? 'Paste a link — it plays in the app and drives the visuals, like any other track.'
+              : 'Paste a link — it plays in the app. Phones cannot read a video\u2019s audio directly, so switch the microphone on and the visuals follow what your speaker is playing.'}
           </p>
           <div className="flex gap-2">
             <input
@@ -15416,8 +15423,7 @@ export default function App() {
               <span className="text-[10px] uppercase tracking-widest font-bold">Load</span>
             </button>
           </div>
-        </div>
-      )}
+      </div>
 
       {/* Only meaningful once the mic is actually on. */}
       {micActive && (
@@ -16666,6 +16672,7 @@ export default function App() {
           {/* On a phone the transport belongs directly under the canvas, where a thumb
               can reach it without opening any drawer. */}
           <div className="lg:hidden">{transportBar}</div>
+          {!canCaptureOutput && <div className="lg:hidden">{youtubePlayer}</div>}
 
           {/* Bottom Parameter Panel (music transport now lives under the Audio panel) */}
           <div id="tour-params" className="flex-1 min-h-[220px] bg-[#050505] border-t border-white/10 p-4 overflow-y-auto custom-scrollbar w-full relative z-40">
@@ -18028,7 +18035,7 @@ return (
            </div>
            {/* On a phone the same transport already sits under the canvas. */}
            <div className="hidden lg:block">{transportBar}</div>
-           {youtubePlayer}
+           {canCaptureOutput && youtubePlayer}
            <div className="flex-1 custom-scrollbar overflow-y-auto pb-20">
 
              <div id="tour-audio">
