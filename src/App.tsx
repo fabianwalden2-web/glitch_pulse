@@ -2591,7 +2591,7 @@ export default function App() {
   const [settingsSection, setSettingsSection] = useState<string | null>('midi-devices');
   const [showTour, setShowTour] = useState(false);
   const [tourStep, setTourStep] = useState(0);
-  const [rightSection, setRightSection] = useState<string | null>('triggers');
+  const [rightSection, setRightSection] = useState<string | null>('audio');
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [compositionLayout, setCompositionLayout] = useState<'stack' | 'split-vertical' | 'split-horizontal' | 'grid-2x2' | 'grid-3x3' | 'grid-4x4'>('stack');
@@ -15243,10 +15243,66 @@ export default function App() {
   // ---- Reusable panel bodies (placed in sidebars / hamburger drawer) ----
   const micActive = audioStems.some(s => s.id === 'live-mic');
   const tabAudioActive = audioStems.some(s => s.id === 'tab-audio');
+  const [ytUrl, setYtUrl] = useState('');
+  const [ytId, setYtId] = useState<string | null>(null);
   // Screen and tab capture do not exist on iOS Safari or Chrome for Android, so
   // on a phone this control would only ever fail. Hide it rather than offer it.
   const canCaptureOutput = typeof navigator !== 'undefined'
     && !!(navigator.mediaDevices as any)?.getDisplayMedia;
+
+  /** Video id out of any of the shapes YouTube hands out, or a bare id. */
+  const parseYouTubeId = (u: string): string | null => {
+    const t = u.trim();
+    if (!t) return null;
+    const m = t.match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+    if (m) return m[1];
+    return /^[A-Za-z0-9_-]{11}$/.test(t) ? t : null;
+  };
+
+  /** Play a YouTube video inside the app and listen to it. The video plays in
+   *  this window, so the capture request already points at the right place —
+   *  in the desktop app it is granted as loopback with no dialog at all. */
+  const loadYouTube = useCallback(async () => {
+    const id = parseYouTubeId(ytUrl);
+    if (!id) { setStatus('THAT IS NOT A YOUTUBE LINK'); return; }
+    setYtId(id);
+    if (!audioStems.some(st => st.id === 'tab-audio')) {
+      const r = await engine.addTabAudio('tab-audio', 'YouTube');
+      if (!r.ok) { setStatus(r.error || 'CAPTURE FAILED'); return; }
+      setAudioStems(prev => [...prev.filter(st => st.id !== 'tab-audio'),
+        { id: 'tab-audio', name: 'YouTube', fileUrl: 'live', isMuted: false, isSoloed: false }]);
+    }
+    setStatus('YOUTUBE CONNECTED');
+  }, [ytUrl, audioStems]);
+
+  const stopYouTube = useCallback(() => {
+    setYtId(null); setYtUrl('');
+    removeAudioStem('tab-audio');
+    setStatus('YOUTUBE STOPPED');
+  }, []);
+
+  /** The player lives outside the collapsible Audio section: folding that panel
+   *  away must not unmount the iframe and stop the music. */
+  const youtubePlayer = ytId ? (
+    <div className="shrink-0 border-b border-white/10 bg-black/40 p-2 space-y-1.5">
+      <div className="relative w-full overflow-hidden rounded" style={{ aspectRatio: '16 / 9' }}>
+        <iframe
+          key={ytId}
+          src={`https://www.youtube.com/embed/${ytId}?autoplay=1&enablejsapi=1`}
+          title="YouTube"
+          allow="autoplay; encrypted-media; picture-in-picture"
+          allowFullScreen
+          className="absolute inset-0 w-full h-full border-0"
+        />
+      </div>
+      <button
+        onClick={stopYouTube}
+        className="w-full text-[9px] uppercase tracking-widest text-white/45 hover:text-white transition-colors py-1"
+      >
+        Stop listening
+      </button>
+    </div>
+  ) : null;
 
   // Transport lives outside the Audio section so it stays reachable while that
   // section is collapsed — on desktop it sits at the top of the right column, on
@@ -15331,12 +15387,37 @@ export default function App() {
         </div>
         {canCaptureOutput && (
           <p className="text-[8px] opacity-30 leading-tight">
-            The dish icon listens to the computer's own output, so a YouTube video in any
-            browser drives the visuals. In the desktop app this is granted straight away;
-            in a browser tab you have to pick a window and tick "share audio".
+            The dish listens to this computer's own output — a video in any other app or
+            browser drives the visuals.
           </p>
         )}
       </div>
+
+      {canCaptureOutput && (
+        <div className="space-y-1.5 pt-3 border-t border-white/5">
+          <label className="text-[8px] uppercase tracking-widest opacity-40 block">YouTube</label>
+          <p className="text-[8px] opacity-30 leading-tight">
+            Paste a link — it plays in the app and drives the visuals, like any other track.
+          </p>
+          <div className="flex gap-2">
+            <input
+              value={ytUrl}
+              onChange={(e) => setYtUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') loadYouTube(); }}
+              placeholder="https://www.youtube.com/watch?v=…"
+              spellCheck={false}
+              className="flex-1 min-w-0 bg-black/40 border border-white/10 rounded px-2.5 py-2 text-[10px] font-mono text-white placeholder:text-white/25 focus:outline-none focus:border-red-500 transition-colors"
+            />
+            <button
+              onClick={loadYouTube}
+              className="px-4 border border-white/10 rounded bg-transparent hover:border-white hover:bg-white hover:text-black transition-colors flex items-center gap-1.5"
+            >
+              <Play size={11} fill="currentColor" />
+              <span className="text-[10px] uppercase tracking-widest font-bold">Load</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Only meaningful once the mic is actually on. */}
       {micActive && (
@@ -17947,6 +18028,7 @@ return (
            </div>
            {/* On a phone the same transport already sits under the canvas. */}
            <div className="hidden lg:block">{transportBar}</div>
+           {youtubePlayer}
            <div className="flex-1 custom-scrollbar overflow-y-auto pb-20">
 
              <div id="tour-audio">
