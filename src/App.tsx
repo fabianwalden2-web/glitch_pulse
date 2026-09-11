@@ -51,7 +51,6 @@ import {
   Copy,
   Sparkles,
   Video,
-  Scissors,
   Dices,
   Eraser,
   Mic,
@@ -2794,10 +2793,6 @@ export default function App() {
   const recordedChunksRef = useRef<Blob[]>([]);
   const recSystemStreamRef = useRef<MediaStream | null>(null);
   const [recAudioSrc, setRecAudioSrc] = useState<'none' | 'app' | 'system'>('app');
-  const [splitBusy, setSplitBusy] = useState(false);
-  const [splitProgress, setSplitProgress] = useState(0);
-  const [splitPhase, setSplitPhase] = useState<'separating' | 'encoding' | 'loading'>('separating');
-  const [splitError, setSplitError] = useState<string | null>(null);
   const [recCodec, setRecCodec] = useState<'vp9' | 'vp8' | 'h264'>('vp9');
   const [recQuality, setRecQuality] = useState<number>(12_000_000);
   const [recFps, setRecFps] = useState<number>(30);
@@ -3019,69 +3014,6 @@ export default function App() {
   };
 
   
-  /** Split the first loaded file into Drums / Bass / Vocals / Music and add each
-   *  as its own stem, so triggers can listen to one part of the track. */
-  const runStemSplit = async () => {
-    const src = audioStems.find(st => st.fileUrl && st.fileUrl !== 'live' && !st.id.startsWith('stem-'));
-    if (!src || splitBusy) return;
-    setSplitBusy(true);
-    setSplitError(null);
-    setSplitProgress(0);
-    setSplitPhase('separating');
-    let worker: Worker | null = null;
-    try {
-      const res = await fetch(src.fileUrl);
-      const arr = await res.arrayBuffer();
-      const ac = new AudioContext();
-      const buf = await ac.decodeAudioData(arr.slice(0));
-      await ac.close();
-
-      const nCh = Math.min(2, buf.numberOfChannels);
-      const channels: ArrayBuffer[] = [];
-      for (let c = 0; c < nCh; c++) {
-        const copy = new Float32Array(buf.getChannelData(c));
-        channels.push(copy.buffer);
-      }
-
-      worker = new Worker(new URL('./lib/stemSplit.worker.ts', import.meta.url), { type: 'module' });
-      const wavs: Record<string, ArrayBuffer> = await new Promise((resolve, reject) => {
-        worker!.onmessage = (e: MessageEvent) => {
-          const d = e.data;
-          if (d.type === 'progress') { setSplitProgress(d.p); if (d.phase) setSplitPhase(d.phase); }
-          else if (d.type === 'done') resolve(d.wavs);
-          else if (d.type === 'error') reject(new Error(d.message));
-        };
-        worker!.onerror = (ev) => reject(new Error(ev.message || 'worker failed'));
-        worker!.postMessage({ channels, sampleRate: buf.sampleRate }, channels);
-      });
-
-      const added: { id: string; name: string; fileUrl: string; isMuted: boolean; isSoloed: boolean }[] = [];
-      // Each addStem decodes a full-length WAV, so this tail is slow enough to
-      // need its own slice of the bar rather than sitting at 100%.
-      setSplitPhase('loading');
-      const names = ['drums', 'kick', 'snare', 'bass', 'vocals', 'music'];
-      for (let i = 0; i < names.length; i++) {
-        const name = names[i];
-        const url = URL.createObjectURL(new Blob([wavs[name]], { type: 'audio/wav' }));
-        const id = `stem-${name}-${Date.now()}`;
-        const label = name.charAt(0).toUpperCase() + name.slice(1);
-        await engine.addStem(id, label, url);
-        added.push({ id, name: label, fileUrl: url, isMuted: false, isSoloed: false });
-        setSplitProgress(0.88 + 0.12 * ((i + 1) / names.length));
-      }
-      // Mute the original so the split does not double up with it.
-      engine.toggleMute(src.id);
-      setAudioStems(prev => [...prev.map(st => st.id === src.id ? { ...st, isMuted: true } : st), ...added]);
-      setStatus('STEMS READY');
-    } catch (err: any) {
-      setSplitError(String(err?.message || err));
-    } finally {
-      worker?.terminate();
-      setSplitBusy(false);
-      setSplitProgress(0);
-    }
-  };
-
   const handleNewProject = () => {
     setLayers([
       { id: 'layer-1', name: 'Background', type: 'image', src: null, opacity: 1, blendMode: 'source-over', filterId: null, filterSettings: {}, isVisible: true, midiMode: false, videoTriggerMode: 'continuous', triggerMapping: DEFAULT_TRIGGER_MAPPING, mappings: [], isMuted: false, isSoloed: false }
@@ -15554,36 +15486,6 @@ export default function App() {
               ...audioDevices.map(d => ({ value: d.deviceId, label: d.label || `Mic ${d.deviceId.slice(0, 5)}` })),
             ]}
           />
-        </div>
-      )}
-
-      {/* Stem separation — sits between the source picker and the stem list */}
-      {audioStems.some(st => st.fileUrl && st.fileUrl !== 'live' && !st.id.startsWith('stem-')) && (
-        <div className="space-y-1.5 pt-3 border-t border-white/5">
-          <label className="text-[8px] uppercase tracking-widest opacity-40 block">Split into stems</label>
-          <button
-            onClick={runStemSplit}
-            disabled={splitBusy}
-            className={`w-full border rounded p-2.5 flex items-center justify-center gap-2 transition-colors ${splitBusy ? 'border-white/10 text-white/40 cursor-wait' : 'border-white/10 hover:border-white hover:bg-white hover:text-black'}`}
-          >
-            <Scissors size={13} className="opacity-60" />
-            <span className="text-[10px] uppercase tracking-widest font-bold">
-              {splitBusy
-                ? `${splitPhase === 'separating' ? 'Separating' : splitPhase === 'encoding' ? 'Encoding' : 'Loading stems'}… ${Math.round(splitProgress * 100)}%`
-                : 'Drums · Kick · Snare · Bass · Vocals · Music'}
-            </span>
-          </button>
-          {splitBusy && (
-            <div className="h-1 rounded bg-white/10 overflow-hidden">
-              <div className="h-full bg-red-600 transition-[width] duration-200" style={{ width: `${Math.round(splitProgress * 100)}%` }} />
-            </div>
-          )}
-          {splitError && <p className="text-[8px] text-red-400 leading-tight">{splitError}</p>}
-          <p className="text-[8px] opacity-30 leading-tight">
-            Runs on your machine, nothing is uploaded. Around 40 seconds for a 3-minute track. Kick and snare are
-            carved from the separated drum track, so each can drive its own trigger. Separation is spectral, not a
-            trained model — expect some bleed between vocals and other centred instruments.
-          </p>
         </div>
       )}
 
