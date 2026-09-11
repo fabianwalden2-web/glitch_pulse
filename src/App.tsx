@@ -10275,10 +10275,14 @@ export default function App() {
               const memory = Math.max(0, Math.min(1, ms.bin_memory ?? 0.85));
 
               const st = (galtonStateRef.current[layer.id] ||= { acts: {}, parts: [], bins: null, spawnAcc: 0, invertT: -99 });
-              if (actionFired(st.acts, 'burst', Number(ms.burst ?? 0))) st.burstN = (st.burstN ?? 0) + 90;
+              if (actionFired(st.acts, 'burst', Number(ms.drop_batch ?? 0))) st.burstN = (st.burstN ?? 0) + 250;
+              if (actionFired(st.acts, 'fun2', Number(ms.second_funnel ?? 0))) st.second = !st.second;
               if (actionFired(st.acts, 'inv', Number(ms.invert_gravity ?? 0))) st.invertT = nowSec + 2.5;
               const inverted = nowSec < st.invertT;
 
+              // A second funnel drops half the balls from an offset column, which shifts
+              // one binomial sideways and makes the pile genuinely bimodal.
+              const offCols = -Math.max(2, Math.round(rows * 0.34));
               const nBins = rows + 1;
               if (!st.bins || st.bins.length !== nBins) st.bins = new Float32Array(nBins);
 
@@ -10298,7 +10302,8 @@ export default function App() {
               st.spawnAcc -= toSpawn;
               if (st.burstN > 0) { const b = Math.min(st.burstN, 14); toSpawn += b; st.burstN -= b; }
               for (let i = 0; i < toSpawn && st.parts.length < 1400; i++) {
-                  st.parts.push({ x: cx + (Math.random() - 0.5) * colGap * 0.12, y: topY - rowGap * 0.8, vx: 0, vy: 0, row: 0, done: false });
+                  const off = st.second && Math.random() < 0.5 ? offCols : 0;
+                  st.parts.push({ x: cx + (off + (Math.random() - 0.5) * 0.12) * colGap, y: topY - rowGap * 0.8, vx: 0, vy: 0, row: 0, done: false });
               }
 
               // The physical point: each peg is one Bernoulli trial, so the pile of
@@ -10340,6 +10345,20 @@ export default function App() {
 
               ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
 
+              // funnel mouths
+              ctx.strokeStyle = cPart; ctx.globalAlpha = 0.5; ctx.lineWidth = 2 * sc;
+              const mouths = st.second ? [0, offCols] : [0];
+              for (const mo of mouths) {
+                  const mx = cx + mo * colGap, my = topY - rowGap * 1.25;
+                  ctx.beginPath();
+                  ctx.moveTo(mx - colGap * 0.9, my - rowGap * 0.55);
+                  ctx.lineTo(mx - colGap * 0.16, my);
+                  ctx.lineTo(mx + colGap * 0.16, my);
+                  ctx.lineTo(mx + colGap * 0.9, my - rowGap * 0.55);
+                  ctx.stroke();
+              }
+              ctx.globalAlpha = 1;
+
               // pegs
               ctx.fillStyle = cPeg;
               ctx.globalAlpha = 0.55;
@@ -10367,11 +10386,17 @@ export default function App() {
               ctx.beginPath();
               const pRight = 0.5 + bias * 0.45;
               const lnFact = (n: number) => { let v = 0; for (let k = 2; k <= n; k++) v += Math.log(k); return v; };
+              const binom = (k: number) => {
+                  if (k < 0 || k > rows) return 0;
+                  return Math.exp(lnFact(rows) - lnFact(k) - lnFact(rows - k)
+                      + k * Math.log(pRight + 1e-9) + (rows - k) * Math.log(1 - pRight + 1e-9));
+              };
               let maxPk = 0;
               const pk: number[] = [];
               for (let i = 0; i < nBins; i++) {
-                  const lp = lnFact(rows) - lnFact(i) - lnFact(rows - i) + i * Math.log(pRight + 1e-9) + (rows - i) * Math.log(1 - pRight + 1e-9);
-                  const v = Math.exp(lp);
+                  // With two funnels the prediction is the mixture of the two binomials,
+                  // so the overlay still matches what the board is actually doing.
+                  const v = st.second ? 0.5 * binom(i) + 0.5 * binom(i - offCols) : binom(i);
                   pk.push(v); if (v > maxPk) maxPk = v;
               }
               for (let i = 0; i < nBins; i++) {
@@ -10401,63 +10426,73 @@ export default function App() {
               const cPos = resolvedGenerativeColors['lobe_pos'] || '#8b6cf0';
               const cNeg = resolvedGenerativeColors['lobe_neg'] || '#f0a0d8';
               const cNuc = resolvedGenerativeColors['nucleus'] || '#ffffff';
-              const rgbP = hexToRgb(cPos), rgbN = hexToRgb(cNeg);
+              const rgbP = hexToRgb(cPos), rgbN = hexToRgb(cNeg), rgbBg = hexToRgb(cBg);
 
-              // (n, l, m) in the order a spectroscopist would meet them.
-              const ORBITALS: [number, number, number, string][] = [
-                  [1, 0, 0, '1s'], [2, 0, 0, '2s'], [2, 1, 0, '2p'], [3, 1, 1, '3p'],
-                  [3, 2, 0, '3d'], [3, 2, 2, '3d'], [4, 2, 1, '4d'], [4, 3, 0, '4f'], [4, 3, 3, '4f'],
-              ];
-              const st = (electronStateRef.current[layer.id] ||= { acts: {}, pts: null, idx: -1, pulseT: -99, spin: 0 });
-              if (actionFired(st.acts, 'exc', Number(ms.excite ?? 0))) st.bump = ((st.bump ?? 0) + 1) % ORBITALS.length;
-              if (actionFired(st.acts, 'pul', Number(ms.energy_pulse ?? 0))) st.pulseT = nowSec;
-
-              const sel = (Math.round(ms.orbital ?? 3) + (st.bump ?? 0)) % ORBITALS.length;
-              const [nQ, lQ, mQ, label] = ORBITALS[sel];
+              // l < n and m <= l are the only states that exist, so the knobs clamp
+              // against each other rather than producing a nonsense wavefunction.
+              const nQ = Math.max(1, Math.min(5, Math.round(ms.energy_level_n ?? 3)));
+              const lQ = Math.max(0, Math.min(nQ - 1, Math.round(ms.orbital_l ?? 2)));
+              const mQ = Math.max(0, Math.min(lQ, Math.round(ms.magnetic_m ?? 2)));
               const jitter = Math.max(0, Math.min(1, ms.uncertainty ?? 0.25));
-              const rScale = Math.max(0.3, Math.min(2, ms.radial_scale ?? 1));
-              const density = Math.max(0.1, Math.min(1, ms.density ?? 0.6));
               const spin = Math.max(-2, Math.min(2, ms.spin_speed ?? 0.35));
+              const density = Math.max(0.1, Math.min(1, ms.density ?? 0.6));
 
-              // Real angular parts: |Y_lm| shapes for the orbitals above, and a radial
-              // envelope with the n-l-1 nodes hydrogen actually has.
+              const st = (electronStateRef.current[layer.id] ||= { acts: {}, pts: null, key: '', pulseT: -99, spin: 0, slice: false });
+              if (actionFired(st.acts, 'pul', Number(ms.energy_pulse ?? 0))) st.pulseT = nowSec;
+              if (actionFired(st.acts, 'sli', Number(ms.slice_view ?? 0))) st.slice = !st.slice;
+
+              // Real spherical harmonics, unnormalised: only the shape and the sign of
+              // each lobe matter for a density picture.
               const angular = (l: number, m: number, ct: number, phi: number) => {
-                  const stt = Math.sqrt(Math.max(0, 1 - ct * ct));
+                  const s = Math.sqrt(Math.max(0, 1 - ct * ct));
+                  const c2 = ct * ct;
                   if (l === 0) return 1;
-                  if (l === 1) return m === 0 ? ct : stt * Math.cos(phi);
+                  if (l === 1) return m === 0 ? ct : s * Math.cos(phi);
                   if (l === 2) {
-                      if (m === 0) return 0.5 * (3 * ct * ct - 1);
-                      if (m === 1) return stt * ct * Math.cos(phi);
-                      return stt * stt * Math.cos(2 * phi);
+                      if (m === 0) return 0.5 * (3 * c2 - 1);
+                      if (m === 1) return s * ct * Math.cos(phi);
+                      return s * s * Math.cos(2 * phi);
                   }
-                  if (m === 0) return 0.5 * ct * (5 * ct * ct - 3);
-                  return stt * stt * stt * Math.cos(3 * phi);
+                  if (l === 3) {
+                      if (m === 0) return 0.5 * ct * (5 * c2 - 3);
+                      if (m === 1) return s * (5 * c2 - 1) * Math.cos(phi);
+                      if (m === 2) return s * s * ct * Math.cos(2 * phi);
+                      return s * s * s * Math.cos(3 * phi);
+                  }
+                  if (m === 0) return (35 * c2 * c2 - 30 * c2 + 3) / 8;
+                  if (m === 1) return s * ct * (7 * c2 - 3) * Math.cos(phi);
+                  if (m === 2) return s * s * (7 * c2 - 1) * Math.cos(2 * phi);
+                  if (m === 3) return s * s * s * ct * Math.cos(3 * phi);
+                  return s * s * s * s * Math.cos(4 * phi);
+              };
+              // Generalised Laguerre by its standard recurrence, so every (n, l) in range
+              // gets the right number of radial nodes instead of a hand-written case.
+              const laguerre = (k: number, alpha: number, x: number) => {
+                  let lm1 = 0, l0 = 1;
+                  for (let i = 0; i < k; i++) {
+                      const l1 = ((2 * i + 1 + alpha - x) * l0 - (i + alpha) * lm1) / (i + 1);
+                      lm1 = l0; l0 = l1;
+                  }
+                  return l0;
               };
               const radial = (r: number, n: number, l: number) => {
                   const rho = 2 * r / n;
-                  let poly = 1;
-                  const nodes = n - l - 1;
-                  if (nodes === 1) poly = 1 - rho / 2;
-                  else if (nodes === 2) poly = 1 - rho + rho * rho / 6;
-                  else if (nodes === 3) poly = 1 - 1.5 * rho + 0.6 * rho * rho - rho * rho * rho / 24;
-                  return Math.pow(rho, l) * poly * Math.exp(-rho / 2);
+                  return Math.pow(rho, l) * Math.exp(-rho / 2) * laguerre(n - l - 1, 2 * l + 1, rho);
               };
+              const psiAt = (r: number, ct: number, phi: number) => radial(r, nQ, lQ) * angular(lQ, mQ, ct, phi);
 
-              // Rejection-sample the cloud once per orbital: the shape is static, only
-              // the viewing angle and jitter change per frame.
-              if (st.idx !== sel) {
-                  st.idx = sel;
-                  const rMax = 4 + nQ * nQ * 2.2;
+              const key = `${nQ}|${lQ}|${mQ}`;
+              if (st.key !== key) {
+                  st.key = key;
+                  const rMax = 6 + nQ * nQ * 2.6;
                   const draw = () => {
                       const r = Math.pow(Math.random(), 0.45) * rMax;
                       const ct = Math.random() * 2 - 1;
                       const phi = Math.random() * 6.283;
-                      const psi = radial(r, nQ, lQ) * angular(lQ, mQ, ct, phi);
+                      const psi = psiAt(r, ct, phi);
                       return { r, ct, phi, psi, p2: psi * psi * r * r };
                   };
-                  // Scan for the peak of |psi|^2 r^2 first, so the rejection test has the
-                  // same acceptance rate whatever orbital is selected.
-                  let pMax = 1e-9;
+                  let pMax = 1e-12;
                   for (let i = 0; i < 6000; i++) { const c = draw(); if (c.p2 > pMax) pMax = c.p2; }
                   const pts: any[] = [];
                   let guard = 0;
@@ -10465,58 +10500,111 @@ export default function App() {
                       const c = draw();
                       const q = c.p2 / pMax;
                       if (Math.random() < q) {
-                          const stt = Math.sqrt(Math.max(0, 1 - c.ct * c.ct));
+                          const s = Math.sqrt(Math.max(0, 1 - c.ct * c.ct));
                           pts.push({
-                              x: c.r * stt * Math.cos(c.phi), y: c.r * c.ct, z: c.r * stt * Math.sin(c.phi),
+                              x: c.r * s * Math.cos(c.phi), y: c.r * c.ct, z: c.r * s * Math.sin(c.phi),
                               s: Math.sign(c.psi) || 1, a: 0.35 + 0.65 * Math.sqrt(q),
                           });
                       }
                   }
-                  // Frame on where the density actually lives, not on the sampling
-                  // cut-off: most of a 3d cloud sits well inside rMax.
                   const radii = pts.map(p => Math.hypot(p.x, p.y, p.z)).sort((a, b) => a - b);
                   st.pts = pts;
                   st.rMax = rMax;
                   st.rView = radii[Math.floor(radii.length * 0.93)] || rMax;
+                  st.sliceMax = 0;
               }
 
               st.spin += dt * spin;
               const pulse = nowSec - st.pulseT < 1.2 ? Math.sin(Math.PI * (nowSec - st.pulseT) / 1.2) : 0;
-              const zoom = (Math.min(targetW, targetH) * 0.43) / (st.rView * rScale) * (1 + pulse * 0.35);
+              const zoom = (Math.min(targetW, targetH) * 0.43) / (st.rView * (1 + pulse * 0.45));
               const cx = targetW / 2, cy = targetH / 2;
-              const cosA = Math.cos(st.spin), sinA = Math.sin(st.spin);
 
               ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
-              ctx.globalCompositeOperation = 'lighter';
-              // Spin about the quantisation axis, then a fixed elevation so lobes that
-              // ring that axis are seen from three-quarters instead of edge-on.
-              const EL = 0.46, ce = Math.cos(EL), se = Math.sin(EL);
-              const jAmp = jitter * st.rView * 0.09;
-              for (const p of st.pts) {
-                  const px = p.x + jAmp * (Math.random() - 0.5);
-                  const py = p.y + jAmp * (Math.random() - 0.5);
-                  const pz = p.z + jAmp * (Math.random() - 0.5);
-                  const x1 = px * cosA - pz * sinA;
-                  const z1 = px * sinA + pz * cosA;
-                  const y2 = py * ce - z1 * se;
-                  const z2 = py * se + z1 * ce;
-                  const depth = 0.5 + 0.5 * (z2 / st.rView + 1) / 2;
-                  const sx = cx + x1 * zoom;
-                  const sy = cy - y2 * zoom;
-                  const rgb = p.s > 0 ? rgbP : rgbN;
-                  ctx.fillStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${(p.a * density * depth).toFixed(3)})`;
-                  const rad = (1 + p.a * 1.9) * sc * depth;
-                  ctx.fillRect(sx - rad, sy - rad, rad * 2, rad * 2);
-              }
-              ctx.globalCompositeOperation = 'source-over';
 
+              if (st.slice) {
+                  // Cross-section through the plane containing the quantisation axis:
+                  // the textbook probability-density map.
+                  const gw = 260, gh = Math.max(40, Math.round(gw * targetH / targetW));
+                  if (!st.sbuf || st.sbuf.width !== gw || st.sbuf.height !== gh) {
+                      st.sbuf = document.createElement('canvas'); st.sbuf.width = gw; st.sbuf.height = gh;
+                      st.simg = st.sbuf.getContext('2d')!.createImageData(gw, gh);
+                      st.sliceKey = '';
+                  }
+                  // The field only moves when the state or the pulse envelope changes, so
+                  // it is worth not recomputing 58k wavefunction samples every frame.
+                  const sliceKey = key + '|' + pulse.toFixed(2) + '|' + density.toFixed(2);
+                  const spx = st.simg.data;
+                  if (st.sliceKey !== sliceKey) {
+                  st.sliceKey = sliceKey;
+                  const unit = (st.rView * (1 + pulse * 0.45)) / (Math.min(gw, gh) * 0.43);
+                  let peak = 1e-12;
+                  const buf = new Float32Array(gw * gh);
+                  const sgn = new Int8Array(gw * gh);
+                  for (let gy = 0; gy < gh; gy++) {
+                      const Y = (gy - gh / 2) * unit * (gh / Math.min(gw, gh)) * -1;
+                      for (let gx = 0; gx < gw; gx++) {
+                          const X = (gx - gw / 2) * unit * (gw / Math.min(gw, gh));
+                          const r = Math.hypot(X, Y) + 1e-6;
+                          const psi = psiAt(r, Y / r, X >= 0 ? 0 : Math.PI);
+                          const v = psi * psi;
+                          buf[gy * gw + gx] = v;
+                          sgn[gy * gw + gx] = psi >= 0 ? 1 : -1;
+                          if (v > peak) peak = v;
+                      }
+                  }
+                  for (let i = 0; i < gw * gh; i++) {
+                      const u = Math.min(1, buf[i] / peak);
+                      // Gentle iso-banding on top of the ramp, so the map reads as a
+                      // contour plot rather than an undifferentiated glow.
+                      const band = 0.82 + 0.18 * Math.cos(Math.pow(u, 0.4) * 34);
+                      const t = Math.min(1, Math.pow(u, 0.33) * band * (0.45 + density * 0.75));
+                      const c = sgn[i] > 0 ? rgbP : rgbN;
+                      const o = i << 2;
+                      spx[o] = rgbBg.r + (c.r - rgbBg.r) * t;
+                      spx[o + 1] = rgbBg.g + (c.g - rgbBg.g) * t;
+                      spx[o + 2] = rgbBg.b + (c.b - rgbBg.b) * t;
+                      spx[o + 3] = 255;
+                  }
+                  st.sbuf.getContext('2d')!.putImageData(st.simg, 0, 0);
+                  }
+                  ctx.imageSmoothingEnabled = true;
+                  ctx.drawImage(st.sbuf, 0, 0, targetW, targetH);
+              } else {
+                  const cosA = Math.cos(st.spin), sinA = Math.sin(st.spin);
+                  ctx.globalCompositeOperation = 'lighter';
+                  // Spin about the quantisation axis, then a fixed elevation so lobes that
+                  // ring that axis are seen from three-quarters instead of edge-on.
+                  const EL = 0.46, ce = Math.cos(EL), se = Math.sin(EL);
+                  const jAmp = jitter * st.rView * 0.09;
+                  for (const p of st.pts) {
+                      const px = p.x + jAmp * (Math.random() - 0.5);
+                      const py = p.y + jAmp * (Math.random() - 0.5);
+                      const pz = p.z + jAmp * (Math.random() - 0.5);
+                      const x1 = px * cosA - pz * sinA;
+                      const z1 = px * sinA + pz * cosA;
+                      const y2 = py * ce - z1 * se;
+                      const z2 = py * se + z1 * ce;
+                      const depth = 0.5 + 0.5 * (z2 / st.rView + 1) / 2;
+                      const sx = cx + x1 * zoom;
+                      const sy = cy - y2 * zoom;
+                      const rgb = p.s > 0 ? rgbP : rgbN;
+                      ctx.fillStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${(p.a * density * depth).toFixed(3)})`;
+                      const rad = (1 + p.a * 1.9) * sc * depth;
+                      ctx.fillRect(sx - rad, sy - rad, rad * 2, rad * 2);
+                  }
+                  ctx.globalCompositeOperation = 'source-over';
+                  ctx.fillStyle = cNuc;
+                  ctx.globalAlpha = 0.9;
+                  ctx.beginPath(); ctx.arc(cx, cy, 2.5 * sc, 0, 6.283); ctx.fill();
+                  ctx.globalAlpha = 1;
+              }
+
+              const SHELL = 'spdfg';
               ctx.fillStyle = cNuc;
-              ctx.globalAlpha = 0.9;
-              ctx.beginPath(); ctx.arc(cx, cy, 2.5 * sc, 0, 6.283); ctx.fill();
-              ctx.globalAlpha = 0.5;
-              ctx.font = `600 ${Math.round(13 * sc)}px ui-sans-serif, system-ui, sans-serif`;
+              ctx.globalAlpha = 0.55;
+              ctx.font = `600 ${Math.round(14 * sc)}px ui-sans-serif, system-ui, sans-serif`;
               ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-              ctx.fillText(`${label}   n=${nQ}  l=${lQ}  m=${mQ}`, 14 * sc, 12 * sc);
+              ctx.fillText(`${nQ}${SHELL[lQ]}   n=${nQ}  l=${lQ}  m=${mQ}${st.slice ? '   slice' : ''}`, 16 * sc, 14 * sc);
               ctx.globalAlpha = 1;
               element = canvas;
           } else if (def.uuid === 'n-body-1') {

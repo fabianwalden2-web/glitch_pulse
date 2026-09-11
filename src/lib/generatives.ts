@@ -2218,7 +2218,8 @@ void main(void) {
     { "name": "elasticity", "min": 0, "max": 1, "default": 0.35, "type": "number" },
     { "name": "flow_rate", "min": 0.1, "max": 4, "default": 1, "type": "number" },
     { "name": "bin_memory", "min": 0, "max": 1, "default": 0.85, "type": "number" },
-    { "name": "burst", "default": 0, "type": "action" },
+    { "name": "drop_batch", "default": 0, "type": "action" },
+    { "name": "second_funnel", "default": 0, "type": "action" },
     { "name": "invert_gravity", "default": 0, "type": "action" }
   ],
   "elements": [
@@ -2240,13 +2241,14 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "aurora_glow",
   "parameters": [
-    { "name": "orbital", "min": 0, "max": 8, "default": 5, "type": "number" },
+    { "name": "energy_level_n", "min": 1, "max": 5, "default": 3, "type": "number" },
+    { "name": "orbital_l", "min": 0, "max": 4, "default": 2, "type": "number" },
+    { "name": "magnetic_m", "min": 0, "max": 4, "default": 2, "type": "number" },
     { "name": "uncertainty", "min": 0, "max": 1, "default": 0.25, "type": "number" },
-    { "name": "radial_scale", "min": 0.3, "max": 2, "default": 1, "type": "number" },
-    { "name": "density", "min": 0.1, "max": 1, "default": 0.6, "type": "number" },
     { "name": "spin_speed", "min": -2, "max": 2, "default": 0.35, "type": "number" },
-    { "name": "excite", "default": 0, "type": "action" },
-    { "name": "energy_pulse", "default": 0, "type": "action" }
+    { "name": "density", "min": 0.1, "max": 1, "default": 0.6, "type": "number" },
+    { "name": "energy_pulse", "default": 0, "type": "action" },
+    { "name": "slice_view", "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Void", "defaultColor": "#0a0a12" },
