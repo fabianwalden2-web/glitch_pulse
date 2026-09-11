@@ -2661,11 +2661,12 @@ export default function App() {
   const [currentProjectFile, setCurrentProjectFile] = useState<string | null>(null);
   const [showRoutingGuide, setShowRoutingGuide] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
+  const [showRightSheet, setShowRightSheet] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsSection, setSettingsSection] = useState<string | null>('midi-devices');
   const [showTour, setShowTour] = useState(false);
   const [tourStep, setTourStep] = useState(0);
-  const [rightSection, setRightSection] = useState<string | null>('audio');
+  const [rightSection, setRightSection] = useState<string | null>('triggers');
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [compositionLayout, setCompositionLayout] = useState<'stack' | 'split-vertical' | 'split-horizontal' | 'grid-2x2' | 'grid-3x3' | 'grid-4x4'>('stack');
@@ -15468,48 +15469,50 @@ export default function App() {
   // ---- Reusable panel bodies (placed in sidebars / hamburger drawer) ----
   const micActive = audioStems.some(s => s.id === 'live-mic');
 
+  // Transport lives outside the Audio section so it stays reachable while that
+  // section is collapsed — on desktop it sits at the top of the right column, on
+  // mobile directly under the canvas.
+  const transportBar = audioStems.length > 0 ? (
+    <div className="shrink-0 border-b border-white/10 bg-black/40 px-3 py-2.5 space-y-2">
+      <div className="flex items-center gap-2.5">
+        <button
+          onClick={toggleAudioPlay}
+          className="w-9 h-9 shrink-0 rounded-full bg-white text-black grid place-items-center hover:scale-105 active:scale-95 transition-transform"
+          title={audioPlaying ? 'Pause' : 'Play'}
+          aria-label={audioPlaying ? 'Pause' : 'Play'}
+        >
+          {audioPlaying ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" className="ml-0.5" />}
+        </button>
+        <button onClick={toggleAudioMute} title={audioMuted ? 'Unmute' : 'Mute'} aria-label={audioMuted ? 'Unmute' : 'Mute'} className={`p-1 transition-colors ${audioMuted ? 'text-red-500' : 'text-white/45 hover:text-white'}`}>
+          {audioMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+        </button>
+        <button onClick={toggleAudioLoop} title={audioLoop ? 'Loop on' : 'Loop off'} aria-label="Toggle loop" className={`p-1 transition-colors ${audioLoop ? 'text-red-500' : 'text-white/30 hover:text-white'}`}>
+          <Repeat size={15} />
+        </button>
+        <span className="min-w-0 flex-1 truncate text-[9px] uppercase tracking-widest opacity-40">
+          {audioStems.length === 1 ? audioStems[0].name : `${audioStems.length} sources`}
+        </span>
+        <span className="shrink-0 text-[9px] font-mono opacity-45 tabular-nums">{formatTime(audioTime)} / {formatTime(audioDuration)}</span>
+        <label className="shrink-0 p-1 text-white/35 hover:text-white transition-colors cursor-pointer" title="Change track">
+          <Music size={15} />
+          <input type="file" multiple accept="audio/*" onChange={handleAddAudioStem} className="hidden" />
+        </label>
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={audioDuration || 1}
+        step={0.01}
+        value={Math.min(audioTime, audioDuration || 0)}
+        onChange={handleSeek}
+        className="w-full h-1 accent-red-600 cursor-pointer"
+        aria-label="Seek"
+      />
+    </div>
+  ) : null;
+
   const audioSourcesPanel = (
     <div className="p-4 space-y-4">
-      {/* Music player — moved here from under the canvas */}
-      {audioStems.length > 0 && (
-        <div className="rounded-xl border border-white/10 bg-black/30 p-3.5 space-y-3">
-          <div className="flex items-center gap-3.5">
-            <button
-              onClick={toggleAudioPlay}
-              className="w-12 h-12 shrink-0 rounded-full bg-white text-black grid place-items-center hover:scale-105 active:scale-95 transition-transform shadow-lg"
-              title={audioPlaying ? 'Pause' : 'Play'}
-              aria-label={audioPlaying ? 'Pause' : 'Play'}
-            >
-              {audioPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
-            </button>
-            <div className="min-w-0 flex-1">
-              <div className="text-[9px] uppercase tracking-widest opacity-45 truncate">
-                {audioStems.length === 1 ? audioStems[0].name : `${audioStems.length} sources`}
-              </div>
-              <div className="flex items-center gap-2 mt-1.5">
-                <button onClick={toggleAudioMute} title={audioMuted ? 'Unmute' : 'Mute'} aria-label={audioMuted ? 'Unmute' : 'Mute'} className={`transition-colors ${audioMuted ? 'text-red-500' : 'text-white/45 hover:text-white'}`}>
-                  {audioMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}
-                </button>
-                <button onClick={toggleAudioLoop} title={audioLoop ? 'Loop on' : 'Loop off'} aria-label="Toggle loop" className={`transition-colors ${audioLoop ? 'text-red-500' : 'text-white/30 hover:text-white'}`}>
-                  <Repeat size={15} />
-                </button>
-                <span className="ml-auto text-[9px] font-mono opacity-45 tabular-nums">{formatTime(audioTime)} / {formatTime(audioDuration)}</span>
-              </div>
-            </div>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={audioDuration || 1}
-            step={0.01}
-            value={Math.min(audioTime, audioDuration || 0)}
-            onChange={handleSeek}
-            className="w-full h-1 accent-red-600 cursor-pointer"
-            aria-label="Seek"
-          />
-        </div>
-      )}
-
       {/* Source — load an audio file, or use live input */}
       <div className="space-y-1.5">
         <label className="text-[8px] uppercase tracking-widest opacity-40 block">{audioStems.length > 0 ? 'Change audio' : 'Audio source'}</label>
@@ -15993,17 +15996,25 @@ export default function App() {
         )}
         {/* Left Sidebar */}
         <aside className={`
-          fixed inset-x-0 bottom-0 z-40 w-full bg-black/95  border-t border-white/10
-          lg:relative lg:inset-auto lg:z-0 lg:border-t-0 lg:border-r lg:bg-black/20
+          fixed top-14 bottom-0 left-0 z-50 w-[80vw] max-w-[20rem] lg:top-0 lg:bottom-auto bg-black/95 border-r border-white/10
+          lg:relative lg:inset-auto lg:z-0 lg:w-72 lg:max-w-none lg:bg-black/20
           ${leftCollapsed ? 'lg:hidden' : 'lg:w-72 xl:w-80'}
-          flex flex-col transition-all duration-300 ease-in-out
-          ${showSidebar ? 'h-[70vh] lg:h-full translate-y-0' : 'h-0 lg:h-full translate-y-full lg:translate-y-0'}
+          flex flex-col transition-transform duration-300 ease-in-out
+          ${showSidebar ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
         `}>
+          <button
+            onClick={() => { setShowSidebar(v => !v); setShowRightSheet(false); }}
+            className="lg:hidden absolute top-[16%] z-10 h-16 w-7 grid place-items-center border-white/15 bg-black/85 text-white/70 active:bg-white active:text-black right-0 translate-x-full rounded-r-lg border border-l-0"
+            title={showSidebar ? 'Hide visuals' : 'Show visuals'}
+            aria-label={showSidebar ? 'Hide visuals panel' : 'Show visuals panel'}
+          >
+            {showSidebar ? <ChevronLeft size={15} /> : <Layers size={15} />}
+          </button>
           <div className="flex-1 overflow-y-auto custom-scrollbar pb-20 lg:pb-0">
-            <div className="lg:hidden p-4 flex justify-between items-center border-b border-white/5 sticky top-0 bg-black/80  z-10">
-              <span className="text-[10px] uppercase tracking-widest font-bold opacity-40">Settings</span>
-              <button onClick={() => setShowSidebar(false)} className="p-2 hover:bg-transparent rounded-none">
-                <ChevronDown size={20} />
+            <div className="lg:hidden p-4 flex justify-between items-center border-b border-white/5 sticky top-0 bg-black/80 z-10">
+              <span className="text-[10px] uppercase tracking-widest font-bold opacity-40">Visuals</span>
+              <button onClick={() => setShowSidebar(false)} className="p-2 hover:bg-transparent rounded-none" title="Hide panel">
+                <ChevronLeft size={20} />
               </button>
             </div>
             <div className="hidden lg:flex justify-end px-2 py-1.5 border-b border-white/5">
@@ -16518,16 +16529,21 @@ export default function App() {
         </aside>
         {/* Sidebar Overlay (Mobile) */}
         <AnimatePresence>
-          {showSidebar && (
-            <motion.div 
+          {(showSidebar || showRightSheet) && (
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setShowSidebar(false)}
-              className="lg:hidden fixed inset-0 z-30 bg-black/40 "
+              onClick={() => { setShowSidebar(false); setShowRightSheet(false); }}
+              className="lg:hidden fixed top-14 inset-x-0 bottom-0 z-30 bg-black/40"
             />
           )}
         </AnimatePresence>
+
+        {/* Phone drawer tabs live inside their own drawer, pinned just outside its
+            edge. They ride the drawer's own transform, so the tab sits on the screen
+            edge when the panel is closed and against the panel when it is open —
+            same button opens and closes it, with no offset to keep in sync. */}
 
         {/* Main Content Area */}
         <div className="flex-1 relative flex flex-col min-w-0 overflow-hidden">
@@ -16794,6 +16810,10 @@ export default function App() {
             </div>
           </div>
         </main>
+
+          {/* On a phone the transport belongs directly under the canvas, where a thumb
+              can reach it without opening any drawer. */}
+          <div className="lg:hidden">{transportBar}</div>
 
           {/* Bottom Parameter Panel (music transport now lives under the Audio panel) */}
           <div id="tour-params" className="flex-1 min-h-[220px] bg-[#050505] border-t border-white/10 p-4 overflow-y-auto custom-scrollbar w-full relative z-40">
@@ -18128,12 +18148,34 @@ return (
           </button>
         )}
         {/* Right Sidebar (Audio + Triggers) */}
-        <aside className={`border-l border-white/5 bg-black/20 hidden lg:flex flex-col shrink-0 transition-all duration-300 ${rightCollapsed ? 'lg:hidden' : 'w-72 xl:w-80'}`}>
+        <aside className={`
+          fixed top-14 bottom-0 right-0 z-50 w-[80vw] max-w-[20rem] lg:top-0 lg:bottom-auto bg-black/95 border-l border-white/10
+          lg:relative lg:inset-auto lg:z-0 lg:bg-black/20 lg:max-w-none lg:border-white/5
+          flex flex-col shrink-0 transition-transform duration-300 ease-in-out
+          ${rightCollapsed ? 'lg:hidden' : 'lg:w-72 xl:w-80'}
+          ${showRightSheet ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'}
+        `}>
+          <button
+            onClick={() => { setShowRightSheet(v => !v); setShowSidebar(false); }}
+            className="lg:hidden absolute top-[16%] z-10 h-16 w-7 grid place-items-center border-white/15 bg-black/85 text-white/70 active:bg-white active:text-black left-0 -translate-x-full rounded-l-lg border border-r-0"
+            title={showRightSheet ? 'Hide audio & triggers' : 'Show audio & triggers'}
+            aria-label={showRightSheet ? 'Hide audio and triggers panel' : 'Show audio and triggers panel'}
+          >
+            {showRightSheet ? <ChevronRight size={15} /> : <Zap size={15} />}
+          </button>
+           <div className="lg:hidden p-4 flex justify-between items-center border-b border-white/5 bg-black/80">
+             <button onClick={() => setShowRightSheet(false)} className="p-2 hover:bg-transparent rounded-none" title="Hide panel">
+               <ChevronRight size={20} />
+             </button>
+             <span className="text-[10px] uppercase tracking-widest font-bold opacity-40">Audio &amp; Triggers</span>
+           </div>
            <div className="hidden lg:flex justify-start px-2 py-1.5 border-b border-white/5">
              <button onClick={() => setRightCollapsed(true)} className="p-1 text-white/30 hover:text-white transition-colors" title="Hide panel — more canvas">
                <PanelRightClose size={14} />
              </button>
            </div>
+           {/* On a phone the same transport already sits under the canvas. */}
+           <div className="hidden lg:block">{transportBar}</div>
            <div className="flex-1 custom-scrollbar overflow-y-auto pb-20">
 
              <div id="tour-audio">
@@ -19021,7 +19063,7 @@ return (
                    {layers.find(l => l.id === assetBrowserLayerTarget)?.type === 'generative' && (
                        <div className="space-y-2 pt-4 border-t border-white/5">
                           <label className="text-[10px] uppercase tracking-widest opacity-40">Select Script</label>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 overflow-y-auto max-h-[60vh] custom-scrollbar pb-10">
+                          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 overflow-y-auto max-h-[60vh] custom-scrollbar pb-10">
                              {generativesRef.current.map((g, gi, genArr) => {
                                const isActive = layers.find(l => l.id === assetBrowserLayerTarget)?.generativeId === g.uuid;
                                const getIconForGenerative = (uuid: string) => {
@@ -19224,7 +19266,7 @@ return (
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 custom-scrollbar">
+              <div className="flex-1 overflow-y-auto p-6 grid grid-cols-2 lg:grid-cols-3 gap-4 custom-scrollbar">
                 {ALL_EFFECTS.map(effect => {
                   const isAdded = layers.find(l => l.id === selectedLayerForEffect)?.mappings.find(m => m.id === effect.id);
                   const getIconForEffect = (id: string) => {
@@ -19321,7 +19363,7 @@ return (
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 custom-scrollbar">
+              <div className="flex-1 overflow-y-auto p-6 grid grid-cols-2 lg:grid-cols-3 gap-4 custom-scrollbar">
                 {generativesRef.current.map((g, gi, genArr) => {
                   const isActive = activeLayerId && layers.find(l => l.id === activeLayerId)?.generativeId === g.uuid;
                   const showCat = gi === 0 || genArr[gi - 1].category !== g.category;
