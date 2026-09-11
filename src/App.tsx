@@ -15243,6 +15243,10 @@ export default function App() {
   // ---- Reusable panel bodies (placed in sidebars / hamburger drawer) ----
   const micActive = audioStems.some(s => s.id === 'live-mic');
   const tabAudioActive = audioStems.some(s => s.id === 'tab-audio');
+  // Screen and tab capture do not exist on iOS Safari or Chrome for Android, so
+  // on a phone this control would only ever fail. Hide it rather than offer it.
+  const canCaptureOutput = typeof navigator !== 'undefined'
+    && !!(navigator.mediaDevices as any)?.getDisplayMedia;
 
   // Transport lives outside the Audio section so it stays reachable while that
   // section is collapsed — on desktop it sits at the top of the right column, on
@@ -15309,7 +15313,7 @@ export default function App() {
           >
             <Mic size={14} />
           </button>
-          <button
+          {canCaptureOutput && <button
             onClick={async () => {
               const id = 'tab-audio';
               if (tabAudioActive) { removeAudioStem(id); return; }
@@ -15323,13 +15327,15 @@ export default function App() {
             title={tabAudioActive ? 'Stop listening to the computer output' : 'Listen to whatever this computer is playing — YouTube, Spotify, a DAW'}
           >
             <Radio size={14} />
-          </button>
+          </button>}
         </div>
-        <p className="text-[8px] opacity-30 leading-tight">
-          The dish icon listens to the computer's own output, so a YouTube video in any
-          browser drives the visuals. In the desktop app this is granted straight away;
-          in a browser tab you have to pick a window and tick "share audio".
-        </p>
+        {canCaptureOutput && (
+          <p className="text-[8px] opacity-30 leading-tight">
+            The dish icon listens to the computer's own output, so a YouTube video in any
+            browser drives the visuals. In the desktop app this is granted straight away;
+            in a browser tab you have to pick a window and tick "share audio".
+          </p>
+        )}
       </div>
 
       {/* Only meaningful once the mic is actually on. */}
