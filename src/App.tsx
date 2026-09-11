@@ -3251,6 +3251,37 @@ export default function App() {
   /** Wire three random parameters of this layer to Kick / Snare / Hats. The trigger
    *  amount matters as much as the mapping: a connected knob with amount 0 looks
    *  completely dead, which is the usual reason audio reactivity "does not work". */
+  /** Names that almost always mean "how many of a thing", where a random value is
+   *  a jump between two unrelated pictures rather than a modulation. */
+  const DISCRETE_NAME = /(count|rows|cols|columns|sides|segments|resolution|rings|extent|grid_size|peg_rows|walkers|swarm|population|sensor_rays|kernel_radius|rule_set|poly_degree|orbital|energy_level|magnetic_m|orbital_l|motif_len|node_count|pendulum_count|planet_count|bins|zoom_level|line_\d)/i;
+
+  const isDiscreteCount = (p: any) => {
+    if (p.type !== 'number') return false;
+    if (DISCRETE_NAME.test(p.name)) return true;
+    // Fallback: a whole-number knob over a short whole-number span is a count in
+    // all but name. Kept tight so continuous knobs like sigma or rho do not match.
+    const min = p.min ?? 0, max = p.max ?? 1;
+    return Number.isInteger(p.default) && Number.isInteger(min) && Number.isInteger(max)
+        && max - min > 0 && max - min <= 12;
+  };
+
+  /** Pick n distinct entries, each candidate's chance proportional to its weight. */
+  const weightedPick = (cands: { p: any; w: number }[], n: number) => {
+    const rest = [...cands];
+    const out: any[] = [];
+    while (out.length < n && rest.length) {
+      let total = 0;
+      for (const c of rest) total += c.w;
+      if (total <= 0) break;
+      let r = Math.random() * total;
+      let k = rest.length - 1;
+      for (let i = 0; i < rest.length; i++) { r -= rest[i].w; if (r <= 0) { k = i; break; } }
+      out.push(rest[k].p);
+      rest.splice(k, 1);
+    }
+    return out;
+  };
+
   const autoAssignAudio = useCallback((layerId: string) => {
     const layer = layersRef.current.find(l => l.id === layerId);
     if (!layer) return;
@@ -3258,36 +3289,44 @@ export default function App() {
     const params: any[] = (def?.parameters || []).filter((p: any) => p.name !== 'demo');
     if (!params.length) return;
 
-    const pool = [...params];
-    for (let i = pool.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; const t = pool[i]; pool[i] = pool[j]; pool[j] = t; }
-    // Prefer things that visibly move: numbers and actions before toggles.
-    pool.sort((a, b) => (a.type === 'boolean' ? 1 : 0) - (b.type === 'boolean' ? 1 : 0));
-    const picks = pool.slice(0, 3);
+    // The palette cycle is a candidate like any parameter, at middling odds: it is
+    // a strong effect, so it should turn up often but not every roll.
+    const PALETTE = { name: 'palette_cycle', label: 'Palette Cycle', type: 'action', palette: true };
+    const cands = [
+      ...params.map((p: any) => ({ p, w: isDiscreteCount(p) ? 0.1 : 1 })),
+      { p: PALETTE, w: 0.5 },
+    ];
+    const picks = weightedPick(cands, 3);
+    if (!picks.length) return;
     const bands = ['kick', 'snare', 'hats'].map(id => AUDIO_BANDS.find(b => b.id === id)!).filter(Boolean);
 
     setLayers(prev => prev.map(l => {
       if (l.id !== layerId) return l;
-      const maps = [...(l.generativeMappings || [])];
-      const active = { ...(l.generativeTriggerActive || {}) };
-      const amount = { ...(l.generativeTriggerAmount || {}) };
+      // Every roll replaces the whole set. Merging on top of the last one meant the
+      // dice only ever added, so a layer silently accumulated triggers.
+      const maps: any[] = [];
+      const active: Record<string, boolean> = {};
+      const amount: Record<string, number> = {};
       picks.forEach((p: any, i: number) => {
         const band = bands[i % bands.length];
         active[p.name] = true;
         amount[p.name] = (p.type === 'action' || p.type === 'boolean') ? 0 : (0.45 + Math.random() * 0.45);
-        const entry: any = {
+        maps.push({
           ...INITIAL_MAPPINGS[0],
           id: p.name,
-          name: p.name,
+          name: p.palette ? 'Palette Cycle' : p.name,
+          description: p.palette ? 'Cycles colors across unlocked elements on each trigger hit.' : undefined,
           active: true,
+          manualActive: false,
           triggerBehavior: 'momentary',
           noteSettings: { ...DEFAULT_NOTE_SETTINGS },
           channels: Array.from({ length: 16 }, (_, k) => k),
+          noteStart: 0,
+          noteEnd: 127,
           devices: [],
           audioMapping: { ...DEFAULT_AUDIO_MAPPING, ...audioBandPatch(band), stemId: '' },
           rhythmMapping: { enabled: false, pattern: '4-on-the-Floor', bpm: 120, customPattern: new Array(16).fill(false) },
-        };
-        const idx = maps.findIndex((m: any) => m.id === p.name);
-        if (idx >= 0) maps[idx] = { ...maps[idx], ...entry }; else maps.push(entry);
+        });
       });
       return { ...l, generativeMappings: maps, generativeTriggerActive: active, generativeTriggerAmount: amount };
     }));
