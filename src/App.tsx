@@ -15242,6 +15242,7 @@ export default function App() {
 
   // ---- Reusable panel bodies (placed in sidebars / hamburger drawer) ----
   const micActive = audioStems.some(s => s.id === 'live-mic');
+  const tabAudioActive = audioStems.some(s => s.id === 'tab-audio');
 
   // Transport lives outside the Audio section so it stays reachable while that
   // section is collapsed — on desktop it sits at the top of the right column, on
@@ -15308,7 +15309,27 @@ export default function App() {
           >
             <Mic size={14} />
           </button>
+          <button
+            onClick={async () => {
+              const id = 'tab-audio';
+              if (tabAudioActive) { removeAudioStem(id); return; }
+              const r = await engine.addTabAudio(id, 'Browser / YouTube');
+              if (!r.ok) { setStatus(r.error || 'CAPTURE FAILED'); return; }
+              setAudioStems(prev => [...prev.filter(s => s.id !== id),
+                { id, name: 'Browser / YouTube', fileUrl: 'live', isMuted: false, isSoloed: false }]);
+              setStatus('LISTENING TO SYSTEM AUDIO');
+            }}
+            className={`px-4 border rounded transition-colors flex items-center justify-center ${tabAudioActive ? 'bg-red-600 border-red-500 text-white' : 'border-white/10 bg-transparent hover:border-white hover:bg-white hover:text-black'}`}
+            title={tabAudioActive ? 'Stop listening to the computer output' : 'Listen to whatever this computer is playing — YouTube, Spotify, a DAW'}
+          >
+            <Radio size={14} />
+          </button>
         </div>
+        <p className="text-[8px] opacity-30 leading-tight">
+          The dish icon listens to the computer's own output, so a YouTube video in any
+          browser drives the visuals. In the desktop app this is granted straight away;
+          in a browser tab you have to pick a window and tick "share audio".
+        </p>
       </div>
 
       {/* Only meaningful once the mic is actually on. */}
