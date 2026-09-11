@@ -2560,6 +2560,63 @@ void main(void) {
   "uuid": "sgd-regression-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Natural Selection",
+  "category": "Science",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "acid_matrix",
+  "parameters": [
+    { "name": "food_rate", "min": 0.1, "max": 4, "default": 1, "type": "number" },
+    { "name": "mutation_size", "min": 0, "max": 1, "default": 0.25, "type": "number" },
+    { "name": "energy_cost", "min": 0.2, "max": 3, "default": 1, "type": "number" },
+    { "name": "mortality", "min": 0, "max": 1, "default": 0.08, "type": "number" },
+    { "name": "food_spread", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "food_bloom", "default": 0, "type": "action" },
+    { "name": "drought", "default": 0, "type": "action" },
+    { "name": "extinction_reset", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Arena Ground", "defaultColor": "#0d1117" },
+    { "id": "arena", "name": "Arena Edge", "defaultColor": "#033a16" },
+    { "id": "food", "name": "Food", "defaultColor": "#39d353" },
+    { "id": "slow", "name": "Slow Lineage", "defaultColor": "#2ea043" },
+    { "id": "fast", "name": "Fast Lineage", "defaultColor": "#00ff66" },
+    { "id": "curve", "name": "Trait Density", "defaultColor": "#39d353" }
+  ],
+  "uuid": "natural-selection-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Evolving Rovers",
+  "category": "Science",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "cyberpunk_neon",
+  "parameters": [
+    { "name": "population", "min": 20, "max": 120, "default": 60, "type": "number" },
+    { "name": "mutation_spread", "min": 0.01, "max": 1, "default": 0.22, "type": "number" },
+    { "name": "sensor_rays", "min": 3, "max": 11, "default": 7, "type": "number" },
+    { "name": "friction", "min": 0, "max": 1, "default": 0.35, "type": "number" },
+    { "name": "obstacle_speed", "min": 0, "max": 2, "default": 0.6, "type": "number" },
+    { "name": "next_generation", "default": 0, "type": "action" },
+    { "name": "relocate_target", "default": 0, "type": "action" },
+    { "name": "champion_solo", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Course", "defaultColor": "#0a0a12" },
+    { "id": "rover", "name": "Rovers", "defaultColor": "#00f0ff" },
+    { "id": "trail", "name": "Paths", "defaultColor": "#7000ff" },
+    { "id": "obstacle", "name": "Obstacles", "defaultColor": "#ff007f" },
+    { "id": "target", "name": "Waypoint", "defaultColor": "#ffe600" }
+  ],
+  "uuid": "ga-rovers-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   }
 ];
 
@@ -2645,6 +2702,8 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'ballistics-1': 'Science',
   'markov-net-1': 'Science',
   'sgd-regression-1': 'Science',
+  'natural-selection-1': 'Science',
+  'ga-rovers-1': 'Science',
 };
 
 export const GENERATIVE_CATEGORY_ORDER = ['Music', 'Science', 'Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];

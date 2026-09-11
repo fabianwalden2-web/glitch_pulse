@@ -2890,6 +2890,8 @@ export default function App() {
   const ballisticStateRef = useRef<Record<string, any>>({});
   const markovStateRef = useRef<Record<string, any>>({});
   const sgdStateRef = useRef<Record<string, any>>({});
+  const selectionStateRef = useRef<Record<string, any>>({});
+  const roverStateRef = useRef<Record<string, any>>({});
   const dragonTextStateRef = useRef<Record<string, any>>({});
 
   // Accumulation Mode Refs
@@ -11881,6 +11883,360 @@ export default function App() {
               ctx.fillText(`degree ${degree}   mse ${mse.toFixed(3)}`, lx, hy + hh + 8 * sc);
               ctx.globalAlpha = 1;
               element = canvas;
+          } else if (def.uuid === 'natural-selection-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || '#0d1117';
+              const cArena = resolvedGenerativeColors['arena'] || '#033a16';
+              const cFood = resolvedGenerativeColors['food'] || '#39d353';
+              const cSlow = hexToRgb(resolvedGenerativeColors['slow'] || '#2ea043');
+              const cFast = hexToRgb(resolvedGenerativeColors['fast'] || '#00ff66');
+              const cCurve = resolvedGenerativeColors['curve'] || '#39d353';
+
+              const foodRate = Math.max(0.1, Math.min(4, ms.food_rate ?? 1));
+              const mut = Math.max(0, Math.min(1, ms.mutation_size ?? 0.25));
+              const cost = Math.max(0.2, Math.min(3, ms.energy_cost ?? 1));
+              const mortality = Math.max(0, Math.min(1, ms.mortality ?? 0.08));
+              const spread = Math.max(0, Math.min(1, ms.food_spread ?? 0.5));
+
+              const cx = targetW / 2, cy = targetH * 0.46;
+              const R = Math.min(targetW * 0.46, targetH * 0.40);
+
+              const st = (selectionStateRef.current[layer.id] ||= { acts: {}, pop: [], food: [], acc: 0 });
+              // Food lands on a ring whose radius is the spread knob; at the midpoint the
+              // ring dissolves into a uniform scatter over the whole disc.
+              const dropFood = (n: number) => {
+                  const w = Math.abs(spread - 0.5) * 2;
+                  for (let i = 0; i < n && st.food.length < 900; i++) {
+                      const u = Math.random();
+                      const rr = R * ((1 - w) * Math.sqrt(u) + w * Math.max(0.04, Math.min(1, spread + 0.16 * (u - 0.5))));
+                      const a = Math.random() * 6.283;
+                      st.food.push({ x: cx + Math.cos(a) * rr, y: cy + Math.sin(a) * rr });
+                  }
+              };
+              const founder = () => ({
+                  x: cx + (Math.random() - 0.5) * R, y: cy + (Math.random() - 0.5) * R,
+                  hd: Math.random() * 6.283, speed: 1, size: 1, sense: 1, energy: 1.1, age: 0,
+              });
+              if (!st.pop.length) { for (let i = 0; i < 24; i++) st.pop.push(founder()); dropFood(160); }
+              if (actionFired(st.acts, 'reset', Number(ms.extinction_reset ?? 0))) {
+                  st.pop = []; for (let i = 0; i < 10; i++) st.pop.push(founder());
+                  st.food = []; dropFood(120);
+              }
+              if (actionFired(st.acts, 'bloom', Number(ms.food_bloom ?? 0))) {
+                  for (let i = 0; i < 220 && st.food.length < 1100; i++) {
+                      const a = Math.random() * 6.283, rr = R * (0.10 + Math.random() * 0.14);
+                      st.food.push({ x: cx + Math.cos(a) * rr, y: cy + Math.sin(a) * rr });
+                  }
+              }
+              if (actionFired(st.acts, 'drought', Number(ms.drought ?? 0))) {
+                  st.food = st.food.filter(() => Math.random() < 0.5);
+                  // Culling the least-provisioned half is exactly the selection pressure
+                  // a drought applies in the field.
+                  st.pop.sort((a: any, b: any) => a.energy - b.energy);
+                  st.pop.splice(0, Math.floor(st.pop.length * 0.5));
+              }
+
+              st.acc += dt * foodRate * 44;
+              const drop = Math.floor(st.acc); st.acc -= drop;
+              if (drop) dropFood(drop);
+
+              const born: any[] = [];
+              for (const c of st.pop) {
+                  c.age += dt;
+                  // Steer to the nearest food inside the sense radius, otherwise drift.
+                  const senseR = c.sense * 78 * sc;
+                  let best = -1, bd = senseR * senseR;
+                  for (let i = 0; i < st.food.length; i++) {
+                      const dx = st.food[i].x - c.x, dy = st.food[i].y - c.y;
+                      const d2 = dx * dx + dy * dy;
+                      if (d2 < bd) { bd = d2; best = i; }
+                  }
+                  if (best >= 0) c.hd = Math.atan2(st.food[best].y - c.y, st.food[best].x - c.x);
+                  else c.hd += (Math.random() - 0.5) * 2.6 * dt;
+                  const v = c.speed * 82 * sc;
+                  c.x += Math.cos(c.hd) * v * dt;
+                  c.y += Math.sin(c.hd) * v * dt;
+                  const dx = c.x - cx, dy = c.y - cy, d = Math.hypot(dx, dy);
+                  if (d > R) { c.x = cx + dx / d * R; c.y = cy + dy / d * R; c.hd += Math.PI * (0.6 + Math.random() * 0.8); }
+
+                  const eatR = 5 * sc * c.size + 4 * sc;
+                  if (best >= 0 && bd < eatR * eatR) { st.food.splice(best, 1); c.energy += 1; }
+
+                  // Metabolism: bigger, faster and more perceptive all cost more, which is
+                  // what stops any one trait from running away.
+                  c.energy -= cost * (c.size * c.size * c.size * c.speed * c.speed * 0.20 + c.sense * 0.05) * dt;
+                  if (c.energy >= 2.1 && st.pop.length + born.length < 420) {
+                      c.energy -= 1.25;
+                      const g = () => (Math.random() + Math.random() + Math.random() - 1.5) * mut * 0.42;
+                      born.push({
+                          x: c.x, y: c.y, hd: Math.random() * 6.283,
+                          speed: Math.max(0.15, c.speed + g()), size: Math.max(0.2, c.size + g()),
+                          sense: Math.max(0.15, c.sense + g()), energy: 1, age: 0,
+                      });
+                  }
+              }
+              // Background mortality as a per-second hazard, not a per-frame one.
+              st.pop = st.pop.filter((c: any) => c.energy > 0 && Math.random() > mortality * 0.35 * dt);
+              st.pop.push(...born);
+              if (!st.pop.length) for (let i = 0; i < 10; i++) st.pop.push(founder());
+
+              ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+              ctx.strokeStyle = cArena; ctx.lineWidth = 2 * sc; ctx.globalAlpha = 0.8;
+              ctx.beginPath(); ctx.arc(cx, cy, R, 0, 6.283); ctx.stroke();
+              ctx.globalAlpha = 1;
+
+              ctx.fillStyle = cFood;
+              for (const fd of st.food) ctx.fillRect(fd.x - 2 * sc, fd.y - 2 * sc, 4 * sc, 4 * sc);
+
+              let sMin = 9, sMax = 0;
+              for (const c of st.pop) { if (c.speed < sMin) sMin = c.speed; if (c.speed > sMax) sMax = c.speed; }
+              const span = Math.max(0.35, sMax - sMin);
+              for (const c of st.pop) {
+                  const t = Math.max(0, Math.min(1, (c.speed - sMin) / span));
+                  ctx.fillStyle = `rgb(${Math.round(cSlow.r + (cFast.r - cSlow.r) * t)},${Math.round(cSlow.g + (cFast.g - cSlow.g) * t)},${Math.round(cSlow.b + (cFast.b - cSlow.b) * t)})`;
+                  ctx.beginPath(); ctx.arc(c.x, c.y, Math.max(2.6, Math.min(17, 6.6 * c.size)) * sc, 0, 6.283); ctx.fill();
+              }
+
+              // Live Gaussian kernel density of the speed trait, which is where drift and
+              // selection actually show up.
+              const BINS = 130, lo = 0.1, hi = Math.max(1.6, sMax * 1.15);
+              const kde = new Float32Array(BINS);
+              const bw = Math.max(0.045, 1.06 * span / Math.pow(Math.max(2, st.pop.length), 0.2) * 0.5);
+              for (const c of st.pop) {
+                  const centre = (c.speed - lo) / (hi - lo) * BINS;
+                  const w = bw / (hi - lo) * BINS;
+                  const i0 = Math.max(0, Math.floor(centre - w * 3)), i1 = Math.min(BINS - 1, Math.ceil(centre + w * 3));
+                  for (let i = i0; i <= i1; i++) { const z = (i - centre) / w; kde[i] += Math.exp(-0.5 * z * z); }
+              }
+              let kMax = 1e-6; for (let i = 0; i < BINS; i++) if (kde[i] > kMax) kMax = kde[i];
+              const py = targetH * 0.99, ph = targetH * 0.13;
+              ctx.strokeStyle = cCurve; ctx.lineWidth = 2.2 * sc; ctx.globalAlpha = 0.9;
+              ctx.beginPath();
+              for (let i = 0; i < BINS; i++) {
+                  const x = targetW * 0.06 + i / (BINS - 1) * targetW * 0.88;
+                  const y = py - (kde[i] / kMax) * ph;
+                  i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+              }
+              ctx.stroke();
+              ctx.globalAlpha = 0.6;
+              ctx.font = `600 ${Math.round(13 * sc)}px ui-sans-serif, system-ui, sans-serif`;
+              ctx.textBaseline = 'bottom';
+              ctx.fillStyle = cCurve;
+              ctx.fillText(`n ${st.pop.length}   food ${st.food.length}   speed ${(sMin + span / 2).toFixed(2)}`, targetW * 0.06, py - ph - 6 * sc);
+              ctx.globalAlpha = 1;
+              element = canvas;
+          } else if (def.uuid === 'ga-rovers-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.04, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || '#0a0a12';
+              const cRover = resolvedGenerativeColors['rover'] || '#00f0ff';
+              const cTrail = resolvedGenerativeColors['trail'] || '#7000ff';
+              const cObs = resolvedGenerativeColors['obstacle'] || '#ff007f';
+              const cTgt = resolvedGenerativeColors['target'] || '#ffe600';
+
+              const popN = Math.max(20, Math.min(120, Math.round(ms.population ?? 60)));
+              const mutS = Math.max(0.01, Math.min(1, ms.mutation_spread ?? 0.22));
+              const rays = Math.max(3, Math.min(11, Math.round(ms.sensor_rays ?? 7)));
+              const fric = Math.max(0, Math.min(1, ms.friction ?? 0.35));
+              const obsSpeed = Math.max(0, Math.min(2, ms.obstacle_speed ?? 0.6));
+
+              const NIN = rays + 3, NOUT = 2;
+              const st = (roverStateRef.current[layer.id] ||= { acts: {}, rovers: [], gen: 1, t: 0, solo: false, rays: 0, best: 0 });
+              const startX = targetW * 0.08, startY = targetH * 0.5;
+              if (!st.obs) {
+                  st.obs = [];
+                  for (let i = 0; i < 7; i++) st.obs.push({ bx: 0.26 + (i % 4) * 0.19, by: 0.2 + ((i * 0.37) % 1) * 0.6, ph: i * 1.1, amp: 0.10 + (i % 3) * 0.05, r: 0.045 + (i % 3) * 0.016 });
+              }
+              if (!st.tgt) st.tgt = { x: 0.9, y: 0.5 };
+              if (actionFired(st.acts, 'solo', Number(ms.champion_solo ?? 0))) st.solo = !st.solo;
+              if (actionFired(st.acts, 'tgt', Number(ms.relocate_target ?? 0))) st.tgt = { x: 0.72 + Math.random() * 0.22, y: 0.12 + Math.random() * 0.76 };
+
+              const randW = () => { const w = new Float32Array(NIN * NOUT); for (let i = 0; i < w.length; i++) w[i] = (Math.random() - 0.5) * 1.6; return w; };
+              const spawn = (w: Float32Array | null) => ({
+                  x: startX, y: startY + (Math.random() - 0.5) * targetH * 0.06, a: 0, vx: 0, vy: 0,
+                  w: w || randW(), fit: 0, best: 1e9, dead: false, reached: false,
+              });
+              if (st.rays !== rays) {
+                  // Only a change in sensor count invalidates the learned weights; a nudge
+                  // of the population knob must not wipe the run.
+                  st.rays = rays;
+                  st.rovers = []; for (let i = 0; i < popN; i++) st.rovers.push(spawn(null));
+                  st.t = 0;
+              } else if (st.rovers.length !== popN) {
+                  while (st.rovers.length > popN) st.rovers.pop();
+                  while (st.rovers.length < popN) {
+                      const donor = st.rovers[(Math.random() * st.rovers.length) | 0];
+                      st.rovers.push(spawn(donor ? donor.w.slice() : null));
+                  }
+              }
+
+              const tb = getTrailBuf(roverStateRef.current, layer.id + '_tr', targetW, targetH, 1);
+              const nextGen = () => {
+                  // Truncation selection: the top quarter breed, the champion carries over
+                  // unmutated so a good solution is never lost to noise.
+                  const sorted = [...st.rovers].sort((a, b) => b.fit - a.fit);
+                  st.best = sorted[0] ? sorted[0].fit : 0;
+                  const elite = sorted.slice(0, Math.max(2, Math.floor(popN * 0.25)));
+                  const next: any[] = [spawn(elite[0].w.slice()), spawn(elite[0].w.slice())];
+                  const fresh = Math.floor(popN * 0.12);
+                  while (next.length < popN) {
+                      // A slice of each generation starts from scratch, which is what keeps
+                      // the run from settling permanently into a local optimum.
+                      if (next.length >= popN - fresh) { next.push(spawn(null)); continue; }
+                      const p = elite[(Math.random() * elite.length) | 0];
+                      const w = p.w.slice();
+                      for (let i = 0; i < w.length; i++) {
+                          if (Math.random() < 0.6) w[i] += (Math.random() + Math.random() + Math.random() - 1.5) * mutS;
+                      }
+                      next.push(spawn(w));
+                  }
+                  st.rovers = next;
+                  st.gen++; st.t = 0;
+                  // Ghost the previous generation rather than wiping it, so the improvement
+                  // between runs stays visible and the frame is never bare.
+                  tb.g.globalCompositeOperation = 'destination-out';
+                  tb.g.fillStyle = 'rgba(0,0,0,0.72)';
+                  tb.g.fillRect(0, 0, targetW, targetH);
+                  tb.g.globalCompositeOperation = 'source-over';
+              };
+              if (actionFired(st.acts, 'gen', Number(ms.next_generation ?? 0))) nextGen();
+
+              const obsAt = (o: any) => [
+                  o.bx * targetW,
+                  (o.by + Math.sin(nowSec * obsSpeed + o.ph) * o.amp) * targetH,
+                  o.r * Math.min(targetW, targetH),
+              ] as [number, number, number];
+              const obs = st.obs.map(obsAt);
+              const tgtX = st.tgt.x * targetW, tgtY = st.tgt.y * targetH;
+
+              // Ray-circle intersection, nearest hit along the ray.
+              const cast = (ox: number, oy: number, dx: number, dy: number, maxD: number) => {
+                  let hit = maxD;
+                  for (const [ox2, oy2, r] of obs) {
+                      const fx = ox - ox2, fy = oy - oy2;
+                      const b = 2 * (fx * dx + fy * dy), c = fx * fx + fy * fy - r * r;
+                      const disc = b * b - 4 * c;
+                      if (disc < 0) continue;
+                      const sq = Math.sqrt(disc);
+                      const t1 = (-b - sq) / 2;
+                      if (t1 > 0 && t1 < hit) hit = t1;
+                  }
+                  if (dx > 0) { const t = (targetW - ox) / dx; if (t > 0 && t < hit) hit = t; }
+                  if (dx < 0) { const t = -ox / dx; if (t > 0 && t < hit) hit = t; }
+                  if (dy > 0) { const t = (targetH - oy) / dy; if (t > 0 && t < hit) hit = t; }
+                  if (dy < 0) { const t = -oy / dy; if (t > 0 && t < hit) hit = t; }
+                  return hit;
+              };
+
+              const SPAN = Math.min(targetW, targetH) * 0.55;
+              const FOV = 2.2;
+              st.t += dt;
+              for (const r of st.rovers) {
+                  if (r.dead) continue;
+                  const inp = new Float32Array(NIN);
+                  for (let k = 0; k < rays; k++) {
+                      const a = r.a + (k / (rays - 1) - 0.5) * FOV;
+                      inp[k] = 1 - Math.min(1, cast(r.x, r.y, Math.cos(a), Math.sin(a), SPAN) / SPAN);
+                  }
+                  const bear = Math.atan2(tgtY - r.y, tgtX - r.x) - r.a;
+                  inp[rays] = Math.sin(bear); inp[rays + 1] = Math.cos(bear); inp[rays + 2] = 1;
+                  let steer = 0, thrust = 0;
+                  for (let i = 0; i < NIN; i++) { steer += r.w[i] * inp[i]; thrust += r.w[NIN + i] * inp[i]; }
+                  steer = Math.tanh(steer); thrust = Math.tanh(thrust) * 0.5 + 0.5;
+
+                  r.a += steer * 3.1 * dt;
+                  const acc = thrust * 620 * sc;
+                  r.vx += Math.cos(r.a) * acc * dt; r.vy += Math.sin(r.a) * acc * dt;
+                  const k = 1 - Math.min(0.95, (0.6 + fric * 3.4) * dt);
+                  r.vx *= k; r.vy *= k;
+                  const px = r.x, py = r.y;
+                  r.x += r.vx * dt; r.y += r.vy * dt;
+
+                  for (const [ox2, oy2, rr] of obs) {
+                      if ((r.x - ox2) * (r.x - ox2) + (r.y - oy2) * (r.y - oy2) < rr * rr) { r.dead = true; break; }
+                  }
+                  if (r.x < 0 || r.x > targetW || r.y < 0 || r.y > targetH) r.dead = true;
+
+                  const d = Math.hypot(tgtX - r.x, tgtY - r.y);
+                  if (d < r.best) r.best = d;
+                  if (d < 34 * sc) r.reached = true;
+                  // Closest approach is the base score; arriving and surviving are both
+                  // worth keeping, and a rover that touched the waypoint must not lose
+                  // that credit merely by coasting past it.
+                  r.fit = (targetW - r.best) / targetW + (r.reached ? 1.6 : 0) + 0.25;
+
+                  if (!st.solo) {
+                      tb.g.strokeStyle = cTrail; tb.g.globalAlpha = 0.30; tb.g.lineWidth = 1.1 * sc;
+                      tb.g.beginPath(); tb.g.moveTo(px, py); tb.g.lineTo(r.x, r.y); tb.g.stroke();
+                  }
+              }
+              tb.g.globalAlpha = 1;
+              if (st.t > 11 || st.rovers.every((r: any) => r.dead)) nextGen();
+
+              ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+              ctx.drawImage(tb.c, 0, 0);
+
+              ctx.strokeStyle = cObs; ctx.lineWidth = 2 * sc;
+              for (const [ox2, oy2, rr] of obs) {
+                  ctx.globalAlpha = 0.18; ctx.fillStyle = cObs;
+                  ctx.beginPath(); ctx.arc(ox2, oy2, rr, 0, 6.283); ctx.fill();
+                  ctx.globalAlpha = 0.85;
+                  ctx.beginPath(); ctx.arc(ox2, oy2, rr, 0, 6.283); ctx.stroke();
+              }
+              ctx.globalAlpha = 1;
+
+              const gt = ctx.createRadialGradient(tgtX, tgtY, 0, tgtX, tgtY, 52 * sc);
+              gt.addColorStop(0, cTgt); gt.addColorStop(1, 'rgba(0,0,0,0)');
+              ctx.fillStyle = gt;
+              ctx.beginPath(); ctx.arc(tgtX, tgtY, 52 * sc, 0, 6.283); ctx.fill();
+
+              let champ: any = null;
+              for (const r of st.rovers) if (!champ || r.fit > champ.fit) champ = r;
+              const drawRover = (r: any, alpha: number) => {
+                  ctx.globalAlpha = alpha;
+                  ctx.fillStyle = cRover;
+                  ctx.beginPath();
+                  ctx.moveTo(r.x + Math.cos(r.a) * 10 * sc, r.y + Math.sin(r.a) * 10 * sc);
+                  ctx.lineTo(r.x + Math.cos(r.a + 2.5) * 6 * sc, r.y + Math.sin(r.a + 2.5) * 6 * sc);
+                  ctx.lineTo(r.x + Math.cos(r.a - 2.5) * 6 * sc, r.y + Math.sin(r.a - 2.5) * 6 * sc);
+                  ctx.closePath(); ctx.fill();
+                  ctx.globalAlpha = 1;
+              };
+              if (st.solo && champ) {
+                  ctx.strokeStyle = cRover; ctx.globalAlpha = 0.4; ctx.lineWidth = 1 * sc;
+                  for (let k = 0; k < rays; k++) {
+                      const a = champ.a + (k / (rays - 1) - 0.5) * FOV;
+                      const h = cast(champ.x, champ.y, Math.cos(a), Math.sin(a), SPAN);
+                      ctx.beginPath(); ctx.moveTo(champ.x, champ.y);
+                      ctx.lineTo(champ.x + Math.cos(a) * h, champ.y + Math.sin(a) * h); ctx.stroke();
+                  }
+                  ctx.globalAlpha = 1;
+                  drawRover(champ, 1);
+              } else {
+                  for (const r of st.rovers) if (!r.dead) drawRover(r, 0.85);
+                  if (champ) { ctx.fillStyle = cTgt; ctx.beginPath(); ctx.arc(champ.x, champ.y, 3 * sc, 0, 6.283); ctx.fill(); }
+              }
+
+              ctx.fillStyle = cTgt; ctx.globalAlpha = 0.7;
+              ctx.font = `600 ${Math.round(14 * sc)}px ui-sans-serif, system-ui, sans-serif`;
+              ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+              const alive = st.rovers.filter((r: any) => !r.dead).length;
+              ctx.fillText(`gen ${st.gen}   alive ${alive}/${popN}   best ${st.best.toFixed(2)}`, 16 * sc, 14 * sc);
+              ctx.globalAlpha = 1;
+              element = canvas;
           } else if (def.uuid === 'pitch-clock-1' || def.uuid === 'circle-of-fifths-1'
                   || def.uuid === 'tonnetz-viz-1' || def.uuid === 'shape-of-song-1'
                   || def.uuid === 'piano-roll-1') {
@@ -18618,6 +18974,8 @@ return (
                                    if (uuid === 'ember-core-1') return '☄️';
                                    if (uuid === 'wire-canyon-1') return '🏔️';
                                    if (uuid === 'ring-tunnel-1') return '🌀';
+                                   if (uuid === 'natural-selection-1') return '🧬';
+                                   if (uuid === 'ga-rovers-1') return '🤖';
                                    if (uuid === 'planetarium-1') return '🔭';
                                    if (uuid === 'ballistics-1') return '🎯';
                                    if (uuid === 'markov-net-1') return '🕸️';
