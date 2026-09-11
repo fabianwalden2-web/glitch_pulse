@@ -2249,80 +2249,6 @@ function markNoteOff(hist: MidiNoteEvt[], note: number, ch: number, dev: string,
   }
 }
 
-// A deterministic ii–V–I demo phrase that cycles keys by fifths, so the Music
-// visuals are alive (and previewable) without a controller plugged in.
-const DEMO_PROG = [
-  { root: 2, iv: [0, 3, 7, 10] },  // ii m7
-  { root: 7, iv: [0, 4, 7, 10] },  // V 7
-  { root: 0, iv: [0, 4, 7, 11] },  // I maj7
-  { root: 0, iv: [0, 4, 7, 11] },
-];
-const DEMO_DEV = 'demo';
-const DEMO_DEV_NAME = 'Demo Sequence';
-/** Demo parts sit on consecutive channels so the Note Plotter's unmapped-line
- *  fallback (line N -> channel N-1) lights up four separate lines out of the box. */
-const DEMO_CH = { chords: 0, melody: 1, bass: 2, drums: 3 };
-const _demo: { hist: MidiNoteEvt[]; active: Map<string, MidiActiveNote>; nextAt: number; step: number } =
-  { hist: [], active: new Map(), nextAt: 0, step: 0 };
-
-function demoNoteOn(at: number, note: number, vel: number, ch: number) {
-  const d = _demo;
-  d.active.set(noteKey(DEMO_DEV, ch, note), { note, vel, on: at, ch, dev: DEMO_DEV, devName: DEMO_DEV_NAME });
-  d.hist.push({ note, vel, on: at, off: -1, ch, dev: DEMO_DEV, devName: DEMO_DEV_NAME });
-}
-function demoReleaseChannel(at: number, ch: number) {
-  const d = _demo;
-  for (const [k, a] of Array.from(d.active)) {
-    if (a.ch === ch) { d.active.delete(k); markNoteOff(d.hist, a.note, ch, DEMO_DEV, at); }
-  }
-}
-
-function advanceDemoMusic(nowMs: number) {
-  const d = _demo;
-  const STEP_MS = 300;                                // eighth notes at 100 BPM
-  // Pre-roll four bars into the past on the first call so history-based visuals
-  // (arc diagram, piano roll) open with something to show instead of an empty frame.
-  if (!d.nextAt) d.nextAt = nowMs - 96 * STEP_MS;
-  else if (nowMs - d.nextAt > 5000) d.nextAt = nowMs;
-  let guard = 0;
-  while (nowMs >= d.nextAt && guard++ < 128) {
-    const step = d.step;
-    const bar = Math.floor(step / 8) % 4;
-    const transpose = (Math.floor(step / 64) * 5) % 12;   // two identical 4-bar phrases, then modulate
-    const at = d.nextAt;
-
-    const c = DEMO_PROG[bar];
-    const chordRoot = (c.root + transpose) % 12;
-
-    if (step % 8 === 0) {                             // new chord + bass on each downbeat
-      demoReleaseChannel(at, DEMO_CH.chords);
-      for (const iv of c.iv) demoNoteOn(at, 48 + chordRoot + iv, 68, DEMO_CH.chords);
-      demoReleaseChannel(at, DEMO_CH.bass);
-      demoNoteOn(at, 28 + chordRoot, 100, DEMO_CH.bass);
-    } else if (step % 8 === 5) {                      // bass answers on the "and" of 3
-      demoReleaseChannel(at, DEMO_CH.bass);
-      demoNoteOn(at, 28 + ((chordRoot + 7) % 12), 84, DEMO_CH.bass);
-    }
-
-    // melody: pseudo-random walk through the major scale
-    demoReleaseChannel(at, DEMO_CH.melody);
-    // the melody repeats every 32 steps so repetition-seeking visuals have something to find
-    const r = Math.abs(Math.sin((step % 32) * 12.9898) * 43758.5453) % 1;
-    const mn = 72 + ((transpose + MAJOR_STEPS[Math.floor(r * 7)]) % 12) + (r > 0.78 ? 12 : 0);
-    demoNoteOn(at, mn, 92, DEMO_CH.melody);
-
-    // drums: kick on the downbeats, snare on the backbeat (GM note numbers)
-    demoReleaseChannel(at, DEMO_CH.drums);
-    const beat = step % 8;
-    if (beat === 0 || beat === 6) demoNoteOn(at, 36, 110, DEMO_CH.drums);
-    else if (beat === 4) demoNoteOn(at, 38, 96, DEMO_CH.drums);
-
-    d.step++;
-    d.nextAt += STEP_MS;
-  }
-  if (d.hist.length > 4000) d.hist.splice(0, d.hist.length - 4000);
-}
-
 const TOUR_STEPS = [
   {
     key: 'intro',
@@ -4528,6 +4454,16 @@ export default function App() {
               }
           });
 
+          // These assets are designed to be stacked, so their ground is left clear
+          // until the operator actually picks a colour for it.
+          if (def.transparentBackground && !lockedMap['background']) {
+              const bgEl = elementsList.find(e => e.id === 'background');
+              const chosen = rawColors['background'];
+              if (!chosen || (bgEl && chosen === bgEl.defaultColor)) {
+                  resolvedGenerativeColors['background'] = 'transparent';
+              }
+          }
+
           // Using targetW and targetH for exact resolution without stretching
           if (def.uuid === 'waves-canvas-gen-1') {
               if (!wavesNoiseRef.current) wavesNoiseRef.current = createNoise2D();
@@ -5435,8 +5371,8 @@ export default function App() {
                  
                  // Draw left face
                  const gradLeft = ctx.createLinearGradient(pTop3.x, pTop3.y, pBot3.x, pBot3.y);
-                 gradLeft.addColorStop(0, adjustHexBrightness(bldgFg, -0.15));
-                 gradLeft.addColorStop(1, adjustHexBrightness(bldgFg, -0.55));
+                 gradLeft.addColorStop(0, adjustHexBrightness(bldgFg, -0.08));
+                 gradLeft.addColorStop(1, adjustHexBrightness(bldgFg, -0.28));
                  ctx.fillStyle = gradLeft;
                  ctx.beginPath();
                  ctx.moveTo(pTop0.x, pTop0.y); ctx.lineTo(pTop3.x, pTop3.y);
@@ -5446,8 +5382,10 @@ export default function App() {
                  
                  // Draw right face
                  const gradRight = ctx.createLinearGradient(pTop2.x, pTop2.y, pBot2.x, pBot2.y);
-                 gradRight.addColorStop(0, adjustHexBrightness(bldgFg, -0.35));
-                 gradRight.addColorStop(1, adjustHexBrightness(bldgFg, -0.75));
+                 // -0.75 took the right face down to roughly the backdrop, so it read as
+                 // a hole. Every face now keeps its colour; the three still separate.
+                 gradRight.addColorStop(0, adjustHexBrightness(bldgFg, -0.30));
+                 gradRight.addColorStop(1, adjustHexBrightness(bldgFg, -0.48));
                  ctx.fillStyle = gradRight;
                  ctx.beginPath();
                  ctx.moveTo(pTop3.x, pTop3.y); ctx.lineTo(pTop2.x, pTop2.y);
@@ -7228,12 +7166,13 @@ export default function App() {
                   ctx.fillRect(0, 0, targetW, targetH);
               }
               
-              const { speed, shadows, sides, symmetry, size } = modifiedSettings;
+              const { speed, shadows, sides, symmetry, size, morphing } = modifiedSettings;
               const spd = speed ?? 1.0;
               const shd = shadows ?? 1.0;
               const numSides = Math.max(3, Math.min(16, Math.floor(sides ?? 6)));
               const symm = symmetry ?? 1.0;
               const sz = size ?? 1.0;
+              const morph = Math.max(0, Math.min(1, morphing ?? 0.45));
               const t = nowSec * spd;
               
               interface Vec3 { x: number; y: number; z: number; }
@@ -7242,33 +7181,53 @@ export default function App() {
               const edges: [number, number][] = [];
               const faces: [number, number, number][] = [];
               
-              // Top & bottom vertices
-              rawPts.push({ x: 0, y: 1.25, z: 0 });  // 0: top
-              rawPts.push({ x: 0, y: -1.25, z: 0 }); // 1: bottom
-              
-              // Equatorial vertices
-              for (let i = 0; i < numSides; i++) {
-                 const angle = (i / numSides) * Math.PI * 2;
-                 const rad = 1.0 - (1.0 - symm) * (i % 2 === 0 ? 0.45 : 0.0);
-                 rawPts.push({
-                     x: Math.cos(angle) * rad,
-                     y: 0,
-                     z: Math.sin(angle) * rad
-                 });
+              // Morphing drives two things: a slow per-vertex wobble, and — past a
+              // quarter turn of the knob — a second equatorial ring, which doubles the
+              // vertex count and turns the bipyramid into an irregular drum.
+              const wob = (i: number, k: number) =>
+                  Math.sin(i * 12.9898 + k * 78.233 + t * 0.55) * 0.5
+                + Math.sin(i * 4.1 + k * 2.7 - t * 0.31) * 0.5;
+
+              const RINGS = morph > 0.22 ? 2 : 1;
+              const TOP = 0, BOT = 1;
+              const poleY = RINGS === 2 ? 1.15 : 1.25;
+              rawPts.push({ x: 0, y: poleY + morph * wob(0, 1) * 0.45, z: 0 });
+              rawPts.push({ x: 0, y: -poleY + morph * wob(1, 2) * 0.45, z: 0 });
+
+              const ringAt: number[] = [];
+              const ringY = RINGS === 2 ? [0.45, -0.45] : [0];
+              for (let r = 0; r < RINGS; r++) {
+                 ringAt.push(rawPts.length);
+                 for (let i = 0; i < numSides; i++) {
+                    const twist = RINGS === 2 ? r * Math.PI / numSides : 0;
+                    const angle = (i / numSides) * Math.PI * 2 + twist;
+                    let rad = 1.0 - (1.0 - symm) * (i % 2 === 0 ? 0.45 : 0.0);
+                    rad *= 1 + morph * wob(i, r + 3) * 0.5;
+                    rawPts.push({
+                        x: Math.cos(angle) * rad,
+                        y: ringY[r] + morph * wob(i, r + 9) * 0.34,
+                        z: Math.sin(angle) * rad
+                    });
+                 }
               }
-              
-              for (let i = 0; i < numSides; i++) {
-                 const curr = 2 + i;
-                 const next = 2 + ((i + 1) % numSides);
-                 edges.push([0, curr]);
-                 edges.push([1, curr]);
-                 edges.push([curr, next]);
-                 
-                 // Face triangles
-                 faces.push([0, next, curr]);
-                 faces.push([1, curr, next]);
+
+              for (let r = 0; r < RINGS; r++) {
+                 const base = ringAt[r];
+                 for (let i = 0; i < numSides; i++) {
+                    const cur = base + i, nxt = base + ((i + 1) % numSides);
+                    edges.push([cur, nxt]);
+                    if (r === 0) { edges.push([TOP, cur]); faces.push([TOP, nxt, cur]); }
+                    if (r === RINGS - 1) { edges.push([BOT, cur]); faces.push([BOT, cur, nxt]); }
+                    if (r > 0) {
+                       const pBase = ringAt[r - 1];
+                       const pCur = pBase + i, pNxt = pBase + ((i + 1) % numSides);
+                       edges.push([pCur, cur]);
+                       faces.push([pCur, pNxt, cur]);
+                       faces.push([pNxt, nxt, cur]);
+                    }
+                 }
               }
-              
+
               const scale = Math.min(targetW, targetH) * 0.24 * Math.max(0.1, Math.min(2.4, sz));
               const focal = scale * 3.4;
               const rotX = t * 0.5;
@@ -8675,22 +8634,44 @@ export default function App() {
 
               ctx.fillStyle = spBg; ctx.fillRect(0, 0, targetW, targetH);
 
-              const spCx = targetW / 2, spCy = targetH * (0.56 - pose * 0.06);
-              const headRX = Math.min(targetW, targetH) * (0.155 + pose * 0.02);
-              const headRY = headRX * 1.28;
-              const headTiltX = (pose - 0.5) * headRX * 0.5;
-              const shoulderY = spCy + headRY * 1.15;
-              const shoulderRX = headRX * 2.5;
-              const shoulderRY = headRY * 1.6;
+              const spCx = targetW / 2;
+              const figH = targetH * 0.88;
+              const topY = targetH * 0.06;
+              const u = figH / 7.5;                       // one head-height, the usual canon
+              const headR = u * 0.46;
+              const headY = topY + headR;
+              const neckY = headY + headR * 1.02;
+              const shoulderY = neckY + u * 0.3;
+              const hipY = topY + u * 3.9;
+              const footY = topY + figH;
+              const shoulderW = u * 0.92;
+              // pose swings the arms out and widens the stance.
+              const handX = shoulderW + u * (0.55 + pose * 1.5);
+              const handY = hipY + u * (0.45 - pose * 0.75);
+              const stance = u * (0.28 + pose * 0.5);
+
+              /** Signed distance to a capsule: negative inside, so a union is a min. */
+              const cap = (px: number, py: number, ax: number, ay: number,
+                           bx: number, by: number, r: number) => {
+                  const vx = bx - ax, vy = by - ay, wx = px - ax, wy = py - ay;
+                  const t = Math.max(0, Math.min(1, (wx * vx + wy * vy) / (vx * vx + vy * vy + 1e-9)));
+                  return Math.hypot(wx - vx * t, wy - vy * t) - r;
+              };
 
               const field = (x: number, y: number) => {
-                  const dxH = (x - (spCx + headTiltX)) / headRX, dyH = (y - spCy) / headRY;
-                  const head = Math.exp(-((dxH * dxH + dyH * dyH) * 1.7));
-                  const dxS = (x - spCx) / shoulderRX, dyS = (y - shoulderY) / shoulderRY;
-                  const shoulder = y > spCy ? Math.exp(-((dxS * dxS) * 1.1 + Math.max(0, dyS) * Math.max(0, dyS) * 2.4)) : 0;
-                  let v = Math.max(head, shoulder * 0.85);
+                  let d = Math.hypot(x - spCx, y - headY) - headR;
+                  d = Math.min(d, cap(x, y, spCx, neckY, spCx, hipY, u * 0.5));                       // torso
+                  d = Math.min(d, cap(x, y, spCx - shoulderW, shoulderY, spCx - handX, handY, u * 0.19));
+                  d = Math.min(d, cap(x, y, spCx + shoulderW, shoulderY, spCx + handX, handY, u * 0.19));
+                  d = Math.min(d, cap(x, y, spCx - u * 0.26, hipY, spCx - stance, footY, u * 0.25));  // legs
+                  d = Math.min(d, cap(x, y, spCx + u * 0.26, hipY, spCx + stance, footY, u * 0.25));
+                  const body = Math.max(0, Math.min(1, 1 - d / (u * 0.3)));
+                  // A floor under the whole field so the glyphs fill the frame and the
+                  // figure reads as denser weather rather than the only thing present.
+                  const floor = 0.10 + density * 0.06;
                   const n = spSt.noise2D(x * 0.012 + nowSec * shimmer * 0.15, y * 0.012) * 0.5 + 0.5;
-                  v = v * (0.78 + n * 0.3);
+                  // Only the floor shimmers; the body stays solid so the silhouette holds.
+                  const v = Math.max(floor * (0.55 + n * 0.9), body);
                   return Math.max(0, Math.min(1, Math.pow(v, contrast)));
               };
 
@@ -8844,206 +8825,6 @@ export default function App() {
                   ctx.globalCompositeOperation = 'source-over';
               }
 
-              element = canvas;
-          } else if (def.uuid === 'floating-gem-canvas-1') {
-              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
-              const canvas = sphereCanvasRef.current[layer.id];
-              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
-              const ctx = canvas.getContext('2d')!;
-
-              const fgSky = resolvedGenerativeColors['background'] || '#1b2140';
-              const fgGem = resolvedGenerativeColors['gem'] || '#ffcf5c';
-              const fgBeam = resolvedGenerativeColors['beam'] || '#ff7a2e';
-              const fgDust = resolvedGenerativeColors['dust'] || '#ffffff';
-              const fgBeamRgb = hexToRgb(fgBeam);
-
-              let fgSt = floatingGemStateRef.current[layer.id];
-              if (!fgSt) { fgSt = { dust: Array.from({ length: 26 }, () => ({ x: Math.random(), y: Math.random(), sp: 0.3 + Math.random() * 0.7, ph: Math.random() * 10 })), lastPulse: 0, pulseStart: -99, lastShatter: 0, shatterStart: -99 }; floatingGemStateRef.current[layer.id] = fgSt; }
-
-              const fg = modifiedSettings;
-              const facets = Math.max(4, Math.min(10, Math.round(fg.facets ?? 6)));
-              const rotSpeed = Math.max(0, fg.rotation_speed ?? 0.6);
-              const bob = Math.max(0, Math.min(1, fg.bob ?? 0.5));
-              const glow = Math.max(0, Math.min(1, fg.glow ?? 0.7));
-              const beam = Math.max(0, Math.min(1, fg.beam ?? 0.6));
-              const pulseCount = Number(fg.pulse ?? 0);
-              const shatterCount = Number(fg.shatter ?? 0);
-
-              if (pulseCount > fgSt.lastPulse) { fgSt.lastPulse = pulseCount; fgSt.pulseStart = nowSec; }
-              if (shatterCount > fgSt.lastShatter) { fgSt.lastShatter = shatterCount; fgSt.shatterStart = nowSec; }
-              const pulseDur = 0.5, pulseT = nowSec - fgSt.pulseStart, pulseActive = pulseT >= 0 && pulseT < pulseDur;
-              const pulseEnv = pulseActive ? Math.sin(Math.PI * (pulseT / pulseDur)) : 0;
-              const shatterDur = 1.5, shatterT = nowSec - fgSt.shatterStart, shatterActive = shatterT >= 0 && shatterT < shatterDur;
-              const shatterProg = shatterActive ? shatterT / shatterDur : 1;
-              const shatterKick = shatterActive ? (1 - shatterProg) : 0;
-
-              ctx.fillStyle = fgSky; ctx.fillRect(0, 0, targetW, targetH);
-
-              const fgCx = targetW / 2;
-              const fgCy = targetH * 0.42 + Math.sin(nowSec * (0.6 + bob * 1.4)) * targetH * 0.05 * bob;
-              const fgScale = Math.min(targetW, targetH) * 0.22;
-
-              if (beam > 0.02) {
-                  const beamLen = targetH * (0.4 + beam * 0.4);
-                  const g = ctx.createLinearGradient(fgCx, fgCy, fgCx, fgCy + beamLen);
-                  g.addColorStop(0, `rgba(${fgBeamRgb.r},${fgBeamRgb.g},${fgBeamRgb.b},${((0.5 + pulseEnv * 0.4) * beam).toFixed(2)})`);
-                  g.addColorStop(1, `rgba(${fgBeamRgb.r},${fgBeamRgb.g},${fgBeamRgb.b},0)`);
-                  ctx.fillStyle = g;
-                  ctx.beginPath();
-                  ctx.moveTo(fgCx - fgScale * 0.5, fgCy);
-                  ctx.lineTo(fgCx + fgScale * 0.5, fgCy);
-                  ctx.lineTo(fgCx + fgScale * 1.6, fgCy + beamLen);
-                  ctx.lineTo(fgCx - fgScale * 1.6, fgCy + beamLen);
-                  ctx.closePath();
-                  ctx.fill();
-              }
-
-              for (const d of fgSt.dust) {
-                  const y = (d.y + nowSec * 0.03 * d.sp) % 1;
-                  const x = d.x + Math.sin(nowSec * 0.5 + d.ph) * 0.03;
-                  const px = fgCx + (x - 0.5) * fgScale * 3.2;
-                  const py = fgCy + y * targetH * 0.55;
-                  const a = (0.15 + 0.35 * Math.sin(nowSec * 2 + d.ph)) * (0.4 + beam * 0.6);
-                  ctx.fillStyle = fgDust;
-                  ctx.globalAlpha = Math.max(0, a);
-                  ctx.beginPath(); ctx.arc(px, py, 1.4 * (Math.min(targetW, targetH) / 700), 0, Math.PI * 2); ctx.fill();
-              }
-              ctx.globalAlpha = 1;
-
-              const angle = nowSec * rotSpeed;
-              const rgbGem = hexToRgb(fgGem);
-              const verts: { x: number; y: number; z: number }[] = [{ x: 0, y: -1.15, z: 0 }, { x: 0, y: 0.85, z: 0 }];
-              for (let i = 0; i < facets; i++) {
-                  const a = (i / facets) * Math.PI * 2 + angle;
-                  verts.push({ x: Math.cos(a), y: -0.05, z: Math.sin(a) });
-              }
-              const proj = verts.map((v, i) => {
-                  const persp = 1 / (1 + (v.z * 0.35 + 0.35));
-                  const kick = shatterActive ? shatterKick * 40 * (i % 3 === 0 ? 1 : -1) : 0;
-                  return { x: fgCx + v.x * fgScale * persp + kick, y: fgCy + v.y * fgScale * persp - kick * 0.6 };
-              });
-
-              const fgEdges: [number, number][] = [];
-              for (let i = 0; i < facets; i++) {
-                  const a = 2 + i, b = 2 + ((i + 1) % facets);
-                  fgEdges.push([0, a], [1, a], [a, b]);
-              }
-
-              ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-              if (glow > 0.02) {
-                  ctx.strokeStyle = `rgba(${rgbGem.r},${rgbGem.g},${rgbGem.b},${(0.16 * glow + pulseEnv * 0.25).toFixed(2)})`;
-                  for (let pass = 0; pass < 3; pass++) {
-                      ctx.lineWidth = 2 + pass * 6 + pulseEnv * 6;
-                      ctx.beginPath();
-                      for (const [a, b] of fgEdges) { ctx.moveTo(proj[a].x, proj[a].y); ctx.lineTo(proj[b].x, proj[b].y); }
-                      ctx.stroke();
-                  }
-              }
-              ctx.globalAlpha = 0.12;
-              for (let i = 0; i < facets; i++) {
-                  const a = 2 + i, b = 2 + ((i + 1) % facets);
-                  ctx.fillStyle = fgGem;
-                  ctx.beginPath();
-                  ctx.moveTo(proj[0].x, proj[0].y); ctx.lineTo(proj[a].x, proj[a].y); ctx.lineTo(proj[b].x, proj[b].y); ctx.closePath();
-                  ctx.fill();
-              }
-              ctx.globalAlpha = 1;
-              ctx.strokeStyle = fgGem;
-              ctx.lineWidth = Math.max(1, fgScale * 0.02);
-              ctx.beginPath();
-              for (const [a, b] of fgEdges) { ctx.moveTo(proj[a].x, proj[a].y); ctx.lineTo(proj[b].x, proj[b].y); }
-              ctx.stroke();
-
-              element = canvas;
-          } else if (def.uuid === 'woven-hex-blocks-1') {
-              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
-              const canvas = sphereCanvasRef.current[layer.id];
-              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
-              const ctx = canvas.getContext('2d')!;
-
-              const whBg = resolvedGenerativeColors['background'] || '#000000';
-              const whLine = resolvedGenerativeColors['lines'] || '#ffffff';
-              const whAccent = resolvedGenerativeColors['accent'] || whLine;
-
-              const wh = modifiedSettings;
-              const whBlocks = Math.max(4, Math.min(24, Math.round(wh.blocks ?? 14)));
-              const whBands = Math.max(3, Math.min(22, Math.round(wh.bands ?? 12)));
-              const whTaper = Math.max(-1, Math.min(1, wh.taper ?? -0.9));
-              const whBandRatio = Math.max(0.05, Math.min(0.6, wh.band_ratio ?? 0.25));
-              const whSpread = Math.max(0.35, Math.min(1.6, wh.spread ?? 0.9));
-              const whSize = Math.max(0.3, Math.min(2, wh.size ?? 1));
-              const whRnd = (n: number) => { const x = Math.sin(n * 127.1 + 311.7 + 137 * 0.113) * 43758.5453; return x - Math.floor(x); };
-
-              let whSt = wovenHexStateRef.current[layer.id];
-              if (!whSt) { whSt = { lastReweave: 0, reweaveStart: -99, lastCollapse: 0, collapseStart: -99 }; wovenHexStateRef.current[layer.id] = whSt; }
-              const whRw = Number(wh.reweave ?? 0), whCl = Number(wh.collapse ?? 0);
-              if (whRw > whSt.lastReweave) { whSt.lastReweave = whRw; whSt.reweaveStart = nowSec; }
-              if (whCl > whSt.lastCollapse) { whSt.lastCollapse = whCl; whSt.collapseStart = nowSec; }
-              const whRwT = nowSec - whSt.reweaveStart;
-              const whRwP = (whRwT >= 0 && whRwT < 1.0) ? whRwT / 1.0 : 1;
-              const whClT = nowSec - whSt.collapseStart;
-              const whClEnv = (whClT >= 0 && whClT < 1.3) ? Math.sin(Math.PI * (whClT / 1.3)) : 0;
-
-              ctx.fillStyle = whBg; ctx.fillRect(0, 0, targetW, targetH);
-
-              const whRing = Math.ceil((Math.sqrt(Math.max(1, 12 * whBlocks - 3)) - 3) / 6) + 1;
-              const whAxial: { q: number; r: number }[] = [];
-              for (let q = -whRing; q <= whRing; q++)
-                  for (let r = Math.max(-whRing, -q - whRing); r <= Math.min(whRing, -q + whRing); r++)
-                      whAxial.push({ q, r });
-              whAxial.sort((a, b) => (Math.abs(a.q) + Math.abs(a.r) + Math.abs(a.q + a.r)) - (Math.abs(b.q) + Math.abs(b.r) + Math.abs(b.q + b.r)));
-              const whChosen = whAxial.slice(0, whBlocks);
-
-              const whUnit = Math.min(targetW, targetH) / (whRing * 3.6 + 4) * whSpread * whSize * 1.9;
-              const whR = whUnit * (1 - whClEnv * 0.12);
-              const whEx = { x: whUnit * 1.5, y: whUnit * 0.30 };
-              const whEy = { x: 0, y: whUnit * 1.02 * (1 - whClEnv * 0.72) };
-              const whCx = targetW / 2, whCy = targetH / 2;
-              const whBreath = Math.sin(nowSec * 0.6) * whUnit * 0.06;
-
-              const whHatch = (a: {x:number;y:number}, b: {x:number;y:number}, c: {x:number;y:number}, d: {x:number;y:number}, n: number, tp: number, col: string, lw: number) => {
-                  ctx.strokeStyle = col; ctx.lineWidth = lw;
-                  ctx.beginPath();
-                  for (let i = 0; i <= n; i++) {
-                      let t = i / n;
-                      t = tp >= 0 ? Math.pow(t, 1 + tp * 3) : 1 - Math.pow(1 - t, 1 - tp * 3);
-                      ctx.moveTo(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
-                      ctx.lineTo(d.x + (c.x - d.x) * t, d.y + (c.y - d.y) * t);
-                  }
-                  ctx.stroke();
-              };
-
-              for (let i = 0; i < whChosen.length; i++) {
-                  const cell = whChosen[i];
-                  let bx = whCx + cell.q * whEx.x + cell.r * whEy.x;
-                  let by = whCy + cell.q * whEx.y + cell.r * whEy.y + whBreath * (i % 2 ? 1 : -1);
-                  if (whRwP < 1) {
-                      const sx = (whRnd(i * 2.3) - 0.5) * targetW * 1.4;
-                      const sy = (whRnd(i * 5.9) - 0.5) * targetH * 1.4;
-                      const k = 1 - Math.pow(1 - whRwP, 3);
-                      bx += sx * (1 - k); by += sy * (1 - k);
-                  }
-                  const vs: { x: number; y: number }[] = [];
-                  for (let k = 0; k < 6; k++) {
-                      const ang = Math.PI / 180 * (60 * k - 90);
-                      vs.push({ x: bx + Math.cos(ang) * whR, y: by + Math.sin(ang) * whR * 0.86 });
-                  }
-                  const O = { x: bx, y: by };
-                  const lw = Math.max(0.6, whR * 0.02 * (0.5 + whBandRatio));
-                  whHatch(vs[5], vs[0], vs[1], O, whBands, whTaper, whLine, lw);
-                  whHatch(vs[1], vs[2], vs[3], O, Math.round(whBands * 0.85), -whTaper, whLine, lw);
-                  whHatch(vs[3], vs[4], vs[5], O, whBands, whTaper * 0.6, whLine, lw);
-                  ctx.strokeStyle = whLine; ctx.lineWidth = lw * 1.2;
-                  ctx.beginPath();
-                  vs.forEach((v, k) => k ? ctx.lineTo(v.x, v.y) : ctx.moveTo(v.x, v.y));
-                  ctx.closePath(); ctx.stroke();
-                  ctx.strokeStyle = whAccent; ctx.lineWidth = lw * 0.9; ctx.globalAlpha = 0.5 + whClEnv * 0.5;
-                  ctx.beginPath();
-                  ctx.moveTo(vs[0].x, vs[0].y); ctx.lineTo(O.x, O.y);
-                  ctx.moveTo(vs[2].x, vs[2].y); ctx.lineTo(O.x, O.y);
-                  ctx.moveTo(vs[4].x, vs[4].y); ctx.lineTo(O.x, O.y);
-                  ctx.stroke(); ctx.globalAlpha = 1;
-              }
               element = canvas;
           } else if (def.uuid === 'circuit-routes-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
@@ -9211,7 +8992,7 @@ export default function App() {
               const ssRings = Math.max(3, Math.min(44, Math.round(ss.rings ?? 20)));
               const ssSize = Math.max(0.3, Math.min(2, ss.size ?? 1));
               const ssTurns = Math.max(0, Math.min(10, ss.turns ?? 5.5));
-              const ssBaseRadius = Math.max(50, Math.min(400, ss.radius ?? 300));
+              const ssBaseRadius = 300;                      // was a knob; size still scales the whole form
               const ssNoiseAmt = Math.max(0, Math.min(1, ss.noise_amt ?? 0.37));
 
               let ssSt = spiralShellsStateRef.current[layer.id];
@@ -9582,7 +9363,8 @@ export default function App() {
                   return hdHn(xi, yi) * (1 - u) * (1 - v) + hdHn(xi + 1, yi) * u * (1 - v) + hdHn(xi, yi + 1) * (1 - u) * v + hdHn(xi + 1, yi + 1) * u * v;
               };
 
-              ctx.fillStyle = hdBg; ctx.fillRect(0, 0, targetW, targetH);
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(hdBg)) { ctx.fillStyle = hdBg; ctx.fillRect(0, 0, targetW, targetH); }
               ctx.fillStyle = hdCells;
               const hdCell = targetW / hdCols;
               const hdRows = Math.ceil(targetH / hdCell);
@@ -9597,7 +9379,10 @@ export default function App() {
                       let ox = (hdSn(c * 0.3 + 9, r * 0.3) - 0.5) * hdTrans;
                       let oy = (hdSn(c * 0.3, r * 0.3 + 9) - 0.5) * hdTrans;
                       let rot = (n - 0.5) * hdRot * Math.PI;
-                      let scl = 1 + (n - 0.5) * hdScaleAmt;
+                      // Clamped low: ctx.scale(0) collapses the cell and negative values
+                      // mirror it. Clamped high further down: unbounded growth used to tile
+                      // every cell over its neighbours until the frame was a flat fill.
+                      let scl = Math.max(0.06, 1 + (n - 0.5) * hdScaleAmt);
                       if (hdRipR >= 0) {
                           const d = Math.hypot(bx - hdCx, by - hdCy) / hdMaxD;
                           const band = Math.abs(d - hdRipR);
@@ -9613,11 +9398,11 @@ export default function App() {
                           size = size + (hdCell * 0.5 - size) * hdSetEnv;
                           ox *= 1 - hdSetEnv; oy *= 1 - hdSetEnv; rot *= 1 - hdSetEnv; scl = scl + (1 - scl) * hdSetEnv;
                       }
+                      const foot = Math.min(size * scl, hdCell * 1.15);
                       ctx.save();
                       ctx.translate(bx + ox, by + oy);
                       ctx.rotate(rot);
-                      ctx.scale(scl, scl);
-                      ctx.fillRect(-size / 2, -size / 2, size, size);
+                      ctx.fillRect(-foot / 2, -foot / 2, foot, foot);
                       ctx.restore();
                   }
               }
@@ -9760,9 +9545,8 @@ export default function App() {
               const ib = modifiedSettings;
               const ibBarSize = Math.max(8, Math.min(60, ib.bar_size ?? 34));
               const ibAmp = Math.max(0, Math.min(600, ib.amplitude ?? 422));
-              const ibCount = Math.max(20, Math.min(300, Math.round(ib.count ?? 181)));
               const ibFreq = Math.max(0.5, Math.min(12, ib.frequency ?? 5.2));
-              const ibBarH = Math.max(10, Math.min(200, ib.bar_height ?? 80));
+              const ibBarH = Math.max(10, Math.min(260, ib.bar_height ?? 34));
 
               let ibSt = isoBarWaveStateRef.current[layer.id];
               if (!ibSt) ibSt = isoBarWaveStateRef.current[layer.id] = { lastPulse: 0, pulseStart: -99, lastFlip: 0, flipStart: -99, phaseOff: 0, phaseFrom: 0 };
@@ -9778,12 +9562,15 @@ export default function App() {
               ctx.fillStyle = ibBg; ctx.fillRect(0, 0, targetW, targetH);
               const ibScl = Math.min(targetW, targetH) / 720;
               const ibS = ibBarSize * ibScl * 0.5;
-              const ibSpacing = targetW * 1.4 / ibCount;
-              const ibStartX = -targetW * 0.2;
+              // Spacing follows the block size so a single row tiles without overlap,
+              // and bar_height at its default makes each block a true isometric cube.
+              const ibSpacing = Math.max(4, ibS * 2.15);
+              const ibCount = Math.max(8, Math.ceil(targetW * 1.3 / ibSpacing));
+              const ibStartX = -targetW * 0.14;
               const ibT = nowSec * 1.2;
-              const IB_ROWS = 5;
+              const IB_ROWS = 1;
               for (let row = IB_ROWS - 1; row >= 0; row--) {
-                  const rowY = targetH * 0.62 - row * ibBarH * ibScl * 0.5;
+                  const rowY = targetH * 0.5 - row * ibBarH * ibScl * 0.5;
                   ctx.globalAlpha = 1 - row * 0.16;
                   for (let n = 0; n < ibCount; n++) {
                       const fn = n / ibCount;
@@ -9794,7 +9581,7 @@ export default function App() {
                       }
                       const y = rowY + Math.sin(fn * ibFreq * Math.PI * 2 + ibPhase + ibT + row * 0.5) * amp * (0.35 + 0.65 * (1 - row / IB_ROWS));
                       const x = ibStartX + n * ibSpacing;
-                      const h = ibBarH * ibScl * (0.4 + 0.6 * Math.abs(Math.sin(fn * ibFreq * Math.PI + ibPhase)));
+                      const h = ibBarH * ibScl * 0.5;
                       ctx.fillStyle = ibSide;
                       ctx.beginPath();
                       ctx.moveTo(x - ibS, y - ibS * 0.5); ctx.lineTo(x, y); ctx.lineTo(x, y + h); ctx.lineTo(x - ibS, y + h - ibS * 0.5);
@@ -10666,6 +10453,7 @@ export default function App() {
               const wantN = Math.max(20, Math.min(400, Math.round(ms.walkers ?? 160)));
               const trail = Math.max(0, Math.min(1, ms.trail_length ?? 0.6));
               const drift = Math.max(-1, Math.min(1, ms.drift ?? 0));
+              const pSize = Math.max(0.3, Math.min(4, ms.particle_size ?? 1));
 
               const st = (brownianStateRef.current[layer.id] ||= { acts: {}, w: [], waves: [] });
               if (actionFired(st.acts, 'shock', Number(ms.shockwave ?? 0))) {
@@ -10717,7 +10505,7 @@ export default function App() {
               for (const p of st.w) {
                   tb.g.fillStyle = p.c < 0 ? cTracer : walkCols[p.c];
                   tb.g.globalAlpha = p.c < 0 ? 0.9 : 0.55;
-                  const r = (p.c < 0 ? 2.1 : 1.5) * sc;
+                  const r = (p.c < 0 ? 2.1 : 1.5) * sc * pSize;
                   tb.g.fillRect(p.x - r, p.y - r, r * 2, r * 2);
               }
               tb.g.globalAlpha = 1;
@@ -12269,14 +12057,11 @@ export default function App() {
               const nowMs = Date.now();
               const sc = Math.min(targetW, targetH) / 720;
 
-              // Live MIDI if anything arrived in the last 3s, otherwise the demo phrase.
+              // Always the real note stream. The built-in demo phrase used to fill in
+              // when no MIDI had arrived, which made an idle layer look connected.
               const mnBuf = musicNotesRef.current;
-              const demoOn = (ms.demo ?? 1) > 0.5;
-              const liveMidi = nowMs - mnBuf.lastAt < 3000;
-              let noteHist: MidiNoteEvt[];
-              let noteActive: Map<string, MidiActiveNote>;
-              if (liveMidi || !demoOn) { noteHist = mnBuf.history; noteActive = mnBuf.active; }
-              else { advanceDemoMusic(nowMs); noteHist = _demo.hist; noteActive = _demo.active; }
+              let noteHist: MidiNoteEvt[] = mnBuf.history;
+              let noteActive: Map<string, MidiActiveNote> = mnBuf.active;
 
               // The layer trigger is this visual's note source: instrument, channel and
               // note range decide WHAT it reads. (It does not gate visibility here.)
@@ -12298,6 +12083,26 @@ export default function App() {
                       noteActive = filteredActive;
                   }
               }
+
+              // Per-line MIDI routing, shared by the Note Plotter and Shape of Song.
+              // A line's source is the trigger mapping created when you Zap it
+              // (Instrument / Channel / Note Range). An unmapped line shows everything
+              // the layer trigger passed through — never nothing.
+              const lineOf = (n: number) => {
+                  const src: any = layer.generativeMappings?.find((m: any) => m.id === `line_${n}`);
+                  // Read the BASE value, not the modulated one: a line's trigger exists to
+                  // pick its note source, so an active envelope must not scramble its shape.
+                  const raw = layer.generativeSettings?.[`line_${n}`] ?? ms[`line_${n}`] ?? 0;
+                  const shape = Math.round(Math.max(0, Math.min(5, Number(raw))));
+                  return {
+                      shape,
+                      colour: resolvedGenerativeColors[`line_${n}`] || '#333333',
+                      match: (e: MidiNoteEvt) => !src
+                          || (matchesDevice(src.devices, e.dev, e.devName)
+                              && (!src.channels || src.channels.length === 0 || src.channels.includes(e.ch))
+                              && e.note >= (src.noteStart ?? 0) && e.note <= (src.noteEnd ?? 127)),
+                  };
+              };
 
               if (def.uuid === 'pitch-clock-1') {
                   const bg = resolvedGenerativeColors['background'] || '#0a0a12';
@@ -12458,10 +12263,10 @@ export default function App() {
 
                   const innerRing = (ms.inner_ring ?? 1) > 0.5;
                   const noteFlash = Math.max(0, Math.min(1, ms.note_flash ?? 0.7));
-                  const cometAmt = Math.max(0, Math.min(1, ms.comet ?? 0.5));
+                  const cometAmt = 0.5;                      // was a knob; fixed at its old default
                   const glow = Math.max(0, Math.min(1, ms.glow ?? 0.6));
                   const memory = Math.max(0.5, Math.min(12, ms.memory ?? 4));
-                  const tonicTop = (ms.tonic_top ?? 0) > 0.5;
+                  const tonicTop = false;                    // was a knob; wheel stays fixed
                   const showLabels = (ms.labels ?? 1) > 0.5;
 
                   let st = circleFifthsStateRef.current[layer.id];
@@ -12600,8 +12405,8 @@ export default function App() {
                   const nodeSize = Math.max(0.3, Math.min(3, ms.node_size ?? 1));
                   const triadFill = Math.max(0, Math.min(1, ms.triad_fill ?? 0.65));
                   const trail = Math.max(0, Math.min(1, ms.trail ?? 0.5));
-                  const edgeA = Math.max(0, Math.min(1, ms.edges ?? 0.45));
-                  const warp = Math.max(0, Math.min(1, ms.warp ?? 0));
+                  const edgeA = 0.45;                        // was a knob; lattice always drawn
+                  const warp = 0;                            // was a knob; lattice stays rigid
                   const showLabels = (ms.labels ?? 1) > 0.5;
 
                   let st = tonnetzStateRef.current[layer.id];
@@ -12729,106 +12534,122 @@ export default function App() {
 
               } else if (def.uuid === 'shape-of-song-1') {
                   const bg = resolvedGenerativeColors['background'] || '#ede9e2';
-                  const cArc = resolvedGenerativeColors['arc'] || '#3a5ba0';
-                  const cArcAlt = resolvedGenerativeColors['arc_alt'] || '#d9557a';
-                  const cNote = resolvedGenerativeColors['note'] || '#234a30';
-                  const rgbArc = hexToRgb(cArc), rgbAlt = hexToRgb(cArcAlt);
 
                   const motifLen = Math.max(2, Math.min(12, Math.round(ms.motif_len ?? 4)));
                   const windowN = Math.max(60, Math.min(3000, Math.round(ms.window ?? 800)));
                   const arcOp = Math.max(0.05, Math.min(1, ms.arc_opacity ?? 0.35));
-                  const arcH = Math.max(0.2, Math.min(2, ms.arc_height ?? 1));
                   const lw = Math.max(0.2, Math.min(4, ms.line_weight ?? 1));
-                  const transposed = (ms.transposed ?? 1) > 0.5;
-                  const baseAmt = Math.max(0, Math.min(1, ms.baseline ?? 0.8));
 
                   let st = shapeOfSongStateRef.current[layer.id];
-                  if (!st) st = shapeOfSongStateRef.current[layer.id] = { lastClear: 0, lastFreeze: 0, since: 0, frozen: false, acc: null, drawnKey: '' };
+                  if (!st) st = shapeOfSongStateRef.current[layer.id] =
+                      { lastClear: 0, lastFreeze: 0, since: 0, frozen: false, acc: null, drawnKey: '', frozenCounts: [] };
                   const nClear = Number(ms.clear ?? 0), nFreeze = Number(ms.freeze ?? 0);
                   if (nClear > st.lastClear) { st.lastClear = nClear; st.since = nowMs; st.drawnKey = ''; }
                   if (nFreeze > st.lastFreeze) { st.lastFreeze = nFreeze; st.frozen = !st.frozen; }
 
-                  // notes since the last clear, capped to the window
-                  let notes = noteHist.filter(n => n.on >= st.since);
-                  if (notes.length > windowN) notes = notes.slice(notes.length - windowN);
-                  const count = st.frozen ? Math.min(notes.length, st.frozenCount ?? notes.length) : notes.length;
-                  if (!st.frozen) st.frozenCount = notes.length;
-                  notes = notes.slice(0, count);
+                  // Same per-line routing as the Note Plotter: each line is its own
+                  // instrument, drawn as its own arc diagram in its own band.
+                  const lines = [1, 2, 3, 4, 5].map(lineOf).filter(l => l.shape > 0);
 
-                  // find repeated motifs (hash of the last `motifLen` notes at each index)
-                  const arcs: { a: number; b: number; len: number }[] = [];
-                  if (notes.length >= motifLen) {
-                      const seen = new Map<string, number[]>();
-                      for (let i = motifLen - 1; i < notes.length; i++) {
-                          let k = '';
-                          if (transposed) {
-                              for (let j = i - motifLen + 2; j <= i; j++) k += (notes[j].note - notes[j - 1].note) + ',';
-                          } else {
-                              for (let j = i - motifLen + 1; j <= i; j++) k += notes[j].note + ',';
-                          }
-                          const prev = seen.get(k);
-                          if (prev) {
-                              for (let p = Math.max(0, prev.length - 3); p < prev.length; p++) arcs.push({ a: prev[p], b: i, len: motifLen });
-                              prev.push(i);
-                          } else seen.set(k, [i]);
+                  const sinceNotes = noteHist.filter(n => n.on >= st.since);
+                  const buckets = lines.map(l => {
+                      let ns = sinceNotes.filter(l.match);
+                      if (ns.length > windowN) ns = ns.slice(ns.length - windowN);
+                      return ns;
+                  });
+                  if (st.frozen) {
+                      for (let i = 0; i < buckets.length; i++) {
+                          const cap = st.frozenCounts[i] ?? buckets[i].length;
+                          buckets[i] = buckets[i].slice(0, Math.min(buckets[i].length, cap));
                       }
+                  } else {
+                      st.frozenCounts = buckets.map(b => b.length);
                   }
-                  const arcsCapped = arcs.length > 1400 ? arcs.slice(arcs.length - 1400) : arcs;
 
-                  // redraw only when the picture actually changed
-                  const drawKey = `${notes.length}|${targetW}x${targetH}|${motifLen}|${transposed}|${arcOp}|${arcH}|${lw}|${baseAmt}|${bg}|${cArc}|${cArcAlt}|${cNote}`;
+                  const drawKey = [targetW, targetH, motifLen, arcOp, lw, bg,
+                                   ...lines.map(l => l.colour + ':' + l.shape),
+                                   ...buckets.map(b => b.length)].join('|');
+
                   let acc: HTMLCanvasElement = st.acc;
                   if (!acc) acc = st.acc = document.createElement('canvas');
                   if (acc.width !== targetW || acc.height !== targetH) { acc.width = targetW; acc.height = targetH; st.drawnKey = ''; }
+
                   if (st.drawnKey !== drawKey) {
                       st.drawnKey = drawKey;
                       const a = acc.getContext('2d')!;
                       a.clearRect(0, 0, targetW, targetH);
-                      a.fillStyle = bg; a.fillRect(0, 0, targetW, targetH);
-                      const pad = targetW * 0.04;
-                      const baseY = targetH * 0.80;
-                      const xOf = (i: number) => notes.length < 2 ? pad : pad + (i / (notes.length - 1)) * (targetW - pad * 2);
+                      if (!isTransparentColor(bg)) { a.fillStyle = bg; a.fillRect(0, 0, targetW, targetH); }
                       a.lineCap = 'round';
-                      for (const arc of arcsCapped) {
-                          const x0 = xOf(arc.a), x1 = xOf(arc.b);
-                          const dist = Math.abs(x1 - x0);
-                          if (dist < 1) continue;
-                          const far = dist > (targetW - pad * 2) * 0.5;
-                          const rgb = far ? rgbAlt : rgbArc;
-                          const h = Math.min(baseY - 6, dist * 0.55 * arcH);
+
+                      const pad = targetW * 0.04;
+                      const top = targetH * 0.07, usable = targetH * 0.86;
+                      const bandH = usable / Math.max(1, lines.length);
+
+                      for (let li = 0; li < lines.length; li++) {
+                          const notes = buckets[li];
+                          if (notes.length < 2) continue;
+                          const rgb = hexToRgb(lines[li].colour);
+                          // The line knob doubles as that line's arc height, which is what
+                          // the old global arc_height knob used to do for everything at once.
+                          const hMul = 0.45 + lines[li].shape * 0.16;
+                          const baseY = top + bandH * (li + 1) - bandH * 0.22;
+                          const xOf = (i: number) => pad + (i / (notes.length - 1)) * (targetW - pad * 2);
+
+                          // Repeated motifs, matched on intervals so a phrase still rhymes
+                          // with itself after a transposition.
+                          const arcs: { a: number; b: number }[] = [];
+                          if (notes.length >= motifLen) {
+                              const seen = new Map<string, number[]>();
+                              for (let i = motifLen - 1; i < notes.length; i++) {
+                                  let k = '';
+                                  for (let j = i - motifLen + 2; j <= i; j++) k += (notes[j].note - notes[j - 1].note) + ',';
+                                  const prev = seen.get(k);
+                                  if (prev) {
+                                      for (let p = Math.max(0, prev.length - 3); p < prev.length; p++) arcs.push({ a: prev[p], b: i });
+                                      prev.push(i);
+                                  } else seen.set(k, [i]);
+                              }
+                          }
+                          const capped = arcs.length > 900 ? arcs.slice(arcs.length - 900) : arcs;
+
                           a.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${arcOp.toFixed(3)})`;
                           a.lineWidth = lw * sc;
-                          a.beginPath();
-                          a.moveTo(x0, baseY);
-                          a.bezierCurveTo(x0, baseY - h, x1, baseY - h, x1, baseY);
-                          a.stroke();
-                      }
-                      if (baseAmt > 0.02 && notes.length) {
+                          for (const arc of capped) {
+                              const x0 = xOf(arc.a), x1 = xOf(arc.b);
+                              const dist = Math.abs(x1 - x0);
+                              if (dist < 1) continue;
+                              const h = Math.min(bandH * 0.78, dist * 0.55 * hMul);
+                              a.beginPath();
+                              a.moveTo(x0, baseY);
+                              a.bezierCurveTo(x0, baseY - h, x1, baseY - h, x1, baseY);
+                              a.stroke();
+                          }
+
+                          // the line's own notes, plotted by pitch just under its baseline
                           let lo = 127, hi = 0;
                           for (const n of notes) { if (n.note < lo) lo = n.note; if (n.note > hi) hi = n.note; }
                           const rng = Math.max(6, hi - lo);
-                          const bandH = targetH * 0.13 * baseAmt;
-                          a.globalAlpha = 0.85;
+                          const strip = bandH * 0.17;
+                          a.fillStyle = lines[li].colour;
+                          a.globalAlpha = 0.9;
                           for (let i = 0; i < notes.length; i++) {
-                              const x = xOf(i);
-                              const y = baseY + 6 * sc + (1 - (notes[i].note - lo) / rng) * bandH;
-                              a.fillStyle = cNote;
-                              a.beginPath(); a.arc(x, y, Math.max(0.7, 1.5 * lw * sc), 0, Math.PI * 2); a.fill();
+                              const y = baseY + 4 * sc + (1 - (notes[i].note - lo) / rng) * strip;
+                              a.beginPath(); a.arc(xOf(i), y, Math.max(0.7, 1.4 * lw * sc), 0, Math.PI * 2); a.fill();
                           }
-                          a.globalAlpha = 0.35;
-                          a.strokeStyle = cNote; a.lineWidth = 1 * sc;
+                          a.globalAlpha = 0.3;
+                          a.strokeStyle = lines[li].colour; a.lineWidth = 1 * sc;
                           a.beginPath(); a.moveTo(pad, baseY); a.lineTo(targetW - pad, baseY); a.stroke();
                           a.globalAlpha = 1;
                       }
                   }
+
                   ctx.clearRect(0, 0, targetW, targetH);
                   ctx.drawImage(acc, 0, 0);
-                  // live playhead
-                  if (!st.frozen && notes.length > 1) {
-                      const pad = targetW * 0.04;
-                      const x = pad + (targetW - pad * 2);
-                      ctx.strokeStyle = cArcAlt; ctx.globalAlpha = 0.5; ctx.lineWidth = 1.5 * sc;
-                      ctx.beginPath(); ctx.moveTo(x, targetH * 0.12); ctx.lineTo(x, targetH * 0.86); ctx.stroke();
+                  if (!st.frozen && buckets.some(b => b.length > 1)) {
+                      const x = targetW - targetW * 0.04;
+                      ctx.strokeStyle = lines[0]?.colour || '#d9557a';
+                      ctx.globalAlpha = 0.45; ctx.lineWidth = 1.5 * sc;
+                      ctx.beginPath(); ctx.moveTo(x, targetH * 0.06); ctx.lineTo(x, targetH * 0.94); ctx.stroke();
                       ctx.globalAlpha = 1;
                   }
                   element = canvas;
@@ -12872,24 +12693,6 @@ export default function App() {
                   const spanMs = Math.max(1000, st.span);
                   const tStart = Math.max(st.viewStart, tEnd - spanMs);
 
-                  // Per-line MIDI routing. A line's source is the trigger mapping created when
-                  // you Zap it (Instrument / Channel / Note Range). An unmapped line shows
-                  // everything the layer trigger passed through — never nothing.
-                  const lineOf = (n: number) => {
-                      const src: any = layer.generativeMappings?.find((m: any) => m.id === `line_${n}`);
-                      // Read the BASE value, not the modulated one: a line's trigger exists to pick
-                      // its note source, so an active envelope must not scramble its shape.
-                      const raw = layer.generativeSettings?.[`line_${n}`] ?? ms[`line_${n}`] ?? 0;
-                      const shape = Math.round(Math.max(0, Math.min(5, Number(raw))));
-                      return {
-                          shape,
-                          colour: resolvedGenerativeColors[`line_${n}`] || '#333333',
-                          match: (e: MidiNoteEvt) => !src
-                              || (matchesDevice(src.devices, e.dev, e.devName)
-                                  && (!src.channels || src.channels.length === 0 || src.channels.includes(e.ch))
-                                  && e.note >= (src.noteStart ?? 0) && e.note <= (src.noteEnd ?? 127)),
-                      };
-                  };
                   const lines = [1, 2, 3, 4, 5].map(lineOf).filter(l => l.shape > 0);
 
                   const inView = noteHist.filter(n => n.on >= st.since && n.on >= tStart && n.on <= tEnd);
@@ -18990,8 +18793,6 @@ return (
                                    if (uuid === 'hatched-summit-canvas-1') return '🏔️';
                                    if (uuid === 'symbol-portrait-canvas-1') return '👤';
                                    if (uuid === 'ink-blot-canvas-1') return '🖋️';
-                                   if (uuid === 'floating-gem-canvas-1') return '💎';
-                                   if (uuid === 'woven-hex-blocks-1') return '⬡';
                                    if (uuid === 'circuit-routes-1') return '🔌';
                                    if (uuid === 'spiral-shells-1') return '🐚';
                                    if (uuid === 'polar-checker-1') return '🎯';

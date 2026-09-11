@@ -118,6 +118,9 @@ export interface GenerativeDefinition {
   parameters: GenerativeParameter[];
   elements?: GenerativeElement[];
   defaultPaletteId?: string;
+  /** Assets meant to sit over another layer: the ground stays unpainted unless
+   *  the operator picks a colour for it. */
+  transparentBackground?: boolean;
   fragmentShader: string;
 }
 
@@ -129,13 +132,13 @@ export const GENERATIVES_DATA = [
   "movement": true,
   "defaultPaletteId": "acid_matrix",
   "parameters": [
-    { "name": "grid_size", "min": 2.0, "max": 8.0, "default": 5.0, "type": "number" },
-    { "name": "cube_size", "min": 40.0, "max": 260.0, "default": 115.0, "type": "number" },
-    { "name": "x_movement", "min": 0.0, "max": 100.0, "default": 30.0, "type": "number" },
-    { "name": "y_movement", "min": 0.0, "max": 100.0, "default": 45.0, "type": "number" },
-    { "name": "z_movement", "min": 0.0, "max": 100.0, "default": 30.0, "type": "number" },
-    { "name": "delay", "min": 0.0, "max": 2.0, "default": 0.35, "type": "number" },
-    { "name": "wireframe_ratio", "min": 0.0, "max": 1.0, "default": 0.5, "type": "number" },
+    { "name": "grid_size", "min": 2, "max": 8, "default": 5, "type": "number" },
+    { "name": "cube_size", "min": 40, "max": 260, "default": 115, "type": "number" },
+    { "name": "x_movement", "min": 0, "max": 100, "default": 20, "type": "number" },
+    { "name": "y_movement", "min": 0, "max": 100, "default": 20, "type": "number" },
+    { "name": "z_movement", "min": 0, "max": 100, "default": 20, "type": "number" },
+    { "name": "delay", "min": 0, "max": 2, "default": 0.35, "type": "number" },
+    { "name": "wireframe_ratio", "min": 0, "max": 1, "default": 0.5, "type": "number" },
     { "name": "rotate_face", "default": 0, "type": "action" }
   ],
   "elements": [
@@ -228,11 +231,12 @@ export const GENERATIVES_DATA = [
   "movement": true,
   "defaultPaletteId": "cyberpunk_neon",
   "parameters": [
-    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "shadows", "min": 0.0, "max": 2.0, "default": 1.3, "type": "number" },
-    { "name": "sides", "min": 4.0, "max": 12.0, "default": 6.0, "type": "number" },
-    { "name": "symmetry", "min": 0.0, "max": 1.0, "default": 1.0, "type": "number" },
-    { "name": "size", "min": 0.1, "max": 3.0, "default": 1.0, "type": "number" }
+    { "name": "speed", "min": 0, "max": 5, "default": 1, "type": "number" },
+    { "name": "shadows", "min": 0, "max": 2, "default": 1.3, "type": "number" },
+    { "name": "sides", "min": 4, "max": 12, "default": 6, "type": "number" },
+    { "name": "symmetry", "min": 0, "max": 1, "default": 1, "type": "number" },
+    { "name": "morphing", "min": 0, "max": 1, "default": 0.45, "type": "number" },
+    { "name": "size", "min": 0.1, "max": 3, "default": 1, "type": "number" }
   ],
   "elements": [
     { "id": "background", "name": "Void Background", "defaultColor": "#07070f" },
@@ -240,7 +244,8 @@ export const GENERATIVES_DATA = [
     { "id": "faces", "name": "Crystal Faces", "defaultColor": "#7000ff" },
     { "id": "glow", "name": "Core Glow", "defaultColor": "#ff007f" }
   ],
-  "uuid": "3d-polygon-neon-1"
+  "uuid": "3d-polygon-neon-1",
+  "transparentBackground": true
 }*/`,
     code: `// Custom Canvas 2D Implementation`
   },
@@ -535,13 +540,13 @@ void main() {
   "movement": true,
   "defaultPaletteId": "crimson_slate",
   "parameters": [
-    { "name": "speed", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" },
-    { "name": "count", "min": 2.0, "max": 15.0, "default": 7.0, "type": "number" },
-    { "name": "size", "min": 0.2, "max": 3.0, "default": 1.0, "type": "number" },
-    { "name": "spacing", "min": 0.0, "max": 30.0, "default": 2.0, "type": "number" },
-    { "name": "max_height", "min": 50.0, "max": 500.0, "default": 220.0, "type": "number" },
-    { "name": "movement", "min": 0.0, "max": 2.0, "default": 1.0, "type": "number" },
-    { "name": "chaos", "min": 0.0, "max": 5.0, "default": 1.0, "type": "number" }
+    { "name": "speed", "min": 0, "max": 5, "default": 1, "type": "number" },
+    { "name": "count", "min": 2, "max": 15, "default": 10, "type": "number" },
+    { "name": "size", "min": 0.2, "max": 3, "default": 1, "type": "number" },
+    { "name": "spacing", "min": 0, "max": 30, "default": 2, "type": "number" },
+    { "name": "max_height", "min": 50, "max": 500, "default": 220, "type": "number" },
+    { "name": "movement", "min": 0, "max": 2, "default": 1, "type": "number" },
+    { "name": "chaos", "min": 0, "max": 5, "default": 1, "type": "number" }
   ],
   "elements": [
     { "id": "background", "name": "Sky Background", "defaultColor": "#ffffff" },
@@ -1236,21 +1241,22 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "monochrome_duo",
   "parameters": [
-    { "name": "max_count", "min": 0.0,  "max": 60.0,  "default": 26.0, "type": "number" },
-    { "name": "max_size",  "min": 8.0,  "max": 600.0, "default": 130.0, "type": "number" },
-    { "name": "speed",     "min": 0.1,  "max": 8.0,   "default": 1.4, "type": "number" },
-    { "name": "delay",     "min": 0.0,  "max": 3.0,   "default": 0.3, "type": "number" },
-    { "name": "fade",      "min": 0.0,  "max": 1.0,   "default": 0.55, "type": "number" },
-    { "name": "outline",   "min": 0.0,  "max": 1.0,   "default": 0.0, "type": "number" },
-    { "name": "bloom",     "default": 0, "type": "action" },
-    { "name": "clear",     "default": 0, "type": "action" }
+    { "name": "max_count", "min": 0, "max": 60, "default": 26, "type": "number" },
+    { "name": "max_size", "min": 8, "max": 600, "default": 130, "type": "number" },
+    { "name": "speed", "min": 0.1, "max": 8, "default": 1.4, "type": "number" },
+    { "name": "delay", "min": 0, "max": 3, "default": 0.3, "type": "number" },
+    { "name": "fade", "min": 0, "max": 1, "default": 0.55, "type": "number" },
+    { "name": "outline", "min": 0, "max": 1, "default": 0, "type": "number" },
+    { "name": "bloom", "default": 0, "type": "action" },
+    { "name": "clear", "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#000000" },
     { "id": "circles", "name": "Circles", "defaultColor": "#ffffff" },
     { "id": "accent", "name": "Accent Circle", "defaultColor": "#eb556b" }
   ],
-  "uuid": "circle-bloom-canvas-1"
+  "uuid": "circle-bloom-canvas-1",
+  "transparentBackground": true
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   },
@@ -1262,13 +1268,13 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "cyberpunk_neon",
   "parameters": [
-    { "name": "density",      "min": 4.0, "max": 30.0,  "default": 12.0, "type": "number" },
-    { "name": "lit_count",    "min": 0.0, "max": 200.0, "default": 26.0, "type": "number" },
-    { "name": "speed",        "min": 0.0, "max": 5.0,   "default": 0.9,  "type": "number" },
-    { "name": "gap",          "min": 0.0, "max": 0.4,   "default": 0.08, "type": "number" },
-    { "name": "transparency", "min": 0.0, "max": 1.0,   "default": 0.0,  "type": "number" },
-    { "name": "drop",   "default": 0, "type": "action" },
-    { "name": "flip",   "default": 0, "type": "action" },
+    { "name": "density", "min": 4, "max": 30, "default": 12, "type": "number" },
+    { "name": "lit_count", "min": 0, "max": 200, "default": 26, "type": "number" },
+    { "name": "speed", "min": 0, "max": 5, "default": 0.9, "type": "number" },
+    { "name": "gap", "min": 0, "max": 0.4, "default": 0.08, "type": "number" },
+    { "name": "transparency", "min": 0, "max": 1, "default": 0, "type": "number" },
+    { "name": "drop", "default": 0, "type": "action" },
+    { "name": "flip", "default": 0, "type": "action" },
     { "name": "center", "default": 0, "type": "action" }
   ],
   "elements": [
@@ -1276,7 +1282,8 @@ void main(void) {
     { "id": "grid", "name": "Grid Cells", "defaultColor": "#2a1a3a" },
     { "id": "lit", "name": "Lit Cells", "defaultColor": "#00f0ff" }
   ],
-  "uuid": "hex-grid-canvas-1"
+  "uuid": "hex-grid-canvas-1",
+  "transparentBackground": true
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   },
@@ -1288,20 +1295,21 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "tokyo_synth",
   "parameters": [
-    { "name": "columns",   "min": 2.0,  "max": 40.0,  "default": 16.0, "type": "number" },
-    { "name": "lit_count", "min": 0.0,  "max": 400.0, "default": 42.0, "type": "number" },
-    { "name": "shuffle",   "min": 0.0,  "max": 5.0,   "default": 0.6, "type": "number" },
-    { "name": "gap",       "min": 0.0,  "max": 0.3,   "default": 0.05, "type": "number" },
-    { "name": "checker",   "min": 0.0,  "max": 1.0,   "default": 0.0, "type": "number" },
-    { "name": "round",     "min": 0.0,  "max": 0.5,   "default": 0.0, "type": "number" },
-    { "name": "flip",      "default": 0, "type": "action" }
+    { "name": "columns", "min": 2, "max": 40, "default": 16, "type": "number" },
+    { "name": "lit_count", "min": 0, "max": 400, "default": 42, "type": "number" },
+    { "name": "shuffle", "min": 0, "max": 5, "default": 0.6, "type": "number" },
+    { "name": "gap", "min": 0, "max": 0.3, "default": 0.05, "type": "number" },
+    { "name": "checker", "min": 0, "max": 1, "default": 0, "type": "number" },
+    { "name": "round", "min": 0, "max": 0.5, "default": 0, "type": "number" },
+    { "name": "flip", "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#1a1b26" },
     { "id": "grid", "name": "Grid Cells", "defaultColor": "#2e2f45" },
     { "id": "lit", "name": "Lit Cells", "defaultColor": "#f7768e" }
   ],
-  "uuid": "square-grid-canvas-1"
+  "uuid": "square-grid-canvas-1",
+  "transparentBackground": true
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   },
@@ -1641,58 +1649,8 @@ void main(void) {
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   },
-  {
-    header: `/*{
-  "description": "Floating Gem",
-  "category": "Geometric",
-  "color": "black",
-  "movement": true,
-  "defaultPaletteId": "aurora_glow",
-  "parameters": [
-    { "name": "facets",         "min": 4.0, "max": 10.0, "default": 6.0,  "type": "number" },
-    { "name": "rotation_speed", "min": 0.0, "max": 3.0,  "default": 0.6,  "type": "number" },
-    { "name": "bob",            "min": 0.0, "max": 1.0,  "default": 0.5,  "type": "number" },
-    { "name": "glow",           "min": 0.0, "max": 1.0,  "default": 0.7,  "type": "number" },
-    { "name": "beam",           "min": 0.0, "max": 1.0,  "default": 0.6,  "type": "number" },
-    { "name": "pulse",   "default": 0, "type": "action" },
-    { "name": "shatter", "default": 0, "type": "action" }
-  ],
-  "elements": [
-    { "id": "background", "name": "Sky", "defaultColor": "#0a0a12" },
-    { "id": "gem", "name": "Gem Facets", "defaultColor": "#8b6cf0" },
-    { "id": "beam", "name": "Light Beam", "defaultColor": "#f0a0d8" },
-    { "id": "dust", "name": "Dust Motes", "defaultColor": "#ffffff" }
-  ],
-  "uuid": "floating-gem-canvas-1"
-}*/`,
-    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
-  },
-  {
-    header: `/*{
-  "description": "Woven Blocks",
-  "category": "Geometric",
-  "color": "black",
-  "movement": true,
-  "defaultPaletteId": "monochrome_duo",
-  "parameters": [
-    { "name": "blocks",     "min": 4.0,  "max": 24.0, "default": 14.0, "type": "number" },
-    { "name": "bands",      "min": 3.0,  "max": 22.0, "default": 12.0, "type": "number" },
-    { "name": "taper",      "min": -1.0, "max": 1.0,  "default": -0.9, "type": "number" },
-    { "name": "band_ratio", "min": 0.05, "max": 0.6,  "default": 0.25, "type": "number" },
-    { "name": "spread",     "min": 0.35, "max": 1.6,  "default": 0.9,  "type": "number" },
-    { "name": "size",       "min": 0.3,  "max": 2.0,  "default": 1.0,  "type": "number" },
-    { "name": "reweave",  "default": 0, "type": "action" },
-    { "name": "collapse", "default": 0, "type": "action" }
-  ],
-  "elements": [
-    { "id": "background", "name": "Background", "defaultColor": "#000000" },
-    { "id": "lines", "name": "Hatch Lines", "defaultColor": "#ffffff" },
-    { "id": "accent", "name": "Ridge Accent", "defaultColor": "#eb556b" }
-  ],
-  "uuid": "woven-hex-blocks-1"
-}*/`,
-    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
-  },
+
+
   {
     header: `/*{
   "description": "Circuit Routes",
@@ -1727,14 +1685,13 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "monochrome_duo",
   "parameters": [
-    { "name": "sides",     "min": 3.0,  "max": 12.0, "default": 8.0,  "type": "number" },
-    { "name": "rings",     "min": 3.0,  "max": 44.0, "default": 20.0, "type": "number" },
-    { "name": "size",      "min": 0.3,  "max": 2.0,  "default": 1.0,  "type": "number" },
-    { "name": "turns",     "min": 0.0,  "max": 10.0, "default": 5.5,  "type": "number" },
-    { "name": "radius",    "min": 50.0, "max": 400.0,"default": 300.0,"type": "number" },
-    { "name": "noise_amt", "min": 0.0,  "max": 1.0,  "default": 0.37, "type": "number" },
+    { "name": "sides", "min": 3, "max": 12, "default": 8, "type": "number" },
+    { "name": "rings", "min": 3, "max": 44, "default": 20, "type": "number" },
+    { "name": "size", "min": 0.3, "max": 2, "default": 1, "type": "number" },
+    { "name": "turns", "min": 0, "max": 10, "default": 5.5, "type": "number" },
+    { "name": "noise_amt", "min": 0, "max": 1, "default": 0.37, "type": "number" },
     { "name": "unwind", "default": 0, "type": "action" },
-    { "name": "twist",  "default": 0, "type": "action" }
+    { "name": "twist", "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#000000" },
@@ -1801,14 +1758,14 @@ void main(void) {
   "category": "Geometric",
   "color": "black",
   "movement": true,
-  "defaultPaletteId": "monochrome_brutalist",
+  "defaultPaletteId": "aurora_glow",
   "parameters": [
-    { "name": "resolution", "min": 2.0, "max": 6.0,   "default": 3.0,  "type": "number" },
-    { "name": "gap",        "min": 0.0, "max": 5.0,   "default": 0.9,  "type": "number" },
-    { "name": "spin",       "min": 0.0, "max": 2.0,   "default": 0.35, "type": "number" },
-    { "name": "fill",       "min": 0.4, "max": 1.0,   "default": 1.0,  "type": "number" },
-    { "name": "seed",       "min": 0.0, "max": 999.0, "default": 20.0, "type": "number" },
-    { "name": "dissolve",    "default": 0, "type": "action" },
+    { "name": "resolution", "min": 2, "max": 6, "default": 3, "type": "number" },
+    { "name": "gap", "min": 0, "max": 5, "default": 0.9, "type": "number" },
+    { "name": "spin", "min": 0, "max": 2, "default": 0.35, "type": "number" },
+    { "name": "fill", "min": 0.4, "max": 1, "default": 1, "type": "number" },
+    { "name": "seed", "min": 0, "max": 999, "default": 20, "type": "number" },
+    { "name": "dissolve", "default": 0, "type": "action" },
     { "name": "rotate_step", "default": 0, "type": "action" }
   ],
   "elements": [
@@ -1854,12 +1811,12 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "monochrome_duo",
   "parameters": [
-    { "name": "cols",          "min": 6.0,  "max": 40.0,   "default": 17.0,   "type": "number" },
-    { "name": "noise_scale",   "min": 0.5,  "max": 10.0,   "default": 4.135,  "type": "number" },
-    { "name": "rotation_amt",  "min": 0.0,  "max": 2.0,    "default": 0.0,    "type": "number" },
-    { "name": "translate_amt", "min": 0.0,  "max": 40.0,   "default": 18.0,   "type": "number" },
-    { "name": "scale_amt",     "min": 0.0,  "max": 2.0,    "default": 0.0,    "type": "number" },
-    { "name": "seed",          "min": 0.0,  "max": 9999.0, "default": 3100.0, "type": "number" },
+    { "name": "cols", "min": 6, "max": 40, "default": 17, "type": "number" },
+    { "name": "noise_scale", "min": 0.5, "max": 10, "default": 4.135, "type": "number" },
+    { "name": "rotation_amt", "min": 0, "max": 2, "default": 0, "type": "number" },
+    { "name": "translate_amt", "min": 0, "max": 40, "default": 18, "type": "number" },
+    { "name": "scale_amt", "min": 0, "max": 2, "default": 0, "type": "number" },
+    { "name": "seed", "min": 0, "max": 9999, "default": 3100, "type": "number" },
     { "name": "ripple", "default": 0, "type": "action" },
     { "name": "settle", "default": 0, "type": "action" }
   ],
@@ -1867,7 +1824,8 @@ void main(void) {
     { "id": "background", "name": "Background", "defaultColor": "#000000" },
     { "id": "cells", "name": "Cells", "defaultColor": "#ffffff" }
   ],
-  "uuid": "halftone-drift-1"
+  "uuid": "halftone-drift-1",
+  "transparentBackground": true
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   },
@@ -1929,11 +1887,10 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "monochrome_duo",
   "parameters": [
-    { "name": "bar_size",   "min": 8.0,  "max": 60.0,  "default": 34.0,  "type": "number" },
-    { "name": "amplitude",  "min": 0.0,  "max": 600.0, "default": 422.0, "type": "number" },
-    { "name": "count",      "min": 20.0, "max": 300.0, "default": 181.0, "type": "number" },
-    { "name": "frequency",  "min": 0.5,  "max": 12.0,  "default": 5.2,   "type": "number" },
-    { "name": "bar_height", "min": 10.0, "max": 200.0, "default": 80.0,  "type": "number" },
+    { "name": "bar_size", "min": 8, "max": 60, "default": 34, "type": "number" },
+    { "name": "amplitude", "min": 0, "max": 600, "default": 422, "type": "number" },
+    { "name": "frequency", "min": 0.5, "max": 12, "default": 5.2, "type": "number" },
+    { "name": "bar_height", "min": 10, "max": 260, "default": 34, "type": "number" },
     { "name": "pulse_wave", "default": 0, "type": "action" },
     { "name": "phase_flip", "default": 0, "type": "action" }
   ],
@@ -2058,17 +2015,16 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "aurora_glow",
   "parameters": [
-    { "name": "spiral",     "min": 0.0, "max": 1.0,  "default": 0.0,  "type": "number" },
-    { "name": "trail",      "min": 0.0, "max": 1.0,  "default": 0.5,  "type": "number" },
-    { "name": "scale_glow", "min": 0.0, "max": 1.0,  "default": 0.6,  "type": "number" },
-    { "name": "chord_fill", "min": 0.0, "max": 1.0,  "default": 0.45, "type": "number" },
-    { "name": "node_size",  "min": 0.3, "max": 3.0,  "default": 1.0,  "type": "number" },
-    { "name": "memory",     "min": 0.5, "max": 12.0, "default": 4.0,  "type": "number" },
-    { "name": "tonic_top",  "min": 0.0, "max": 1.0,  "default": 0.0,  "type": "number" },
-    { "name": "labels",     "min": 0.0, "max": 1.0,  "default": 1.0,  "type": "number" },
-    { "name": "demo",       "min": 0.0, "max": 1.0,  "default": 1.0,  "type": "number" },
+    { "name": "spiral", "min": 0, "max": 1, "default": 0, "type": "number" },
+    { "name": "trail", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "scale_glow", "min": 0, "max": 1, "default": 0.6, "type": "number" },
+    { "name": "chord_fill", "min": 0, "max": 1, "default": 0.45, "type": "number" },
+    { "name": "node_size", "min": 0.3, "max": 3, "default": 1, "type": "number" },
+    { "name": "memory", "min": 0.5, "max": 12, "default": 4, "type": "number" },
+    { "name": "tonic_top", "min": 0, "max": 1, "default": 0, "type": "number" },
+    { "name": "labels", "min": 0, "max": 1, "default": 1, "type": "number" },
     { "name": "pulse_tonic", "default": 0, "type": "action" },
-    { "name": "snap_key",    "default": 0, "type": "action" }
+    { "name": "snap_key", "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#0a0a12" },
@@ -2089,16 +2045,13 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "aurora_glow",
   "parameters": [
-    { "name": "inner_ring", "min": 0.0, "max": 1.0,  "default": 1.0, "type": "number" },
-    { "name": "note_flash", "min": 0.0, "max": 1.0,  "default": 0.7, "type": "number" },
-    { "name": "comet",      "min": 0.0, "max": 1.0,  "default": 0.5, "type": "number" },
-    { "name": "glow",       "min": 0.0, "max": 1.0,  "default": 0.6, "type": "number" },
-    { "name": "memory",     "min": 0.5, "max": 12.0, "default": 4.0, "type": "number" },
-    { "name": "tonic_top",  "min": 0.0, "max": 1.0,  "default": 0.0, "type": "number" },
-    { "name": "labels",     "min": 0.0, "max": 1.0,  "default": 1.0, "type": "number" },
-    { "name": "demo",       "min": 0.0, "max": 1.0,  "default": 1.0, "type": "number" },
+    { "name": "inner_ring", "min": 0, "max": 1, "default": 1, "type": "number" },
+    { "name": "note_flash", "min": 0, "max": 1, "default": 0.7, "type": "number" },
+    { "name": "glow", "min": 0, "max": 1, "default": 0.6, "type": "number" },
+    { "name": "memory", "min": 0.5, "max": 12, "default": 4, "type": "number" },
+    { "name": "labels", "min": 0, "max": 1, "default": 1, "type": "number" },
     { "name": "modulate_flash", "default": 0, "type": "action" },
-    { "name": "spin",           "default": 0, "type": "action" }
+    { "name": "spin", "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#0a0a12" },
@@ -2119,16 +2072,13 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "acid_matrix",
   "parameters": [
-    { "name": "extent",     "min": 2.0, "max": 8.0,  "default": 4.0,  "type": "number" },
-    { "name": "node_size",  "min": 0.3, "max": 3.0,  "default": 1.0,  "type": "number" },
-    { "name": "triad_fill", "min": 0.0, "max": 1.0,  "default": 0.65, "type": "number" },
-    { "name": "trail",      "min": 0.0, "max": 1.0,  "default": 0.5,  "type": "number" },
-    { "name": "edges",      "min": 0.0, "max": 1.0,  "default": 0.45, "type": "number" },
-    { "name": "warp",       "min": 0.0, "max": 1.0,  "default": 0.0,  "type": "number" },
-    { "name": "labels",     "min": 0.0, "max": 1.0,  "default": 1.0,  "type": "number" },
-    { "name": "demo",       "min": 0.0, "max": 1.0,  "default": 1.0,  "type": "number" },
+    { "name": "extent", "min": 2, "max": 8, "default": 4, "type": "number" },
+    { "name": "node_size", "min": 0.3, "max": 3, "default": 1, "type": "number" },
+    { "name": "triad_fill", "min": 0, "max": 1, "default": 0.65, "type": "number" },
+    { "name": "trail", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "labels", "min": 0, "max": 1, "default": 1, "type": "number" },
     { "name": "crystallize", "default": 0, "type": "action" },
-    { "name": "retrace",     "default": 0, "type": "action" }
+    { "name": "retrace", "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Background", "defaultColor": "#0d1117" },
@@ -2149,22 +2099,25 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "plotter_bands",
   "parameters": [
-    { "name": "motif_len",   "min": 2.0,  "max": 12.0,   "default": 4.0,   "type": "number" },
-    { "name": "window",      "min": 60.0, "max": 3000.0, "default": 800.0, "type": "number" },
-    { "name": "arc_opacity", "min": 0.05, "max": 1.0,    "default": 0.35,  "type": "number" },
-    { "name": "arc_height",  "min": 0.2,  "max": 2.0,    "default": 1.0,   "type": "number" },
-    { "name": "line_weight", "min": 0.2,  "max": 4.0,    "default": 1.0,   "type": "number" },
-    { "name": "transposed",  "min": 0.0,  "max": 1.0,    "default": 1.0,   "type": "number" },
-    { "name": "baseline",    "min": 0.0,  "max": 1.0,    "default": 0.8,   "type": "number" },
-    { "name": "demo",        "min": 0.0,  "max": 1.0,    "default": 1.0,   "type": "number" },
-    { "name": "clear",  "default": 0, "type": "action" },
+    { "name": "line_1", "min": 0, "max": 5, "default": 3, "type": "number" },
+    { "name": "line_2", "min": 0, "max": 5, "default": 0, "type": "number" },
+    { "name": "line_3", "min": 0, "max": 5, "default": 0, "type": "number" },
+    { "name": "line_4", "min": 0, "max": 5, "default": 0, "type": "number" },
+    { "name": "line_5", "min": 0, "max": 5, "default": 0, "type": "number" },
+    { "name": "motif_len", "min": 2, "max": 12, "default": 4, "type": "number" },
+    { "name": "window", "min": 60, "max": 3000, "default": 800, "type": "number" },
+    { "name": "arc_opacity", "min": 0.05, "max": 1, "default": 0.35, "type": "number" },
+    { "name": "line_weight", "min": 0.2, "max": 4, "default": 1, "type": "number" },
+    { "name": "clear", "default": 0, "type": "action" },
     { "name": "freeze", "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Paper", "defaultColor": "#ede9e2" },
-    { "id": "arc", "name": "Repetition Arcs", "defaultColor": "#3a5ba0" },
-    { "id": "arc_alt", "name": "Long-Range Arcs", "defaultColor": "#d9557a" },
-    { "id": "note", "name": "Note Baseline", "defaultColor": "#234a30" }
+    { "id": "line_1", "name": "Line 1", "defaultColor": "#d9557a" },
+    { "id": "line_2", "name": "Line 2", "defaultColor": "#3a5ba0" },
+    { "id": "line_3", "name": "Line 3", "defaultColor": "#3c7a52" },
+    { "id": "line_4", "name": "Line 4", "defaultColor": "#e08a2e" },
+    { "id": "line_5", "name": "Line 5", "defaultColor": "#234a30" }
   ],
   "uuid": "shape-of-song-1"
 }*/`,
@@ -2178,18 +2131,17 @@ void main(void) {
   "movement": true,
   "defaultPaletteId": "plotter_bands",
   "parameters": [
-    { "name": "line_1",    "min": 0.0, "max": 5.0,   "default": 3.0,  "type": "number" },
-    { "name": "line_2",    "min": 0.0, "max": 5.0,   "default": 0.0,  "type": "number" },
-    { "name": "line_3",    "min": 0.0, "max": 5.0,   "default": 0.0,  "type": "number" },
-    { "name": "line_4",    "min": 0.0, "max": 5.0,   "default": 0.0,  "type": "number" },
-    { "name": "line_5",    "min": 0.0, "max": 5.0,   "default": 0.0,  "type": "number" },
-    { "name": "note_size", "min": 0.3, "max": 3.0,   "default": 1.0,  "type": "number" },
-    { "name": "contour",   "min": 0.0, "max": 1.0,   "default": 0.0,  "type": "number" },
-    { "name": "span",      "min": 5.0, "max": 120.0, "default": 20.0, "type": "number" },
-    { "name": "auto_zoom", "default": 1.0, "type": "boolean" },
-    { "name": "guides",    "min": 0.0, "max": 1.0,   "default": 0.35, "type": "number" },
-    { "name": "demo",      "default": 1.0, "type": "boolean" },
-    { "name": "clear",  "default": 0, "type": "action" },
+    { "name": "line_1", "min": 0, "max": 5, "default": 3, "type": "number" },
+    { "name": "line_2", "min": 0, "max": 5, "default": 0, "type": "number" },
+    { "name": "line_3", "min": 0, "max": 5, "default": 0, "type": "number" },
+    { "name": "line_4", "min": 0, "max": 5, "default": 0, "type": "number" },
+    { "name": "line_5", "min": 0, "max": 5, "default": 0, "type": "number" },
+    { "name": "note_size", "min": 0.3, "max": 3, "default": 1, "type": "number" },
+    { "name": "contour", "min": 0, "max": 1, "default": 0, "type": "number" },
+    { "name": "span", "min": 5, "max": 120, "default": 20, "type": "number" },
+    { "name": "auto_zoom", "default": 1, "type": "boolean" },
+    { "name": "guides", "min": 0, "max": 1, "default": 0.35, "type": "number" },
+    { "name": "clear", "default": 0, "type": "action" },
     { "name": "freeze", "default": 0, "type": "action" }
   ],
   "elements": [
@@ -2298,6 +2250,7 @@ void main(void) {
     { "name": "temperature", "min": 0, "max": 2, "default": 0.7, "type": "number" },
     { "name": "viscosity", "min": 0, "max": 1, "default": 0.3, "type": "number" },
     { "name": "walkers", "min": 20, "max": 400, "default": 160, "type": "number" },
+    { "name": "particle_size", "min": 0.3, "max": 4, "default": 1, "type": "number" },
     { "name": "trail_length", "min": 0, "max": 1, "default": 0.6, "type": "number" },
     { "name": "drift", "min": -1, "max": 1, "default": 0, "type": "number" },
     { "name": "shockwave", "default": 0, "type": "action" },
@@ -2485,7 +2438,7 @@ void main(void) {
   "category": "Science",
   "color": "black",
   "movement": true,
-  "defaultPaletteId": "coral_reef",
+  "defaultPaletteId": "acid_matrix",
   "parameters": [
     { "name": "launch_angle", "min": 10, "max": 80, "default": 45, "type": "number" },
     { "name": "muzzle_velocity", "min": 0.3, "max": 2, "default": 1, "type": "number" },
@@ -2493,7 +2446,7 @@ void main(void) {
     { "name": "wind_strength", "min": -1, "max": 1, "default": 0.15, "type": "number" },
     { "name": "gravity", "min": 0.2, "max": 2.5, "default": 1, "type": "number" },
     { "name": "single_shot", "default": 0, "type": "action" },
-    { "name": "salvo", "default": 0, "type": "action" },
+    { "name": "shotgun", "default": 0, "type": "action" },
     { "name": "clear_trails", "default": 0, "type": "action" }
   ],
   "elements": [
@@ -2635,8 +2588,6 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'random-symbols-canvas-1': 'Geometric',
   'orb-cluster-canvas-1': 'Geometric',
   'symbol-portrait-canvas-1': 'Geometric',
-  'floating-gem-canvas-1': 'Geometric',
-  'woven-hex-blocks-1': 'Geometric',
   'spiral-shells-1': 'Geometric',
   'polar-checker-1': 'Geometric',
   'voxel-cross-1': 'Geometric',
@@ -2741,6 +2692,7 @@ export function parseGeneratives(): GenerativeDefinition[] {
       parameters: metadata.parameters || [],
       elements: metadata.elements || defaultElements,
       defaultPaletteId: metadata.defaultPaletteId || (metadata.color === 'white' ? 'monochrome_duo_white' : 'monochrome_duo'),
+      transparentBackground: !!metadata.transparentBackground,
       fragmentShader: g.code
     };
   });
