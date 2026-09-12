@@ -12986,7 +12986,6 @@ export default function App() {
               const ctx = canvas.getContext('2d')!;
               const ms = modifiedSettings;
               const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
-              const sc = Math.min(targetW, targetH) / 720;
 
               const cBg = resolvedGenerativeColors['background'] || 'transparent';
               const cStrand = resolvedGenerativeColors['strand'] || '#d4af37';
@@ -12994,14 +12993,14 @@ export default function App() {
               const cAcc = resolvedGenerativeColors['accent'] || '#f3e5ab';
 
               const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
-              const nK = Math.max(6, Math.min(40, Math.round(ms.knots ?? 18)));
-              const weave = Math.max(0, Math.min(1, ms.weave ?? 0.55));
+              const density = Math.max(6, Math.min(40, ms.knots ?? 18));
+              const weave = Math.max(0, Math.min(1, ms.weave ?? 0.35));
               const travel = Math.max(-3, Math.min(3, ms.travel ?? 0.3));
               const sw = Math.max(0.3, Math.min(3, ms.strand_weight ?? 1));
-              const shadow = Math.max(0, Math.min(1, ms.shadow ?? 0.5));
+              const breaks = Math.max(0, Math.min(1, ms.breaks ?? 0.3));
 
-              const st = (frameStateRef.current[layer.id + ':knot'] ||= { acts: {}, phase: 0, twist: 0, shimAt: -99 });
-              if (actionFired(st.acts, 'retie', Number(ms.retie ?? 0))) st.twist += Math.PI * 0.5;
+              const st = (frameStateRef.current[layer.id + ':knot'] ||= { acts: {}, phase: 0, seed: 4, shimAt: -99 });
+              if (actionFired(st.acts, 'retie', Number(ms.retie ?? 0))) st.seed = 1 + Math.floor(Math.random() * 9999);
               if (actionFired(st.acts, 'shim', Number(ms.shimmer ?? 0))) st.shimAt = nowSec;
               st.phase += dt * travel * 0.04;
               const shim = nowSec - st.shimAt < 1.4 ? (nowSec - st.shimAt) / 1.4 : -1;
@@ -13012,52 +13011,116 @@ export default function App() {
                   ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
               }
 
-              // Two strands running the band in counter-phase. Where they cross, the one
-              // drawn second passes over — redrawing short pieces of the first at every
-              // other crossing is what reads as an interlace.
-              const SEG = 520;
-              const amp = fb.band * (0.16 + weave * 0.24);
-              const freq = nK * 2 * Math.PI;
-              const strandAt = (u: number, which: number) => {
-                  const t = u + st.phase;
-                  const p = fb.at(t);
-                  const o = Math.sin(u * freq + st.twist + (which ? Math.PI : 0)) * amp;
-                  return { x: p.x + p.nx * o, y: p.y + p.ny * o };
-              };
-              const lw = Math.max(1.5, fb.band * 0.10 * sw);
+              // Real knotwork, built the way it is actually constructed: strands run
+              // diagonally across a lattice laid over the band, cross at every cell
+              // centre, and turn back wherever a "break" blocks a lattice point. The
+              // two rows of breaks along the band edges are what make the strands
+              // reflect instead of running off. Over and under alternate with the
+              // parity of the cell, so the weave interlaces by construction rather
+              // than by drawing one wave on top of another.
+              const rows = 1 + Math.round(weave * 3);           // strand rows across the band
+              const cellH0 = fb.band / rows;
+              // Square cells at density 18; the knob crowds or stretches them from there.
+              const cols = Math.max(4, 2 * Math.round(fb.per / cellH0 * (density / 18) / 2));
+              const du = 1 / cols;
+              const cellW = fb.per / cols;
 
-              const drawStrand = (which: number, from: number, to: number, style: string, width: number) => {
-                  ctx.strokeStyle = style; ctx.lineWidth = width;
+              // A strand only has the perpendicular distance between neighbouring
+              // diagonals to live in; fill more than about four fifths of it and the
+              // weave closes up into a solid blob.
+              const gapOf = (h: number) => (cellW * h) / Math.hypot(cellW, h);
+              let outW = Math.min(gapOf(cellH0) * 0.8, gapOf(cellH0) * 0.62 * sw);
+              // Inset the lattice by half a strand so the turns along the edges sit
+              // inside the band rather than half outside it.
+              const inset = Math.min(0.4, (outW * 0.5) / fb.mid);
+              const dv = (2 - inset * 2) / rows, v0 = -1 + inset;
+              outW = Math.min(outW, gapOf(fb.mid * dv) * 0.8);
+              const strandW = Math.max(1, outW - Math.max(2, outW * 0.3));
+
+              const cornerBlend = fb.band * 2 / fb.per;
+              /** Band coordinates to canvas: u walks the perimeter, v crosses the band. */
+              const mapUV = (u: number, v: number) => {
+                  const p = fb.at(u);
+                  const n = fb.nAt(u, cornerBlend);
+                  return { x: p.x + n.nx * v * fb.mid, y: p.y + n.ny * v * fb.mid };
+              };
+              const centreUV = (ci: number, cj: number) =>
+                  ({ u: (ci + 0.5) * du + st.phase, v: v0 + (cj + 0.5) * dv });
+
+              type Piece = { pts: { x: number; y: number }[]; lit: boolean };
+              const body: Piece[] = [], overOut: Piece[] = [], overFill: Piece[] = [];
+              const isLit = (u: number) => {
+                  if (shim < 0) return false;
+                  const d = Math.abs((((u - st.phase) % 1) + 1) % 1 - shim);
+                  return Math.min(d, 1 - d) < 0.055;
+              };
+              /**
+               * One strand piece, from a cell centre through a lattice point to the
+               * next. The control point is thrown as far past the lattice point as the
+               * chord falls short of it, so a turn actually reaches the edge instead
+               * of stopping halfway and looking pinched. For a straight crossing the
+               * lattice point is already the midpoint, so this changes nothing.
+               */
+              const emit = (into: Piece[], c1: any, p: any, c2: any, n: number) => {
+                  const ku = p.u * 2 - (c1.u + c2.u) / 2, kv = p.v * 2 - (c1.v + c2.v) / 2;
+                  const pts = [];
+                  for (let k = 0; k <= n; k++) {
+                      const t = k / n, mt = 1 - t;
+                      pts.push(mapUV(mt * mt * c1.u + 2 * mt * t * ku + t * t * c2.u,
+                                     mt * mt * c1.v + 2 * mt * t * kv + t * t * c2.v));
+                  }
+                  into.push({ pts, lit: isLit(p.u) });
+              };
+
+              for (let i = 0; i < cols; i++) {
+                  for (let j = 0; j <= rows; j++) {
+                      // The band edges always turn the strand back; inland, a break is
+                      // what turns a plain plait into a knot.
+                      let kind = 'x';
+                      if (j === 0 || j === rows) kind = 'h';
+                      else if (fhash(i * 7 + j * 53, st.seed) < breaks)
+                          kind = fhash(i * 13 + j * 29, st.seed + 3) < 0.5 ? 'h' : 'v';
+
+                      const p = { u: i * du + st.phase, v: v0 + j * dv };
+                      const nw = j > 0 ? centreUV(i - 1, j - 1) : null;
+                      const ne = j > 0 ? centreUV(i, j - 1) : null;
+                      const swc = j < rows ? centreUV(i - 1, j) : null;
+                      const se = j < rows ? centreUV(i, j) : null;
+                      const pairs: any[][] = kind === 'h' ? [[nw, ne], [swc, se]]
+                                           : kind === 'v' ? [[nw, swc], [ne, se]]
+                                           : [[nw, se], [ne, swc]];
+                      for (const [a, b] of pairs) if (a && b) emit(body, a, p, b, kind === 'x' ? 6 : 12);
+                  }
+              }
+              // The strand that passes over, redrawn so its outline cuts the one
+              // below. Its fill runs corner to corner while its outline stops short,
+              // so the outline's own ends stay buried instead of nicking the strand.
+              for (let i = 0; i < cols; i++) {
+                  for (let j = 0; j < rows; j++) {
+                      const c = centreUV(i, j);
+                      const s = ((i + j) % 2 === 0) ? 1 : -1;   // which diagonal is on top
+                      const arm = (f: number, into: Piece[]) =>
+                          emit(into, { u: c.u - du * f, v: c.v - dv * f * s }, c,
+                                     { u: c.u + du * f, v: c.v + dv * f * s }, 4);
+                      arm(0.38, overOut);
+                      arm(0.5, overFill);
+                  }
+              }
+
+              const trace = (list: Piece[], lit: boolean | null) => {
                   ctx.beginPath();
-                  const i0 = Math.max(0, Math.floor(from * SEG)), i1 = Math.min(SEG, Math.ceil(to * SEG));
-                  for (let i = i0; i <= i1; i++) {
-                      const q = strandAt(i / SEG, which);
-                      i === i0 ? ctx.moveTo(q.x, q.y) : ctx.lineTo(q.x, q.y);
+                  for (const pc of list) {
+                      if (lit !== null && pc.lit !== lit) continue;
+                      ctx.moveTo(pc.pts[0].x, pc.pts[0].y);
+                      for (let k = 1; k < pc.pts.length; k++) ctx.lineTo(pc.pts[k].x, pc.pts[k].y);
                   }
                   ctx.stroke();
               };
-
               ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-              if (shadow > 0.03) {
-                  ctx.globalAlpha = shadow * 0.8;
-                  ctx.save(); ctx.translate(lw * 0.35, lw * 0.35);
-                  drawStrand(0, 0, 1, cShadow, lw); drawStrand(1, 0, 1, cShadow, lw);
-                  ctx.restore();
-                  ctx.globalAlpha = 1;
-              }
-              drawStrand(0, 0, 1, cStrand, lw);
-              drawStrand(1, 0, 1, cStrand, lw);
-              // every other crossing, strand 0 comes back over the top
-              for (let k = 0; k < nK * 2; k += 2) {
-                  const c0 = (k + 0.5) / (nK * 2);
-                  drawStrand(0, c0 - 0.006, c0 + 0.006, cStrand, lw);
-              }
-              // a bead of light travelling the weave
-              if (shim >= 0) {
-                  const q = strandAt(shim, 0);
-                  ctx.fillStyle = cAcc; ctx.globalAlpha = 1 - shim;
-                  ctx.beginPath(); ctx.arc(q.x, q.y, lw * 0.9, 0, 6.283); ctx.fill();
-                  ctx.globalAlpha = 1;
+              for (const [outline, fill] of [[body, body], [overOut, overFill]]) {
+                  ctx.strokeStyle = cShadow; ctx.lineWidth = outW; trace(outline, null);
+                  ctx.strokeStyle = cStrand; ctx.lineWidth = strandW; trace(fill, shim < 0 ? null : false);
+                  if (shim >= 0) { ctx.strokeStyle = cAcc; ctx.lineWidth = strandW; trace(fill, true); }
               }
               ctx.lineCap = 'butt';
               element = canvas;

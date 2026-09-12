@@ -2777,17 +2777,17 @@ void main(void) {
   "parameters": [
     { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
     { "name": "knots", "min": 6, "max": 40, "default": 18, "type": "number" },
-    { "name": "weave", "min": 0, "max": 1, "default": 0.55, "type": "number" },
+    { "name": "weave", "min": 0, "max": 1, "default": 0.35, "type": "number" },
     { "name": "travel", "min": -3, "max": 3, "default": 0.3, "type": "number" },
     { "name": "strand_weight", "min": 0.3, "max": 3, "default": 1, "type": "number" },
-    { "name": "shadow", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "breaks", "min": 0, "max": 1, "default": 0.3, "type": "number" },
     { "name": "retie", "default": 0, "type": "action" },
     { "name": "shimmer", "default": 0, "type": "action" }
   ],
   "elements": [
     { "id": "background", "name": "Frame Ground", "defaultColor": "#121212" },
     { "id": "strand", "name": "Strands", "defaultColor": "#d4af37" },
-    { "id": "shadow", "name": "Shadow", "defaultColor": "#5b4511" },
+    { "id": "shadow", "name": "Outline", "defaultColor": "#5b4511" },
     { "id": "accent", "name": "Accent", "defaultColor": "#f3e5ab" }
   ],
   "uuid": "knotwork-band-1"
