@@ -685,6 +685,48 @@ export function isTransparentColor(c?: string): boolean {
 // as real pixel art at any canvas size instead of smooth shapes scaled down.
 interface PixelBuf { c: HTMLCanvasElement; g: CanvasRenderingContext2D; w: number; h: number; px: number }
 
+/**
+ * Geometry shared by every Frame asset: a band hugging the canvas edge with the
+ * middle left clear, so whatever sits on the layer below shows through.
+ *
+ * `thickness` is the share of the SHORTER canvas side the band eats on one edge,
+ * doubled across the frame — so the cap of 0.5 leaves at least half the canvas
+ * open whatever the aspect ratio.
+ *
+ * `at(t)` walks the band's centre line clockwise from the top-left, t in 0..1,
+ * and hands back the inward normal too, so ornaments can be placed facing the
+ * hole and pushed into it.
+ */
+function frameBand(w: number, h: number, thickness: number) {
+  const band = Math.max(0.02, Math.min(0.5, thickness)) * Math.min(w, h) * 0.5;
+  const mid = band * 0.5;
+  const x0 = mid, y0 = mid, x1 = w - mid, y1 = h - mid;
+  const bw = Math.max(1, x1 - x0), bh = Math.max(1, y1 - y0);
+  const per = 2 * (bw + bh);
+  const at = (t: number) => {
+    let d = (((t % 1) + 1) % 1) * per;
+    if (d <= bw) return { x: x0 + d, y: y0, nx: 0, ny: 1, ang: 0 };
+    d -= bw;
+    if (d <= bh) return { x: x1, y: y0 + d, nx: -1, ny: 0, ang: Math.PI / 2 };
+    d -= bh;
+    if (d <= bw) return { x: x1 - d, y: y1, nx: 0, ny: -1, ang: Math.PI };
+    d -= bh;
+    return { x: x0, y: y1 - d, nx: 1, ny: 0, ang: -Math.PI / 2 };
+  };
+  /** True while a point is still inside the band rather than out over the hole. */
+  const inBand = (px: number, py: number) =>
+    px < band || py < band || px > w - band || py > h - band;
+  return { band, mid, per, at, inBand,
+           hole: { x: band, y: band, w: w - band * 2, h: h - band * 2 } };
+}
+
+/** Deterministic 0..1 hash, so a frame's ornaments keep their identity frame to
+ *  frame without storing an array for every one of them. */
+function fhash(i: number, k: number) {
+  const v = Math.sin(i * 127.1 + k * 311.7) * 43758.5453;
+  return v - Math.floor(v);
+}
+
 /** A persistent per-layer canvas that fades instead of clearing, so particle
  *  paths leave trails. Returns the context ready to draw into. */
 function getTrailBuf(store: Record<string, any>, id: string, w: number, h: number, fade: number) {
@@ -2804,6 +2846,9 @@ export default function App() {
   const nBodyStateRef = useRef<Record<string, any>>({});
   const brownianStateRef = useRef<Record<string, any>>({});
   const lorenzStateRef = useRef<Record<string, any>>({});
+  /** One store for every Frame asset, keyed by layer AND uuid so swapping the
+   *  asset on a layer starts from a clean slate rather than inheriting state. */
+  const frameStateRef = useRef<Record<string, any>>({});
   const grayScottStateRef = useRef<Record<string, any>>({});
   const golStateRef = useRef<Record<string, any>>({});
   const pendulumStateRef = useRef<Record<string, any>>({});
@@ -12085,6 +12130,1261 @@ export default function App() {
               ctx.fillText(`gen ${st.gen}   alive ${alive}/${popN}   best ${st.best.toFixed(2)}`, 16 * sc, 14 * sc);
               ctx.globalAlpha = 1;
               element = canvas;
+          } else if (def.uuid === 'tribal-dance-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cFig = resolvedGenerativeColors['figures'] || '#e0560f';
+              const cMark = resolvedGenerativeColors['marks'] || '#ffae5c';
+              const cAcc = resolvedGenerativeColors['accent'] || '#c23b06';
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const nFig = Math.max(6, Math.min(40, Math.round(ms.figures ?? 18)));
+              const march = Math.max(-3, Math.min(3, ms.march_speed ?? 0.5));
+              const dance = Math.max(0, Math.min(1, ms.dance ?? 0.6));
+              const lw = Math.max(0.3, Math.min(4, ms.stroke_weight ?? 1.4));
+              const stray = Math.max(0, Math.min(1, ms.stray ?? 0.15));
+
+              const st = (frameStateRef.current[layer.id + ':tribal'] ||= { acts: {}, phase: 0, dir: 1, leapAt: -99 });
+              if (actionFired(st.acts, 'leap', Number(ms.leap ?? 0))) st.leapAt = nowSec;
+              if (actionFired(st.acts, 'face', Number(ms.about_face ?? 0))) st.dir *= -1;
+              st.phase += dt * march * st.dir * 0.04;
+              const leap = nowSec - st.leapAt < 0.9 ? Math.sin(Math.PI * (nowSec - st.leapAt) / 0.9) : 0;
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              // ground marks: a dashed rail the dancers travel along
+              ctx.strokeStyle = cMark; ctx.globalAlpha = 0.5; ctx.lineWidth = lw * sc;
+              ctx.setLineDash([fb.band * 0.14, fb.band * 0.12]);
+              ctx.beginPath();
+              for (let i = 0; i <= 220; i++) {
+                  const p = fb.at(i / 220);
+                  i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y);
+              }
+              ctx.closePath(); ctx.stroke();
+              ctx.setLineDash([]);
+              ctx.globalAlpha = 1;
+
+              // Each dancer is a stick figure whose limbs swing on its own phase, so the
+              // procession reads as a crowd rather than one shape repeated.
+              const H = fb.band * 0.68;
+              ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+              for (let i = 0; i < nFig; i++) {
+                  const t = i / nFig + st.phase;
+                  const p = fb.at(t);
+                  const wanders = fhash(i, 3) < stray;
+                  const push = wanders ? (0.35 + 0.65 * (0.5 + 0.5 * Math.sin(nowSec * 0.5 + i * 1.7))) * fb.band * 2.1 : 0;
+                  const x = p.x + p.nx * push;
+                  const y = p.y + p.ny * push - leap * H * 0.45;
+                  const ph = nowSec * 3.2 * Math.abs(march || 0.4) + i * 1.9;
+                  const sw = dance * 0.7;
+                  const solid = fhash(i, 1) > 0.55;
+
+                  ctx.strokeStyle = wanders ? cAcc : cFig;
+                  ctx.fillStyle = wanders ? cAcc : cFig;
+                  ctx.lineWidth = lw * sc * 1.6;
+
+                  // head
+                  ctx.beginPath(); ctx.arc(x, y - H * 0.40, H * 0.115, 0, 6.283); ctx.fill();
+                  if (solid) {
+                      // wedge body
+                      ctx.beginPath();
+                      ctx.moveTo(x, y - H * 0.27);
+                      ctx.lineTo(x + H * 0.20, y + H * 0.10);
+                      ctx.lineTo(x - H * 0.20, y + H * 0.10);
+                      ctx.closePath(); ctx.fill();
+                  } else {
+                      ctx.beginPath(); ctx.moveTo(x, y - H * 0.27); ctx.lineTo(x, y + H * 0.08); ctx.stroke();
+                  }
+                  // arms
+                  const a1 = Math.sin(ph) * sw, a2 = Math.sin(ph + Math.PI) * sw;
+                  ctx.beginPath();
+                  ctx.moveTo(x, y - H * 0.18);
+                  ctx.lineTo(x - H * 0.26 * Math.cos(a1), y - H * 0.18 - H * 0.24 * Math.sin(a1));
+                  ctx.moveTo(x, y - H * 0.18);
+                  ctx.lineTo(x + H * 0.26 * Math.cos(a2), y - H * 0.18 - H * 0.24 * Math.sin(a2));
+                  ctx.stroke();
+                  // legs
+                  const l1 = Math.sin(ph + 1.1) * sw * 0.8, l2 = Math.sin(ph + 1.1 + Math.PI) * sw * 0.8;
+                  ctx.beginPath();
+                  ctx.moveTo(x, y + H * 0.08);
+                  ctx.lineTo(x - H * 0.17 - H * 0.16 * l1, y + H * 0.42);
+                  ctx.moveTo(x, y + H * 0.08);
+                  ctx.lineTo(x + H * 0.17 + H * 0.16 * l2, y + H * 0.42);
+                  ctx.stroke();
+              }
+              ctx.lineCap = 'butt';
+              element = canvas;
+          } else if (def.uuid === 'rune-border-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cTile = resolvedGenerativeColors['tile'] || '#8a8578';
+              const cRune = resolvedGenerativeColors['rune'] || '#171717';
+              const cGlow = resolvedGenerativeColors['glow'] || '#d8d2c0';
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const nTile = Math.max(8, Math.min(44, Math.round(ms.tiles ?? 22)));
+              const flipRate = Math.max(0, Math.min(3, ms.flip_rate ?? 0.4));
+              const glowAmt = Math.max(0, Math.min(1, ms.glow ?? 0.45));
+              const wobble = Math.max(0, Math.min(1, ms.wobble ?? 0.3));
+              const weather = Math.max(0, Math.min(1, ms.weathering ?? 0.5));
+
+              const st = (frameStateRef.current[layer.id + ':rune'] ||= { acts: {}, seed: 1, pulseAt: -99, flipAcc: 0, lit: 0 });
+              if (actionFired(st.acts, 'recast', Number(ms.recast ?? 0))) st.seed = (st.seed + 17) % 997;
+              if (actionFired(st.acts, 'pulse', Number(ms.pulse ?? 0))) st.pulseAt = nowSec;
+              st.flipAcc += dt * flipRate;
+              while (st.flipAcc > 1) { st.flipAcc -= 1; st.seed = (st.seed + 1) % 997; }
+              st.lit = (st.lit + dt * (0.6 + glowAmt * 2.4)) % Math.max(1, nTile);
+              const pulse = nowSec - st.pulseAt < 1.1 ? 1 - (nowSec - st.pulseAt) / 1.1 : 0;
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              const side = fb.band * 0.82;
+              ctx.lineCap = 'square';
+              for (let i = 0; i < nTile; i++) {
+                  const p = fb.at(i / nTile + 0.5 / nTile);
+                  const wob = wobble * (fhash(i, 7) - 0.5) * 0.22;
+                  const isLit = Math.floor(st.lit) === i;
+                  const glow = Math.max(isLit ? glowAmt : 0, pulse * 0.9);
+
+                  ctx.save();
+                  ctx.translate(p.x, p.y);
+                  ctx.rotate(wob);
+
+                  // tile face, with a chipped corner so the row is not mechanical
+                  ctx.fillStyle = cTile;
+                  ctx.globalAlpha = 0.92 - weather * 0.25 * fhash(i, 11);
+                  const chip = side * 0.16 * weather * fhash(i, 13);
+                  ctx.beginPath();
+                  ctx.moveTo(-side / 2 + chip, -side / 2);
+                  ctx.lineTo(side / 2, -side / 2);
+                  ctx.lineTo(side / 2, side / 2 - chip);
+                  ctx.lineTo(-side / 2, side / 2);
+                  ctx.closePath(); ctx.fill();
+
+                  if (glow > 0.02) {
+                      ctx.fillStyle = cGlow; ctx.globalAlpha = glow * 0.55;
+                      ctx.fill();
+                  }
+                  ctx.globalAlpha = 1;
+
+                  // An angular mark assembled from a stave plus two or three branches —
+                  // generated from the tile's own hash, not drawn from any real alphabet.
+                  const k = (i * 31 + st.seed) % 997;
+                  ctx.strokeStyle = cRune;
+                  ctx.lineWidth = Math.max(1, side * 0.1);
+                  const r = side * 0.3;
+                  ctx.beginPath();
+                  ctx.moveTo(0, -r); ctx.lineTo(0, r);
+                  const arms = 2 + Math.floor(fhash(k, 2) * 2);
+                  for (let a = 0; a < arms; a++) {
+                      const hy = (fhash(k, a * 3 + 5) - 0.5) * 1.7 * r;
+                      const dir = fhash(k, a * 3 + 6) > 0.5 ? 1 : -1;
+                      const dy = (fhash(k, a * 3 + 7) - 0.5) * 1.5;
+                      ctx.moveTo(0, hy);
+                      ctx.lineTo(dir * r * 0.85, hy + dy * r * 0.75);
+                  }
+                  if (fhash(k, 21) > 0.72) { ctx.moveTo(-r * 0.7, -r * 0.9); ctx.lineTo(r * 0.7, r * 0.9); }
+                  ctx.stroke();
+                  ctx.restore();
+              }
+              ctx.lineCap = 'butt';
+              element = canvas;
+          } else if (def.uuid === 'vine-growth-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cStem = resolvedGenerativeColors['stem'] || '#234a30';
+              const cLeaf = resolvedGenerativeColors['leaf'] || '#3c7a52';
+              const cBud = resolvedGenerativeColors['bud'] || '#d9557a';
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const grow = Math.max(0, Math.min(3, ms.growth_speed ?? 1));
+              const leafSize = Math.max(0.3, Math.min(2.5, ms.leaf_size ?? 1));
+              const density = Math.max(0.2, Math.min(3, ms.density ?? 1.2));
+              const curl = Math.max(0, Math.min(1, ms.curl ?? 0.5));
+              const reach = Math.max(0, Math.min(1, ms.reach ?? 0.35));
+
+              const st = (frameStateRef.current[layer.id + ':vine'] ||= { acts: {}, grown: 0.35, seed: 3, bloomAt: -99 });
+              if (actionFired(st.acts, 'bloom', Number(ms.bloom ?? 0))) st.bloomAt = nowSec;
+              if (actionFired(st.acts, 'prune', Number(ms.prune ?? 0))) { st.grown = 0; st.seed = (st.seed + 7) % 499; }
+              st.grown = Math.min(1, st.grown + dt * grow * 0.12);
+              const bloom = nowSec - st.bloomAt < 1.6 ? Math.sin(Math.PI * (nowSec - st.bloomAt) / 1.6) : 0;
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              const N = Math.max(40, Math.round(160 * density));
+              const sway = (t: number) => Math.sin(t * 26 + nowSec * 0.8) * fb.band * 0.16 * curl;
+
+              // the stem: the band's own centre line, breathing in and out a little
+              ctx.strokeStyle = cStem;
+              ctx.lineWidth = Math.max(1.2, fb.band * 0.055);
+              ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+              ctx.beginPath();
+              for (let i = 0; i <= N; i++) {
+                  const t = i / N;
+                  const p = fb.at(t);
+                  const o = sway(t);
+                  i ? ctx.lineTo(p.x + p.nx * o, p.y + p.ny * o) : ctx.moveTo(p.x + p.nx * o, p.y + p.ny * o);
+              }
+              ctx.closePath(); ctx.stroke();
+
+              // leaves alternate sides; the ones past the growth front have not opened yet
+              const nLeaf = Math.max(8, Math.round(52 * density));
+              for (let i = 0; i < nLeaf; i++) {
+                  const t = i / nLeaf;
+                  const age = Math.max(0, Math.min(1, (st.grown - fhash(i, st.seed) * 0.5) * 2.2));
+                  if (age <= 0.02) continue;
+                  const p = fb.at(t);
+                  const o = sway(t);
+                  const side = i % 2 === 0 ? 1 : -1;
+                  const bx = p.x + p.nx * o, by = p.y + p.ny * o;
+                  // inward leaves lean over the hole, outward ones hug the edge
+                  const lean = side > 0 ? (0.45 + reach * 1.5) : -0.55;
+                  const L = fb.band * 0.42 * leafSize * age * (0.7 + 0.6 * fhash(i, 5));
+                  const ang = Math.atan2(p.ny * lean, p.nx * lean) + (fhash(i, 9) - 0.5) * 0.9 * curl
+                            + Math.sin(nowSec * 0.7 + i) * 0.12 * curl;
+
+                  ctx.save();
+                  ctx.translate(bx, by);
+                  ctx.rotate(ang);
+                  ctx.fillStyle = cLeaf;
+                  ctx.globalAlpha = 0.92;
+                  ctx.beginPath();
+                  ctx.moveTo(0, 0);
+                  ctx.quadraticCurveTo(L * 0.5, -L * 0.34, L, 0);
+                  ctx.quadraticCurveTo(L * 0.5, L * 0.34, 0, 0);
+                  ctx.fill();
+                  ctx.strokeStyle = cStem; ctx.globalAlpha = 0.5;
+                  ctx.lineWidth = Math.max(0.6, L * 0.05);
+                  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(L * 0.92, 0); ctx.stroke();
+                  ctx.globalAlpha = 1;
+                  ctx.restore();
+
+                  if (fhash(i, 17) < 0.22 + bloom * 0.5) {
+                      const r = L * 0.19 * (0.6 + bloom * 0.9);
+                      ctx.fillStyle = cBud;
+                      ctx.beginPath();
+                      ctx.arc(bx + Math.cos(ang) * L * 1.04, by + Math.sin(ang) * L * 1.04, r, 0, 6.283);
+                      ctx.fill();
+                  }
+              }
+              ctx.lineCap = 'butt';
+              element = canvas;
+          } else if (def.uuid === 'flower-wreath-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cStem = resolvedGenerativeColors['stem'] || '#3c7a52';
+              const cPetal = resolvedGenerativeColors['petal'] || '#d9557a';
+              const cHeart = resolvedGenerativeColors['heart'] || '#e08a2e';
+              const cLeaf = resolvedGenerativeColors['leaf'] || '#234a30';
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const nB = Math.max(6, Math.min(40, Math.round(ms.blooms ?? 16)));
+              const nP = Math.max(4, Math.min(12, Math.round(ms.petals ?? 6)));
+              const openSpeed = Math.max(0, Math.min(3, ms.open_speed ?? 0.8));
+              const sway = Math.max(0, Math.min(1, ms.sway ?? 0.4));
+              const scatter = Math.max(0, Math.min(1, ms.scatter ?? 0.25));
+
+              const st = (frameStateRef.current[layer.id + ':wreath'] ||= { acts: {}, openAt: -99, petals: [] });
+              if (actionFired(st.acts, 'open', Number(ms.open_all ?? 0))) st.openAt = nowSec;
+              if (actionFired(st.acts, 'shed', Number(ms.shed ?? 0))) {
+                  for (let i = 0; i < nB; i++) {
+                      const p = fb.at(i / nB);
+                      for (let k = 0; k < 3; k++) st.petals.push({
+                          x: p.x + p.nx * fb.band * 0.2, y: p.y + p.ny * fb.band * 0.2,
+                          vx: p.nx * (40 + Math.random() * 90) + (Math.random() - 0.5) * 60,
+                          vy: p.ny * (40 + Math.random() * 90) + (Math.random() - 0.5) * 60,
+                          r: Math.random() * 6.283, spin: (Math.random() - 0.5) * 3, born: nowSec,
+                      });
+                  }
+              }
+              const openBurst = nowSec - st.openAt < 2 ? Math.sin(Math.PI * (nowSec - st.openAt) / 2) : 0;
+
+              // shed petals drift over the hole and fade
+              for (const pt of st.petals) {
+                  pt.vy += 120 * sc * dt; pt.vx *= 1 - 0.6 * dt; pt.vy *= 1 - 0.3 * dt;
+                  pt.x += pt.vx * dt; pt.y += pt.vy * dt; pt.r += pt.spin * dt;
+              }
+              st.petals = st.petals.filter((pt: any) => nowSec - pt.born < 4.5 && pt.y < targetH + 60);
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              // the stem ring the blooms sit on
+              ctx.strokeStyle = cStem; ctx.globalAlpha = 0.8;
+              ctx.lineWidth = Math.max(1, fb.band * 0.05);
+              ctx.beginPath();
+              for (let i = 0; i <= 180; i++) { const p = fb.at(i / 180); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); }
+              ctx.closePath(); ctx.stroke();
+              ctx.globalAlpha = 1;
+
+              const R = fb.band * 0.34;
+              for (let i = 0; i < nB; i++) {
+                  const t = i / nB;
+                  const p = fb.at(t);
+                  const wob = Math.sin(nowSec * (0.6 + fhash(i, 2) * 0.8) + i) * sway * fb.band * 0.12;
+                  const x = p.x + p.nx * wob, y = p.y + p.ny * wob;
+                  // every bloom breathes on its own clock; open_all pushes them all wide
+                  const own = 0.5 + 0.5 * Math.sin(nowSec * openSpeed * (0.5 + fhash(i, 4)) + fhash(i, 6) * 6.283);
+                  const open = Math.max(own, openBurst);
+                  const size = R * (0.55 + 0.65 * fhash(i, 8)) * (0.55 + open * 0.75);
+
+                  // leaves under the bloom
+                  ctx.fillStyle = cLeaf; ctx.globalAlpha = 0.85;
+                  for (const sgn of [-1, 1]) {
+                      ctx.save();
+                      ctx.translate(x, y);
+                      ctx.rotate(Math.atan2(p.ny, p.nx) + sgn * 1.25);
+                      ctx.beginPath();
+                      ctx.moveTo(0, 0);
+                      ctx.quadraticCurveTo(size * 0.7, -size * 0.42, size * 1.45, 0);
+                      ctx.quadraticCurveTo(size * 0.7, size * 0.42, 0, 0);
+                      ctx.fill();
+                      ctx.restore();
+                  }
+                  ctx.globalAlpha = 1;
+
+                  // petals
+                  ctx.fillStyle = cPetal;
+                  for (let k = 0; k < nP; k++) {
+                      const a = (k / nP) * 6.283 + fhash(i, 3) * 6.283 + nowSec * 0.1 * sway;
+                      ctx.save();
+                      ctx.translate(x, y);
+                      ctx.rotate(a);
+                      ctx.beginPath();
+                      ctx.ellipse(size * 0.62, 0, size * 0.6, size * 0.3, 0, 0, 6.283);
+                      ctx.fill();
+                      ctx.restore();
+                  }
+                  ctx.fillStyle = cHeart;
+                  ctx.beginPath(); ctx.arc(x, y, size * 0.3, 0, 6.283); ctx.fill();
+              }
+
+              // the scattering petals, plus whatever `shed` threw
+              ctx.fillStyle = cPetal;
+              for (let i = 0; i < Math.round(scatter * 60); i++) {
+                  const t = (fhash(i, 31) + nowSec * 0.03 * (0.4 + fhash(i, 33))) % 1;
+                  const p = fb.at(t);
+                  const d = fb.band * (0.6 + 2.4 * fhash(i, 35)) * scatter;
+                  const bob = Math.sin(nowSec * (0.8 + fhash(i, 37)) + i) * fb.band * 0.2;
+                  ctx.globalAlpha = 0.75;
+                  ctx.save();
+                  ctx.translate(p.x + p.nx * d, p.y + p.ny * d + bob);
+                  ctx.rotate(nowSec * (0.4 + fhash(i, 39)) + i);
+                  ctx.beginPath(); ctx.ellipse(0, 0, R * 0.34, R * 0.17, 0, 0, 6.283); ctx.fill();
+                  ctx.restore();
+              }
+              for (const pt of st.petals) {
+                  ctx.globalAlpha = Math.max(0, 1 - (nowSec - pt.born) / 4.5) * 0.9;
+                  ctx.save(); ctx.translate(pt.x, pt.y); ctx.rotate(pt.r);
+                  ctx.beginPath(); ctx.ellipse(0, 0, R * 0.4, R * 0.2, 0, 0, 6.283); ctx.fill();
+                  ctx.restore();
+              }
+              ctx.globalAlpha = 1;
+              element = canvas;
+          } else if (def.uuid === 'memphis-shards-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cA = resolvedGenerativeColors['shape_a'] || '#e63946';
+              const cB = resolvedGenerativeColors['shape_b'] || '#1d3557';
+              const cC = resolvedGenerativeColors['shape_c'] || '#457b9d';
+              const cSpeck = resolvedGenerativeColors['speckle'] || '#f1faee';
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const nS = Math.max(8, Math.min(50, Math.round(ms.shapes ?? 22)));
+              const spin = Math.max(-3, Math.min(3, ms.spin ?? 0.4));
+              const sizeVar = Math.max(0, Math.min(1, ms.size_var ?? 0.55));
+              const mix = Math.max(0, Math.min(1, ms.pattern_mix ?? 0.5));
+              const drift = Math.max(0, Math.min(1, ms.drift ?? 0.3));
+
+              const st = (frameStateRef.current[layer.id + ':memphis'] ||= { acts: {}, seed: 5, burstAt: -99, phase: 0 });
+              if (actionFired(st.acts, 'shuffle', Number(ms.reshuffle ?? 0))) st.seed = (st.seed + 13) % 887;
+              if (actionFired(st.acts, 'burst', Number(ms.burst ?? 0))) st.burstAt = nowSec;
+              st.phase += dt * drift * 0.05;
+              const burst = nowSec - st.burstAt < 1.2 ? 1 - (nowSec - st.burstAt) / 1.2 : 0;
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              const cols = [cA, cB, cC];
+              for (let i = 0; i < nS; i++) {
+                  const k = (i * 29 + st.seed) % 887;
+                  const t = i / nS + st.phase * (0.5 + fhash(k, 1));
+                  const p = fb.at(t);
+                  const off = (fhash(k, 2) - 0.35) * fb.band * (0.9 + burst * 2.6);
+                  const x = p.x + p.nx * off, y = p.y + p.ny * off;
+                  const S = fb.band * (0.28 + 0.5 * fhash(k, 3) * (0.4 + sizeVar)) ;
+                  const rot = nowSec * spin * (0.4 + fhash(k, 4)) + fhash(k, 5) * 6.283;
+                  const kind = Math.floor(fhash(k, 6) * 5);
+                  const col = cols[Math.floor(fhash(k, 7) * 3)];
+
+                  ctx.save();
+                  ctx.translate(x, y);
+                  ctx.rotate(rot);
+                  ctx.fillStyle = col;
+                  if (kind === 0) {
+                      ctx.beginPath(); ctx.arc(0, 0, S * 0.5, 0, 6.283); ctx.fill();
+                  } else if (kind === 1) {
+                      ctx.beginPath();
+                      ctx.moveTo(0, -S * 0.55); ctx.lineTo(S * 0.5, S * 0.4); ctx.lineTo(-S * 0.5, S * 0.4);
+                      ctx.closePath(); ctx.fill();
+                  } else if (kind === 2) {
+                      ctx.fillRect(-S * 0.45, -S * 0.45, S * 0.9, S * 0.9);
+                  } else if (kind === 3) {
+                      // stripe block
+                      const bars = 3 + Math.floor(fhash(k, 8) * 4);
+                      for (let b = 0; b < bars; b++) {
+                          if (b % 2) continue;
+                          ctx.fillRect(-S * 0.5, -S * 0.5 + (b / bars) * S, S, S / bars);
+                      }
+                  } else {
+                      // quarter arc
+                      ctx.beginPath();
+                      ctx.moveTo(-S * 0.5, S * 0.5);
+                      ctx.arc(-S * 0.5, S * 0.5, S, -Math.PI / 2, 0);
+                      ctx.closePath(); ctx.fill();
+                  }
+                  // speckle overlay on some shapes
+                  if (fhash(k, 9) < mix) {
+                      ctx.fillStyle = cSpeck;
+                      for (let d = 0; d < 12; d++) {
+                          ctx.beginPath();
+                          ctx.arc((fhash(k, d + 40) - 0.5) * S, (fhash(k, d + 60) - 0.5) * S, S * 0.045, 0, 6.283);
+                          ctx.fill();
+                      }
+                  }
+                  ctx.restore();
+              }
+              element = canvas;
+          } else if (def.uuid === 'bouncing-balls-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.04, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cA = resolvedGenerativeColors['ball_a'] || '#ff007f';
+              const cB = resolvedGenerativeColors['ball_b'] || '#00f0ff';
+              const cTrail = resolvedGenerativeColors['trail'] || '#7000ff';
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const nBall = Math.max(4, Math.min(60, Math.round(ms.balls ?? 22)));
+              const speed = Math.max(0.1, Math.min(3, ms.speed ?? 1));
+              const grav = Math.max(-1, Math.min(1, ms.gravity ?? 0));
+              const bounce = Math.max(0.5, Math.min(1, ms.bounciness ?? 0.94));
+              const bSize = Math.max(0.3, Math.min(3, ms.ball_size ?? 1));
+
+              const st = (frameStateRef.current[layer.id + ':balls'] ||= { acts: {}, b: [], gdir: 1 });
+              if (actionFired(st.acts, 'flip', Number(ms.flip_gravity ?? 0))) st.gdir *= -1;
+              const scatterNow = actionFired(st.acts, 'scatter', Number(ms.scatter ?? 0));
+
+              const R = fb.band * 0.17 * bSize;
+              const spawn = () => {
+                  const t = Math.random();
+                  const p = fb.at(t);
+                  const a = Math.random() * 6.283;
+                  return { x: p.x, y: p.y, vx: Math.cos(a) * 260 * sc, vy: Math.sin(a) * 260 * sc,
+                           px: p.x, py: p.y, c: Math.random() < 0.5 };
+              };
+              while (st.b.length < nBall) st.b.push(spawn());
+              if (st.b.length > nBall) st.b.length = nBall;
+              if (scatterNow) for (const o of st.b) {
+                  const a = Math.random() * 6.283;
+                  o.vx = Math.cos(a) * 720 * sc; o.vy = Math.sin(a) * 720 * sc;
+              }
+
+              const hx0 = fb.hole.x + R, hy0 = fb.hole.y + R;
+              const hx1 = fb.hole.x + fb.hole.w - R, hy1 = fb.hole.y + fb.hole.h - R;
+              for (const o of st.b) {
+                  o.px = o.x; o.py = o.y;
+                  o.vy += grav * st.gdir * 900 * sc * dt;
+                  o.x += o.vx * speed * dt; o.y += o.vy * speed * dt;
+                  // outer walls
+                  if (o.x < R) { o.x = R; o.vx = Math.abs(o.vx) * bounce; }
+                  if (o.x > targetW - R) { o.x = targetW - R; o.vx = -Math.abs(o.vx) * bounce; }
+                  if (o.y < R) { o.y = R; o.vy = Math.abs(o.vy) * bounce; }
+                  if (o.y > targetH - R) { o.y = targetH - R; o.vy = -Math.abs(o.vy) * bounce; }
+                  // the hole is a wall too: a ball that wanders in is ejected the short way
+                  if (hx1 > hx0 && hy1 > hy0 && o.x > hx0 && o.x < hx1 && o.y > hy0 && o.y < hy1) {
+                      const dl = o.x - hx0, dr = hx1 - o.x, du = o.y - hy0, dd = hy1 - o.y;
+                      const m = Math.min(dl, dr, du, dd);
+                      if (m === dl) { o.x = hx0; o.vx = -Math.abs(o.vx) * bounce; }
+                      else if (m === dr) { o.x = hx1; o.vx = Math.abs(o.vx) * bounce; }
+                      else if (m === du) { o.y = hy0; o.vy = -Math.abs(o.vy) * bounce; }
+                      else { o.y = hy1; o.vy = Math.abs(o.vy) * bounce; }
+                  }
+              }
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              ctx.strokeStyle = cTrail; ctx.globalAlpha = 0.55; ctx.lineCap = 'round';
+              ctx.lineWidth = R * 0.8;
+              ctx.beginPath();
+              for (const o of st.b) { ctx.moveTo(o.px, o.py); ctx.lineTo(o.x, o.y); }
+              ctx.stroke();
+              ctx.globalAlpha = 1;
+              for (const o of st.b) {
+                  ctx.fillStyle = o.c ? cA : cB;
+                  ctx.beginPath(); ctx.arc(o.x, o.y, R, 0, 6.283); ctx.fill();
+              }
+              ctx.lineCap = 'butt';
+              element = canvas;
+          } else if (def.uuid === 'celtic-serpents-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cBody = resolvedGenerativeColors['body'] || '#0a0a0a';
+              const cScale = resolvedGenerativeColors['scales'] || '#e0560f';
+              const cEye = resolvedGenerativeColors['eye'] || '#ffae5c';
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const nS = Math.max(1, Math.min(6, Math.round(ms.serpents ?? 3)));
+              const coil = Math.max(0, Math.min(1, ms.coil ?? 0.5));
+              const slither = Math.max(-3, Math.min(3, ms.slither ?? 0.6));
+              const bw = Math.max(0.3, Math.min(2.5, ms.body_width ?? 1));
+              const scaleAmt = Math.max(0, Math.min(1, ms.scales ?? 0.6));
+
+              const st = (frameStateRef.current[layer.id + ':serp'] ||= { acts: {}, phase: 0, strikeAt: -99, coilBoost: 0 });
+              if (actionFired(st.acts, 'strike', Number(ms.strike ?? 0))) st.strikeAt = nowSec;
+              if (actionFired(st.acts, 'recoil', Number(ms.recoil ?? 0))) st.coilBoost = 1;
+              st.coilBoost = Math.max(0, st.coilBoost - dt * 0.55);
+              st.phase += dt * slither * 0.05;
+              const strike = nowSec - st.strikeAt < 1.1 ? Math.sin(Math.PI * (nowSec - st.strikeAt) / 1.1) : 0;
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              const W = fb.band * 0.30 * bw;
+              const span = 0.82 / nS;            // each serpent owns a stretch of the band
+              const SEG = 90;
+              ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+              for (let s2 = 0; s2 < nS; s2++) {
+                  const base = s2 / nS + st.phase;
+                  const pts: { x: number; y: number; w: number }[] = [];
+                  for (let i = 0; i <= SEG; i++) {
+                      const u = i / SEG;
+                      const t = base + u * span;
+                      const p = fb.at(t);
+                      // the coil: a travelling wave across the band, tightening with `coil`
+                      const amp = fb.band * (0.20 + 0.42 * (coil + st.coilBoost * 0.5));
+                      const wig = Math.sin(u * (7 + coil * 9) * Math.PI + nowSec * 2.1 * (slither >= 0 ? 1 : -1) + s2) * amp;
+                      // taper from a thick middle to a fine tail
+                      const taper = Math.sin(Math.PI * Math.min(1, u * 1.06)) * 0.75 + 0.25;
+                      pts.push({ x: p.x + p.nx * wig, y: p.y + p.ny * wig, w: W * taper });
+                  }
+                  // head darts over the hole when it strikes
+                  if (strike > 0) {
+                      const head = pts[SEG];
+                      const p = fb.at(base + span);
+                      head.x += p.nx * strike * fb.band * 2.6;
+                      head.y += p.ny * strike * fb.band * 2.6;
+                  }
+
+                  ctx.strokeStyle = cBody;
+                  for (let i = 1; i <= SEG; i++) {
+                      ctx.lineWidth = pts[i].w;
+                      ctx.beginPath(); ctx.moveTo(pts[i - 1].x, pts[i - 1].y); ctx.lineTo(pts[i].x, pts[i].y); ctx.stroke();
+                  }
+                  // scale chevrons ride the back
+                  if (scaleAmt > 0.03) {
+                      ctx.strokeStyle = cScale; ctx.globalAlpha = scaleAmt;
+                      ctx.lineWidth = Math.max(0.8, W * 0.12);
+                      ctx.beginPath();
+                      for (let i = 4; i < SEG; i += 4) {
+                          const a = pts[i - 1], b = pts[i];
+                          const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1;
+                          const nx2 = -dy / L, ny2 = dx / L, r = b.w * 0.42;
+                          ctx.moveTo(b.x + nx2 * r, b.y + ny2 * r);
+                          ctx.lineTo(b.x - dx / L * r * 1.3, b.y - dy / L * r * 1.3);
+                          ctx.lineTo(b.x - nx2 * r, b.y - ny2 * r);
+                      }
+                      ctx.stroke();
+                      ctx.globalAlpha = 1;
+                  }
+                  // head
+                  const h = pts[SEG], hPrev = pts[SEG - 3];
+                  const ha = Math.atan2(h.y - hPrev.y, h.x - hPrev.x);
+                  ctx.save();
+                  ctx.translate(h.x, h.y); ctx.rotate(ha);
+                  ctx.fillStyle = cBody;
+                  ctx.beginPath(); ctx.ellipse(W * 0.25, 0, W * 0.85, W * 0.6, 0, 0, 6.283); ctx.fill();
+                  ctx.fillStyle = cEye;
+                  ctx.beginPath(); ctx.arc(W * 0.5, -W * 0.22, W * 0.15, 0, 6.283); ctx.fill();
+                  ctx.beginPath(); ctx.arc(W * 0.5, W * 0.22, W * 0.15, 0, 6.283); ctx.fill();
+                  ctx.strokeStyle = cScale; ctx.lineWidth = Math.max(1, W * 0.1);
+                  ctx.beginPath();
+                  ctx.moveTo(W * 1.0, 0); ctx.lineTo(W * 1.7, -W * 0.25);
+                  ctx.moveTo(W * 1.0, 0); ctx.lineTo(W * 1.7, W * 0.25);
+                  ctx.stroke();
+                  ctx.restore();
+              }
+              ctx.lineCap = 'butt';
+              element = canvas;
+          } else if (def.uuid === 'knotwork-band-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cStrand = resolvedGenerativeColors['strand'] || '#d4af37';
+              const cShadow = resolvedGenerativeColors['shadow'] || '#5b4511';
+              const cAcc = resolvedGenerativeColors['accent'] || '#f3e5ab';
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const nK = Math.max(6, Math.min(40, Math.round(ms.knots ?? 18)));
+              const weave = Math.max(0, Math.min(1, ms.weave ?? 0.55));
+              const travel = Math.max(-3, Math.min(3, ms.travel ?? 0.3));
+              const sw = Math.max(0.3, Math.min(3, ms.strand_weight ?? 1));
+              const shadow = Math.max(0, Math.min(1, ms.shadow ?? 0.5));
+
+              const st = (frameStateRef.current[layer.id + ':knot'] ||= { acts: {}, phase: 0, twist: 0, shimAt: -99 });
+              if (actionFired(st.acts, 'retie', Number(ms.retie ?? 0))) st.twist += Math.PI * 0.5;
+              if (actionFired(st.acts, 'shim', Number(ms.shimmer ?? 0))) st.shimAt = nowSec;
+              st.phase += dt * travel * 0.04;
+              const shim = nowSec - st.shimAt < 1.4 ? (nowSec - st.shimAt) / 1.4 : -1;
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              // Two strands running the band in counter-phase. Where they cross, the one
+              // drawn second passes over — redrawing short pieces of the first at every
+              // other crossing is what reads as an interlace.
+              const SEG = 520;
+              const amp = fb.band * (0.16 + weave * 0.24);
+              const freq = nK * 2 * Math.PI;
+              const strandAt = (u: number, which: number) => {
+                  const t = u + st.phase;
+                  const p = fb.at(t);
+                  const o = Math.sin(u * freq + st.twist + (which ? Math.PI : 0)) * amp;
+                  return { x: p.x + p.nx * o, y: p.y + p.ny * o };
+              };
+              const lw = Math.max(1.5, fb.band * 0.10 * sw);
+
+              const drawStrand = (which: number, from: number, to: number, style: string, width: number) => {
+                  ctx.strokeStyle = style; ctx.lineWidth = width;
+                  ctx.beginPath();
+                  const i0 = Math.max(0, Math.floor(from * SEG)), i1 = Math.min(SEG, Math.ceil(to * SEG));
+                  for (let i = i0; i <= i1; i++) {
+                      const q = strandAt(i / SEG, which);
+                      i === i0 ? ctx.moveTo(q.x, q.y) : ctx.lineTo(q.x, q.y);
+                  }
+                  ctx.stroke();
+              };
+
+              ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+              if (shadow > 0.03) {
+                  ctx.globalAlpha = shadow * 0.8;
+                  ctx.save(); ctx.translate(lw * 0.35, lw * 0.35);
+                  drawStrand(0, 0, 1, cShadow, lw); drawStrand(1, 0, 1, cShadow, lw);
+                  ctx.restore();
+                  ctx.globalAlpha = 1;
+              }
+              drawStrand(0, 0, 1, cStrand, lw);
+              drawStrand(1, 0, 1, cStrand, lw);
+              // every other crossing, strand 0 comes back over the top
+              for (let k = 0; k < nK * 2; k += 2) {
+                  const c0 = (k + 0.5) / (nK * 2);
+                  drawStrand(0, c0 - 0.006, c0 + 0.006, cStrand, lw);
+              }
+              // a bead of light travelling the weave
+              if (shim >= 0) {
+                  const q = strandAt(shim, 0);
+                  ctx.fillStyle = cAcc; ctx.globalAlpha = 1 - shim;
+                  ctx.beginPath(); ctx.arc(q.x, q.y, lw * 0.9, 0, 6.283); ctx.fill();
+                  ctx.globalAlpha = 1;
+              }
+              ctx.lineCap = 'butt';
+              element = canvas;
+          } else if (def.uuid === 'glyph-march-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cA = resolvedGenerativeColors['glyph_a'] || '#171717';
+              const cB2 = resolvedGenerativeColors['glyph_b'] || '#8a8578';
+              const cGround = resolvedGenerativeColors['ground'] || '#d8d2c0';
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const nG = Math.max(10, Math.min(60, Math.round(ms.glyphs ?? 28)));
+              const march = Math.max(-3, Math.min(3, ms.march_speed ?? 0.6));
+              const rows = Math.max(1, Math.min(3, Math.round(ms.rows ?? 2)));
+              const mix = Math.max(0, Math.min(1, ms.symbol_mix ?? 0.5));
+              const invert = Math.max(0, Math.min(1, ms.invert_rate ?? 0.2));
+
+              const st = (frameStateRef.current[layer.id + ':glyph'] ||= { acts: {}, phase: 0, seed: 2, cascadeAt: -99 });
+              if (actionFired(st.acts, 'shuffle', Number(ms.reshuffle ?? 0))) st.seed = (st.seed + 11) % 773;
+              if (actionFired(st.acts, 'casc', Number(ms.cascade ?? 0))) st.cascadeAt = nowSec;
+              st.phase += dt * march * 0.035;
+              const casc = nowSec - st.cascadeAt < 1.6 ? (nowSec - st.cascadeAt) / 1.6 : -1;
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              // a lighter rail behind the middle row
+              ctx.strokeStyle = cGround; ctx.globalAlpha = 0.5;
+              ctx.lineWidth = fb.band * 0.86 / rows;
+              for (let r = 0; r < rows; r++) {
+                  const off = rows === 1 ? 0 : (r / (rows - 1) - 0.5) * fb.band * 0.62;
+                  if (r % 2) continue;
+                  ctx.beginPath();
+                  for (let i = 0; i <= 200; i++) {
+                      const p = fb.at(i / 200);
+                      const x = p.x + p.nx * off, y = p.y + p.ny * off;
+                      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+                  }
+                  ctx.closePath(); ctx.stroke();
+              }
+              ctx.globalAlpha = 1;
+
+              const S = (fb.band * 0.78) / rows;
+              for (let r = 0; r < rows; r++) {
+                  const off = rows === 1 ? 0 : (r / (rows - 1) - 0.5) * fb.band * 0.62;
+                  const dir = r % 2 ? -1 : 1;
+                  for (let i = 0; i < nG; i++) {
+                      const t = i / nG + st.phase * dir;
+                      const p = fb.at(t);
+                      const x = p.x + p.nx * off, y = p.y + p.ny * off;
+                      const k = (i * 17 + r * 101 + st.seed) % 773;
+                      const lit = fhash(k, 1) < invert || (casc >= 0 && Math.abs(((i / nG) % 1) - casc) < 0.06);
+                      ctx.fillStyle = lit ? cB2 : cA;
+                      ctx.strokeStyle = lit ? cB2 : cA;
+                      ctx.lineWidth = Math.max(1, S * 0.13);
+                      ctx.lineCap = 'square';
+
+                      // a mark built from a few cells of a 3x3 lattice
+                      const kind = Math.floor(fhash(k, 2) * 6);
+                      const h = S * 0.34;
+                      ctx.save();
+                      ctx.translate(x, y);
+                      if (fhash(k, 3) < mix) ctx.rotate(Math.PI / 4);
+                      ctx.beginPath();
+                      if (kind === 0) { ctx.moveTo(-h, -h); ctx.lineTo(h, h); ctx.moveTo(h, -h); ctx.lineTo(-h, h); }
+                      else if (kind === 1) { ctx.moveTo(0, -h); ctx.lineTo(0, h); ctx.moveTo(-h, 0); ctx.lineTo(h, 0); }
+                      else if (kind === 2) { ctx.moveTo(-h, h); ctx.lineTo(0, -h); ctx.lineTo(h, h); }
+                      else if (kind === 3) { ctx.arc(0, 0, h * 0.8, 0, 6.283); }
+                      else if (kind === 4) { ctx.moveTo(-h, -h); ctx.lineTo(h, -h); ctx.lineTo(h, h); ctx.lineTo(-h, h); ctx.closePath(); }
+                      else { ctx.moveTo(-h, 0); ctx.lineTo(0, -h); ctx.lineTo(h, 0); ctx.lineTo(0, h); ctx.closePath(); }
+                      ctx.stroke();
+                      ctx.restore();
+                  }
+              }
+              ctx.lineCap = 'butt';
+              element = canvas;
+          } else if (def.uuid === 'ticker-border-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cTick = resolvedGenerativeColors['ticks'] || '#ffffff';
+              const cMark = resolvedGenerativeColors['marks'] || '#888888';
+              const cAcc = resolvedGenerativeColors['accent'] || '#e5e5e5';
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const dens = Math.max(10, Math.min(90, Math.round(ms.density ?? 40)));
+              const speed = Math.max(-4, Math.min(4, ms.speed ?? 1));
+              const dashR = Math.max(0, Math.min(1, ms.dash_ratio ?? 0.5));
+              const rows = Math.max(1, Math.min(4, Math.round(ms.rows ?? 2)));
+              const wob = Math.max(0, Math.min(1, ms.wobble ?? 0.2));
+
+              const st = (frameStateRef.current[layer.id + ':ticker'] ||= { acts: {}, phase: 0, dir: 1, flashAt: -99 });
+              if (actionFired(st.acts, 'rev', Number(ms.reverse ?? 0))) st.dir *= -1;
+              if (actionFired(st.acts, 'flash', Number(ms.flash ?? 0))) st.flashAt = nowSec;
+              st.phase += dt * speed * st.dir * 0.03;
+              const flash = nowSec - st.flashAt < 0.4 ? 1 - (nowSec - st.flashAt) / 0.4 : 0;
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              ctx.lineCap = 'butt';
+              for (let r = 0; r < rows; r++) {
+                  const off = rows === 1 ? 0 : (r / (rows - 1) - 0.5) * fb.band * 0.66;
+                  const dir = r % 2 ? -1 : 1;
+                  const n = Math.round(dens * (1 + r * 0.25));
+                  for (let i = 0; i < n; i++) {
+                      const t = i / n + st.phase * dir * (0.6 + r * 0.3);
+                      const p = fb.at(t);
+                      const long = fhash(i + r * 91, 1) < dashR;
+                      const len = fb.band * (long ? 0.52 : 0.24);
+                      const jit = (fhash(i + r * 91, 2) - 0.5) * wob * fb.band * 0.2;
+                      const x = p.x + p.nx * (off + jit), y = p.y + p.ny * (off + jit);
+                      ctx.strokeStyle = flash > 0.02 && fhash(i + r * 91, 3) < flash ? cAcc : (long ? cTick : cMark);
+                      ctx.lineWidth = fb.band * 0.05;
+                      ctx.beginPath();
+                      ctx.moveTo(x - p.nx * len * 0.5, y - p.ny * len * 0.5);
+                      ctx.lineTo(x + p.nx * len * 0.5, y + p.ny * len * 0.5);
+                      ctx.stroke();
+                  }
+              }
+              element = canvas;
+          } else if (def.uuid === 'chain-links-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+              const sc = Math.min(targetW, targetH) / 720;
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cLink = resolvedGenerativeColors['link'] || '#d4af37';
+              const cHi = resolvedGenerativeColors['highlight'] || '#f3e5ab';
+              const cSh = resolvedGenerativeColors['shadow'] || '#5b4511';
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const nL = Math.max(8, Math.min(50, Math.round(ms.links ?? 24)));
+              const lSize = Math.max(0.4, Math.min(2, ms.link_size ?? 1));
+              const travel = Math.max(-3, Math.min(3, ms.travel ?? 0.4));
+              const swing = Math.max(0, Math.min(1, ms.swing ?? 0.4));
+              const gap = Math.max(0, Math.min(1, ms.gap ?? 0.3));
+
+              const st = (frameStateRef.current[layer.id + ':chain'] ||= { acts: {}, phase: 0, loose: [], tight: 0 });
+              if (actionFired(st.acts, 'tighten', Number(ms.tighten ?? 0))) st.tight = 1;
+              if (actionFired(st.acts, 'snap', Number(ms.snap ?? 0))) {
+                  const i = (Math.random() * nL) | 0;
+                  const p = fb.at(i / nL + st.phase);
+                  st.loose.push({ x: p.x, y: p.y, vx: p.nx * (140 + Math.random() * 160) * sc,
+                                  vy: p.ny * (140 + Math.random() * 160) * sc,
+                                  r: Math.random() * 6.283, spin: (Math.random() - 0.5) * 5, born: nowSec });
+              }
+              st.tight = Math.max(0, st.tight - dt * 0.5);
+              st.phase += dt * travel * 0.035;
+              for (const o of st.loose) {
+                  o.vy += 340 * sc * dt; o.x += o.vx * dt; o.y += o.vy * dt; o.r += o.spin * dt;
+              }
+              st.loose = st.loose.filter((o: any) => nowSec - o.born < 4 && o.y < targetH + 120);
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              const R = fb.band * 0.30 * lSize;
+              const lw = Math.max(1.5, R * 0.30);
+              const drawLink = (x: number, y: number, rot: number, flat: boolean) => {
+                  ctx.save();
+                  ctx.translate(x, y); ctx.rotate(rot);
+                  ctx.lineWidth = lw;
+                  ctx.strokeStyle = cSh;
+                  ctx.beginPath(); ctx.ellipse(lw * 0.25, lw * 0.25, R, flat ? R * 0.42 : R * 0.72, 0, 0, 6.283); ctx.stroke();
+                  ctx.strokeStyle = cLink;
+                  ctx.beginPath(); ctx.ellipse(0, 0, R, flat ? R * 0.42 : R * 0.72, 0, 0, 6.283); ctx.stroke();
+                  ctx.strokeStyle = cHi; ctx.lineWidth = lw * 0.38;
+                  ctx.beginPath(); ctx.ellipse(0, 0, R, flat ? R * 0.42 : R * 0.72, 0, -2.3, -0.9); ctx.stroke();
+                  ctx.restore();
+              };
+
+              // Alternating flat and edge-on links is what reads as a chain rather than
+              // a row of rings; the spacing closes up while `tighten` decays.
+              const spread = (1 - st.tight) * (0.55 + gap * 0.9) + 0.45;
+              for (let i = 0; i < nL; i++) {
+                  const t = i / nL * spread % 1 + st.phase;
+                  const p = fb.at(t);
+                  const rock = Math.sin(nowSec * 1.6 + i * 0.9) * swing * 0.5;
+                  drawLink(p.x, p.y, Math.atan2(p.ny, p.nx) + Math.PI / 2 + rock, i % 2 === 0);
+              }
+              for (const o of st.loose) {
+                  ctx.globalAlpha = Math.max(0, 1 - (nowSec - o.born) / 4);
+                  drawLink(o.x, o.y, o.r, false);
+                  ctx.globalAlpha = 1;
+              }
+              element = canvas;
+          } else if (def.uuid === 'circuit-border-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cTrace = resolvedGenerativeColors['trace'] || '#2ea043';
+              const cPad = resolvedGenerativeColors['pad'] || '#39d353';
+              const cPulse = resolvedGenerativeColors['pulse'] || '#00ff66';
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const dens = Math.max(4, Math.min(40, Math.round(ms.trace_density ?? 16)));
+              const pSpeed = Math.max(0, Math.min(4, ms.pulse_speed ?? 1.2));
+              const nPulse = Math.max(0, Math.min(40, Math.round(ms.pulses ?? 12)));
+              const padS = Math.max(0.3, Math.min(3, ms.pad_size ?? 1));
+              const branch = Math.max(0, Math.min(1, ms.branch ?? 0.4));
+
+              const st = (frameStateRef.current[layer.id + ':circuit'] ||= { acts: {}, seed: 4, t: 0, surgeAt: -99 });
+              if (actionFired(st.acts, 'reroute', Number(ms.reroute ?? 0))) st.seed = (st.seed + 19) % 691;
+              if (actionFired(st.acts, 'surge', Number(ms.surge ?? 0))) st.surgeAt = nowSec;
+              st.t += dt * pSpeed * 0.09;
+              const surge = nowSec - st.surgeAt < 1.2 ? 1 - (nowSec - st.surgeAt) / 1.2 : 0;
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              // three rails around the band, plus right-angle stubs that jog between
+              // them and branches that reach out over the hole
+              const rails = [-0.30, 0, 0.30];
+              ctx.lineCap = 'square'; ctx.lineJoin = 'miter';
+              ctx.strokeStyle = cTrace;
+              ctx.lineWidth = Math.max(1.2, fb.band * 0.045);
+              for (const rr of rails) {
+                  ctx.beginPath();
+                  for (let i = 0; i <= 240; i++) {
+                      const p = fb.at(i / 240);
+                      const x = p.x + p.nx * rr * fb.band, y = p.y + p.ny * rr * fb.band;
+                      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+                  }
+                  ctx.closePath(); ctx.stroke();
+              }
+              ctx.beginPath();
+              for (let i = 0; i < dens * 4; i++) {
+                  const k = (i * 23 + st.seed) % 691;
+                  const t = fhash(k, 1);
+                  const p = fb.at(t);
+                  const a = rails[Math.floor(fhash(k, 2) * 3)];
+                  const b = rails[Math.floor(fhash(k, 3) * 3)];
+                  if (a === b) continue;
+                  const step = fb.per * 0.004 * (0.5 + fhash(k, 4));
+                  const p2 = fb.at(t + step / fb.per);
+                  ctx.moveTo(p.x + p.nx * a * fb.band, p.y + p.ny * a * fb.band);
+                  ctx.lineTo(p2.x + p2.nx * a * fb.band, p2.y + p2.ny * a * fb.band);
+                  ctx.lineTo(p2.x + p2.nx * b * fb.band, p2.y + p2.ny * b * fb.band);
+                  // some stubs keep going out over the hole
+                  if (fhash(k, 5) < branch) {
+                      const reach = fb.band * (0.6 + 1.8 * fhash(k, 6)) * branch;
+                      ctx.lineTo(p2.x + p2.nx * (b * fb.band + reach), p2.y + p2.ny * (b * fb.band + reach));
+                  }
+              }
+              ctx.stroke();
+
+              // pads
+              ctx.fillStyle = cPad;
+              for (let i = 0; i < dens * 2; i++) {
+                  const k = (i * 37 + st.seed) % 691;
+                  const p = fb.at(fhash(k, 7));
+                  const a = rails[Math.floor(fhash(k, 8) * 3)];
+                  const r = fb.band * 0.055 * padS * (0.7 + fhash(k, 9));
+                  ctx.beginPath();
+                  ctx.arc(p.x + p.nx * a * fb.band, p.y + p.ny * a * fb.band, r, 0, 6.283);
+                  ctx.fill();
+              }
+
+              // pulses riding the rails
+              ctx.fillStyle = cPulse;
+              for (let i = 0; i < nPulse; i++) {
+                  const k = (i * 53 + st.seed) % 691;
+                  const rail = rails[Math.floor(fhash(k, 10) * 3)];
+                  const dir = fhash(k, 11) > 0.5 ? 1 : -1;
+                  const t = (fhash(k, 12) + st.t * dir * (0.6 + fhash(k, 13))) % 1;
+                  const p = fb.at(t);
+                  const r = fb.band * 0.05 * (1 + surge * 1.6);
+                  ctx.globalAlpha = 0.75 + surge * 0.25;
+                  ctx.beginPath();
+                  ctx.arc(p.x + p.nx * rail * fb.band, p.y + p.ny * rail * fb.band, r, 0, 6.283);
+                  ctx.fill();
+              }
+              ctx.globalAlpha = 1;
+              ctx.lineCap = 'butt';
+              element = canvas;
+          } else if (def.uuid === 'wave-ribbon-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cA = resolvedGenerativeColors['ribbon_a'] || '#7aa2f7';
+              const cB2 = resolvedGenerativeColors['ribbon_b'] || '#bb9af7';
+              const cEdge = resolvedGenerativeColors['edge'] || '#f7768e';
+              const rgbA = hexToRgb(cA), rgbB = hexToRgb(cB2);
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const nW = Math.max(1, Math.min(14, Math.round(ms.waves ?? 5)));
+              const amp = Math.max(0, Math.min(1, ms.amplitude ?? 0.5));
+              const flow = Math.max(-3, Math.min(3, ms.flow ?? 0.7));
+              const rw = Math.max(0.2, Math.min(2, ms.ribbon_width ?? 1));
+              const layers = Math.max(1, Math.min(5, Math.round(ms.layers ?? 3)));
+
+              const st = (frameStateRef.current[layer.id + ':wave'] ||= { acts: {}, phase: 0, dir: 1, swellAt: -99 });
+              if (actionFired(st.acts, 'rev', Number(ms.reverse ?? 0))) st.dir *= -1;
+              if (actionFired(st.acts, 'swell', Number(ms.swell ?? 0))) st.swellAt = nowSec;
+              st.phase += dt * flow * st.dir;
+              const swell = nowSec - st.swellAt < 1.5 ? Math.sin(Math.PI * (nowSec - st.swellAt) / 1.5) : 0;
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              // Each layer is a closed band drawn as an outward and a return edge, so the
+              // ribbon has real width and the crests can lap over the hole.
+              const SEG = 420;
+              for (let L = 0; L < layers; L++) {
+                  const f = L / Math.max(1, layers - 1 || 1);
+                  const A = fb.band * (0.18 + 0.30 * amp) * (1 + swell * 0.8);
+                  const base = (L - (layers - 1) / 2) * fb.band * 0.22;
+                  const width = fb.band * 0.20 * rw;
+                  const ph = st.phase * (0.6 + L * 0.25) + L * 1.1;
+                  const off = (u: number, s: number) =>
+                      base + Math.sin(u * nW * 6.283 + ph) * A + s * width;
+
+                  ctx.beginPath();
+                  for (let i = 0; i <= SEG; i++) {
+                      const u = i / SEG, p = fb.at(u), o = off(u, -0.5);
+                      i ? ctx.lineTo(p.x + p.nx * o, p.y + p.ny * o) : ctx.moveTo(p.x + p.nx * o, p.y + p.ny * o);
+                  }
+                  for (let i = SEG; i >= 0; i--) {
+                      const u = i / SEG, p = fb.at(u), o = off(u, 0.5);
+                      ctx.lineTo(p.x + p.nx * o, p.y + p.ny * o);
+                  }
+                  ctx.closePath();
+                  const mixv = layers === 1 ? 0.5 : f;
+                  ctx.fillStyle = `rgba(${Math.round(rgbA.r + (rgbB.r - rgbA.r) * mixv)},${Math.round(rgbA.g + (rgbB.g - rgbA.g) * mixv)},${Math.round(rgbA.b + (rgbB.b - rgbA.b) * mixv)},${(0.55 + 0.35 * (1 - f)).toFixed(3)})`;
+                  ctx.fill();
+                  ctx.strokeStyle = cEdge; ctx.globalAlpha = 0.35;
+                  ctx.lineWidth = Math.max(0.8, fb.band * 0.015);
+                  ctx.stroke();
+                  ctx.globalAlpha = 1;
+              }
+              element = canvas;
+          } else if (def.uuid === 'paper-cut-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cL1 = resolvedGenerativeColors['layer_a'] || '#f25c54';
+              const cL2 = resolvedGenerativeColors['layer_b'] || '#f27059';
+              const cL3 = resolvedGenerativeColors['layer_c'] || '#f7b267';
+              const cSh = resolvedGenerativeColors['shadow'] || '#f4845f';
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const nL = Math.max(2, Math.min(6, Math.round(ms.layers ?? 4)));
+              const detail = Math.max(3, Math.min(24, Math.round(ms.cut_detail ?? 10)));
+              const offset = Math.max(0, Math.min(1, ms.offset ?? 0.4));
+              const sway = Math.max(0, Math.min(2, ms.sway ?? 0.5));
+              const shDepth = Math.max(0, Math.min(1, ms.shadow_depth ?? 0.5));
+
+              const st = (frameStateRef.current[layer.id + ':paper'] ||= { acts: {}, seed: 6, peelAt: -99 });
+              if (actionFired(st.acts, 'recut', Number(ms.recut ?? 0))) st.seed = (st.seed + 23) % 601;
+              if (actionFired(st.acts, 'peel', Number(ms.peel ?? 0))) st.peelAt = nowSec;
+              const peel = nowSec - st.peelAt < 1.8 ? Math.sin(Math.PI * (nowSec - st.peelAt) / 1.8) : 0;
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              // Each sheet is the full canvas with a scalloped window cut out of it, the
+              // windows stacked back to front so the cut edges stagger.
+              const cols = [cL3, cL2, cL1, cL2, cL1, cL3];
+              const SEG = 360;
+              for (let L = nL - 1; L >= 0; L--) {
+                  const depth = L / Math.max(1, nL - 1);
+                  const inward = fb.band * (0.25 + 0.75 * depth) * (0.4 + offset);
+                  const wob = (u: number) => {
+                      const k = (L * 71 + st.seed) % 601;
+                      let v = 0;
+                      for (let h = 1; h <= 3; h++) {
+                          v += Math.sin(u * detail * h * 6.283 + fhash(k, h) * 6.283 + nowSec * sway * 0.25 * h) / h;
+                      }
+                      return v * fb.band * 0.13 * (1 + peel * 1.4);
+                  };
+                  const path = new Path2D();
+                  path.rect(0, 0, targetW, targetH);
+                  path.moveTo(0, 0);
+                  for (let i = 0; i <= SEG; i++) {
+                      const u = i / SEG, p = fb.at(u);
+                      const o = inward + wob(u);
+                      const x = p.x + p.nx * o, y = p.y + p.ny * o;
+                      i ? path.lineTo(x, y) : path.moveTo(x, y);
+                  }
+                  path.closePath();
+
+                  if (shDepth > 0.03) {
+                      ctx.save();
+                      ctx.translate(fb.band * 0.05 * shDepth, fb.band * 0.05 * shDepth);
+                      ctx.fillStyle = cSh; ctx.globalAlpha = 0.5 * shDepth;
+                      ctx.fill(path, 'evenodd');
+                      ctx.restore();
+                      ctx.globalAlpha = 1;
+                  }
+                  ctx.fillStyle = cols[L % cols.length];
+                  ctx.fill(path, 'evenodd');
+              }
+              // whatever the sheets covered, the hole is still the hole
+              ctx.clearRect(fb.hole.x + fb.band * 0.2, fb.hole.y + fb.band * 0.2,
+                            Math.max(0, fb.hole.w - fb.band * 0.4), Math.max(0, fb.hole.h - fb.band * 0.4));
+              element = canvas;
+          } else if (def.uuid === 'feather-fan-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+              const dt = Math.min(0.05, Math.max(0.001, deltaTime / 1000));
+
+              const cBg = resolvedGenerativeColors['background'] || 'transparent';
+              const cQuill = resolvedGenerativeColors['quill'] || '#ff7a2e';
+              const cVane = resolvedGenerativeColors['vane'] || '#ffcf5c';
+              const cTip = resolvedGenerativeColors['tip'] || '#ffffff';
+
+              const fb = frameBand(targetW, targetH, ms.thickness ?? 0.18);
+              const nF = Math.max(10, Math.min(70, Math.round(ms.feathers ?? 32)));
+              const lenVar = Math.max(0, Math.min(1, ms.length_var ?? 0.45));
+              const swaySp = Math.max(0, Math.min(3, ms.sway_speed ?? 0.7));
+              const spread = Math.max(0, Math.min(1, ms.spread ?? 0.5));
+              const curl = Math.max(-1, Math.min(1, ms.curl ?? 0.35));
+
+              const st = (frameStateRef.current[layer.id + ':feather'] ||= { acts: {}, ruffleAt: -99, fan: 0 });
+              if (actionFired(st.acts, 'ruffle', Number(ms.ruffle ?? 0))) st.ruffleAt = nowSec;
+              if (actionFired(st.acts, 'fan', Number(ms.fan_out ?? 0))) st.fan = 1;
+              st.fan = Math.max(0, st.fan - dt * 0.45);
+              const ruffle = nowSec - st.ruffleAt < 1.1 ? 1 - (nowSec - st.ruffleAt) / 1.1 : 0;
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) {
+                  ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH);
+                  ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
+              }
+
+              ctx.lineCap = 'round';
+              for (let i = 0; i < nF; i++) {
+                  const t = i / nF;
+                  const p = fb.at(t);
+                  // root sits on the outer edge, tip points in across the band
+                  const rootX = p.x - p.nx * fb.band * 0.45, rootY = p.y - p.ny * fb.band * 0.45;
+                  const L = fb.band * (0.9 + 0.9 * fhash(i, 1) * lenVar) * (1 + st.fan * 0.7);
+                  const lean = (fhash(i, 2) - 0.5) * spread * 1.1
+                             + Math.sin(nowSec * swaySp + i * 0.6) * (0.12 + ruffle * 0.5);
+                  const ang = Math.atan2(p.ny, p.nx) + lean;
+                  const bend = curl * 0.7;
+
+                  ctx.save();
+                  ctx.translate(rootX, rootY);
+                  ctx.rotate(ang);
+
+                  // vane: two curved halves either side of the quill
+                  const halfW = L * (0.15 + 0.1 * fhash(i, 3));
+                  ctx.fillStyle = cVane;
+                  ctx.globalAlpha = 0.9;
+                  for (const sgn of [-1, 1]) {
+                      ctx.beginPath();
+                      ctx.moveTo(0, 0);
+                      ctx.quadraticCurveTo(L * 0.45, sgn * halfW, L * 0.92, sgn * halfW * 0.22 + L * bend * 0.12);
+                      ctx.quadraticCurveTo(L * 0.5, sgn * halfW * 0.2, 0, 0);
+                      ctx.fill();
+                  }
+                  ctx.globalAlpha = 1;
+                  ctx.strokeStyle = cQuill;
+                  ctx.lineWidth = Math.max(1, L * 0.035);
+                  ctx.beginPath();
+                  ctx.moveTo(0, 0);
+                  ctx.quadraticCurveTo(L * 0.55, L * bend * 0.06, L, L * bend * 0.14);
+                  ctx.stroke();
+                  ctx.fillStyle = cTip;
+                  ctx.beginPath(); ctx.arc(L, L * bend * 0.14, Math.max(1, L * 0.045), 0, 6.283); ctx.fill();
+                  ctx.restore();
+              }
+              ctx.lineCap = 'butt';
+              element = canvas;
           } else if (def.uuid === 'pitch-clock-1' || def.uuid === 'circle-of-fifths-1'
                   || def.uuid === 'tonnetz-viz-1' || def.uuid === 'shape-of-song-1'
                   || def.uuid === 'piano-roll-1') {
@@ -18878,6 +20178,21 @@ return (
                                    if (uuid === 'ballistics-1') return '🎯';
                                    if (uuid === 'markov-net-1') return '🕸️';
                                    if (uuid === 'sgd-regression-1') return '📉';
+                                   if (uuid === 'tribal-dance-1') return '💃';
+                                   if (uuid === 'rune-border-1') return 'ᚱ';
+                                   if (uuid === 'vine-growth-1') return '🌿';
+                                   if (uuid === 'flower-wreath-1') return '🌸';
+                                   if (uuid === 'memphis-shards-1') return '🔶';
+                                   if (uuid === 'bouncing-balls-1') return '⚾';
+                                   if (uuid === 'celtic-serpents-1') return '🐍';
+                                   if (uuid === 'knotwork-band-1') return '🧶';
+                                   if (uuid === 'glyph-march-1') return '🔣';
+                                   if (uuid === 'ticker-border-1') return '📈';
+                                   if (uuid === 'chain-links-1') return '🔗';
+                                   if (uuid === 'circuit-border-1') return '🔌';
+                                   if (uuid === 'wave-ribbon-1') return '🌊';
+                                   if (uuid === 'paper-cut-1') return '✂';
+                                   if (uuid === 'feather-fan-1') return '🪶';
                                    if (uuid === 'gray-scott-1') return '🧫';
                                    if (uuid === 'game-of-life-1') return '🦠';
                                    if (uuid === 'pendulum-wave-1') return '🕰️';

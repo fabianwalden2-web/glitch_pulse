@@ -2572,6 +2572,414 @@ void main(void) {
   "uuid": "ga-rovers-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Tribal Dance",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "coral_reef",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "figures", "min": 8, "max": 120, "default": 46, "type": "number" },
+    { "name": "march_speed", "min": -3, "max": 3, "default": 0.5, "type": "number" },
+    { "name": "dance", "min": 0, "max": 1, "default": 0.6, "type": "number" },
+    { "name": "stroke_weight", "min": 0.3, "max": 4, "default": 1.4, "type": "number" },
+    { "name": "stray", "min": 0, "max": 1, "default": 0.15, "type": "number" },
+    { "name": "leap", "default": 0, "type": "action" },
+    { "name": "about_face", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#2a1206" },
+    { "id": "figures", "name": "Dancers", "defaultColor": "#e0560f" },
+    { "id": "marks", "name": "Ground Marks", "defaultColor": "#ffae5c" },
+    { "id": "accent", "name": "Accent", "defaultColor": "#c23b06" }
+  ],
+  "uuid": "tribal-dance-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Rune Border",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "risograph_paper",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "tiles", "min": 8, "max": 90, "default": 40, "type": "number" },
+    { "name": "flip_rate", "min": 0, "max": 3, "default": 0.4, "type": "number" },
+    { "name": "glow", "min": 0, "max": 1, "default": 0.45, "type": "number" },
+    { "name": "wobble", "min": 0, "max": 1, "default": 0.3, "type": "number" },
+    { "name": "weathering", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "recast", "default": 0, "type": "action" },
+    { "name": "pulse", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#f4f0e4" },
+    { "id": "tile", "name": "Tiles", "defaultColor": "#8a8578" },
+    { "id": "rune", "name": "Carving", "defaultColor": "#171717" },
+    { "id": "glow", "name": "Lit Rune", "defaultColor": "#d8d2c0" }
+  ],
+  "uuid": "rune-border-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Creeping Vine",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "plotter_bands",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "growth_speed", "min": 0, "max": 3, "default": 1, "type": "number" },
+    { "name": "leaf_size", "min": 0.3, "max": 2.5, "default": 1, "type": "number" },
+    { "name": "density", "min": 0.2, "max": 3, "default": 1.9, "type": "number" },
+    { "name": "curl", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "reach", "min": 0, "max": 1, "default": 0.35, "type": "number" },
+    { "name": "bloom", "default": 0, "type": "action" },
+    { "name": "prune", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#ede9e2" },
+    { "id": "stem", "name": "Stems", "defaultColor": "#234a30" },
+    { "id": "leaf", "name": "Leaves", "defaultColor": "#3c7a52" },
+    { "id": "bud", "name": "Buds", "defaultColor": "#d9557a" }
+  ],
+  "uuid": "vine-growth-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Flower Wreath",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "plotter_bands",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "blooms", "min": 6, "max": 70, "default": 28, "type": "number" },
+    { "name": "petals", "min": 4, "max": 12, "default": 6, "type": "number" },
+    { "name": "open_speed", "min": 0, "max": 3, "default": 0.8, "type": "number" },
+    { "name": "sway", "min": 0, "max": 1, "default": 0.4, "type": "number" },
+    { "name": "scatter", "min": 0, "max": 1, "default": 0.25, "type": "number" },
+    { "name": "open_all", "default": 0, "type": "action" },
+    { "name": "shed", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#ede9e2" },
+    { "id": "stem", "name": "Stems", "defaultColor": "#3c7a52" },
+    { "id": "petal", "name": "Petals", "defaultColor": "#d9557a" },
+    { "id": "heart", "name": "Flower Centres", "defaultColor": "#e08a2e" },
+    { "id": "leaf", "name": "Leaves", "defaultColor": "#234a30" }
+  ],
+  "uuid": "flower-wreath-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Memphis Shards",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "bauhaus_primary",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "shapes", "min": 8, "max": 90, "default": 40, "type": "number" },
+    { "name": "spin", "min": -3, "max": 3, "default": 0.4, "type": "number" },
+    { "name": "size_var", "min": 0, "max": 1, "default": 0.55, "type": "number" },
+    { "name": "pattern_mix", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "drift", "min": 0, "max": 1, "default": 0.3, "type": "number" },
+    { "name": "reshuffle", "default": 0, "type": "action" },
+    { "name": "burst", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#ffffff" },
+    { "id": "shape_a", "name": "Shapes A", "defaultColor": "#e63946" },
+    { "id": "shape_b", "name": "Shapes B", "defaultColor": "#1d3557" },
+    { "id": "shape_c", "name": "Shapes C", "defaultColor": "#457b9d" },
+    { "id": "speckle", "name": "Speckles", "defaultColor": "#f1faee" }
+  ],
+  "uuid": "memphis-shards-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Bouncing Balls",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "cyberpunk_neon",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "balls", "min": 4, "max": 80, "default": 34, "type": "number" },
+    { "name": "speed", "min": 0.1, "max": 3, "default": 1, "type": "number" },
+    { "name": "gravity", "min": -1, "max": 1, "default": 0, "type": "number" },
+    { "name": "bounciness", "min": 0.5, "max": 1, "default": 0.94, "type": "number" },
+    { "name": "ball_size", "min": 0.3, "max": 3, "default": 1.25, "type": "number" },
+    { "name": "scatter", "default": 0, "type": "action" },
+    { "name": "flip_gravity", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#0a0a12" },
+    { "id": "ball_a", "name": "Balls", "defaultColor": "#ff007f" },
+    { "id": "ball_b", "name": "Balls Alt", "defaultColor": "#00f0ff" },
+    { "id": "trail", "name": "Trails", "defaultColor": "#7000ff" }
+  ],
+  "uuid": "bouncing-balls-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Celtic Serpents",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "coral_reef",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "serpents", "min": 1, "max": 6, "default": 3, "type": "number" },
+    { "name": "coil", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "slither", "min": -3, "max": 3, "default": 0.6, "type": "number" },
+    { "name": "body_width", "min": 0.3, "max": 2.5, "default": 1.35, "type": "number" },
+    { "name": "scales", "min": 0, "max": 1, "default": 0.6, "type": "number" },
+    { "name": "strike", "default": 0, "type": "action" },
+    { "name": "recoil", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#2a1206" },
+    { "id": "body", "name": "Bodies", "defaultColor": "#0a0a0a" },
+    { "id": "scales", "name": "Scale Pattern", "defaultColor": "#e0560f" },
+    { "id": "eye", "name": "Eyes", "defaultColor": "#ffae5c" }
+  ],
+  "uuid": "celtic-serpents-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Knotwork Band",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "obsidian_gold",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "knots", "min": 6, "max": 40, "default": 18, "type": "number" },
+    { "name": "weave", "min": 0, "max": 1, "default": 0.55, "type": "number" },
+    { "name": "travel", "min": -3, "max": 3, "default": 0.3, "type": "number" },
+    { "name": "strand_weight", "min": 0.3, "max": 3, "default": 1, "type": "number" },
+    { "name": "shadow", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "retie", "default": 0, "type": "action" },
+    { "name": "shimmer", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#121212" },
+    { "id": "strand", "name": "Strands", "defaultColor": "#d4af37" },
+    { "id": "shadow", "name": "Shadow", "defaultColor": "#5b4511" },
+    { "id": "accent", "name": "Accent", "defaultColor": "#f3e5ab" }
+  ],
+  "uuid": "knotwork-band-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Glyph March",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "risograph_paper",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "glyphs", "min": 10, "max": 120, "default": 52, "type": "number" },
+    { "name": "march_speed", "min": -3, "max": 3, "default": 0.6, "type": "number" },
+    { "name": "rows", "min": 1, "max": 3, "default": 2, "type": "number" },
+    { "name": "symbol_mix", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "invert_rate", "min": 0, "max": 1, "default": 0.2, "type": "number" },
+    { "name": "reshuffle", "default": 0, "type": "action" },
+    { "name": "cascade", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#f4f0e4" },
+    { "id": "glyph_a", "name": "Glyphs", "defaultColor": "#171717" },
+    { "id": "glyph_b", "name": "Glyphs Alt", "defaultColor": "#8a8578" },
+    { "id": "ground", "name": "Band", "defaultColor": "#d8d2c0" }
+  ],
+  "uuid": "glyph-march-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Ticker Tape",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "monochrome_brutalist",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "density", "min": 10, "max": 220, "default": 110, "type": "number" },
+    { "name": "speed", "min": -4, "max": 4, "default": 1, "type": "number" },
+    { "name": "dash_ratio", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "rows", "min": 1, "max": 4, "default": 2, "type": "number" },
+    { "name": "wobble", "min": 0, "max": 1, "default": 0.2, "type": "number" },
+    { "name": "reverse", "default": 0, "type": "action" },
+    { "name": "flash", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#000000" },
+    { "id": "ticks", "name": "Ticks", "defaultColor": "#ffffff" },
+    { "id": "marks", "name": "Long Marks", "defaultColor": "#888888" },
+    { "id": "accent", "name": "Accent", "defaultColor": "#e5e5e5" }
+  ],
+  "uuid": "ticker-border-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Chain Links",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "obsidian_gold",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "links", "min": 8, "max": 50, "default": 24, "type": "number" },
+    { "name": "link_size", "min": 0.4, "max": 2, "default": 1, "type": "number" },
+    { "name": "travel", "min": -3, "max": 3, "default": 0.4, "type": "number" },
+    { "name": "swing", "min": 0, "max": 1, "default": 0.4, "type": "number" },
+    { "name": "gap", "min": 0, "max": 1, "default": 0.3, "type": "number" },
+    { "name": "snap", "default": 0, "type": "action" },
+    { "name": "tighten", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#121212" },
+    { "id": "link", "name": "Links", "defaultColor": "#d4af37" },
+    { "id": "highlight", "name": "Highlights", "defaultColor": "#f3e5ab" },
+    { "id": "shadow", "name": "Shadow", "defaultColor": "#5b4511" }
+  ],
+  "uuid": "chain-links-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Circuit Border",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "acid_matrix",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "trace_density", "min": 4, "max": 60, "default": 26, "type": "number" },
+    { "name": "pulse_speed", "min": 0, "max": 4, "default": 1.2, "type": "number" },
+    { "name": "pulses", "min": 0, "max": 40, "default": 12, "type": "number" },
+    { "name": "pad_size", "min": 0.3, "max": 3, "default": 1, "type": "number" },
+    { "name": "branch", "min": 0, "max": 1, "default": 0.4, "type": "number" },
+    { "name": "surge", "default": 0, "type": "action" },
+    { "name": "reroute", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#0d1117" },
+    { "id": "trace", "name": "Traces", "defaultColor": "#2ea043" },
+    { "id": "pad", "name": "Pads", "defaultColor": "#39d353" },
+    { "id": "pulse", "name": "Pulses", "defaultColor": "#00ff66" }
+  ],
+  "uuid": "circuit-border-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Wave Ribbon",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "tokyo_synth",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "waves", "min": 1, "max": 14, "default": 5, "type": "number" },
+    { "name": "amplitude", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "flow", "min": -3, "max": 3, "default": 0.7, "type": "number" },
+    { "name": "ribbon_width", "min": 0.2, "max": 2, "default": 1, "type": "number" },
+    { "name": "layers", "min": 1, "max": 5, "default": 3, "type": "number" },
+    { "name": "swell", "default": 0, "type": "action" },
+    { "name": "reverse", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#1a1b26" },
+    { "id": "ribbon_a", "name": "Ribbon", "defaultColor": "#7aa2f7" },
+    { "id": "ribbon_b", "name": "Ribbon Alt", "defaultColor": "#bb9af7" },
+    { "id": "edge", "name": "Edge", "defaultColor": "#f7768e" }
+  ],
+  "uuid": "wave-ribbon-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Paper Cut",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "warm_sunset",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "layers", "min": 2, "max": 6, "default": 4, "type": "number" },
+    { "name": "cut_detail", "min": 3, "max": 24, "default": 10, "type": "number" },
+    { "name": "offset", "min": 0, "max": 1, "default": 0.4, "type": "number" },
+    { "name": "sway", "min": 0, "max": 2, "default": 0.5, "type": "number" },
+    { "name": "shadow_depth", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "recut", "default": 0, "type": "action" },
+    { "name": "peel", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#1f1427" },
+    { "id": "layer_a", "name": "Front Layer", "defaultColor": "#f25c54" },
+    { "id": "layer_b", "name": "Middle Layer", "defaultColor": "#f27059" },
+    { "id": "layer_c", "name": "Back Layer", "defaultColor": "#f7b267" },
+    { "id": "shadow", "name": "Shadow", "defaultColor": "#f4845f" }
+  ],
+  "uuid": "paper-cut-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Feather Fan",
+  "category": "Frames",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "ember_glow",
+  "parameters": [
+    { "name": "thickness", "min": 0.05, "max": 0.5, "default": 0.18, "type": "number" },
+    { "name": "feathers", "min": 10, "max": 70, "default": 32, "type": "number" },
+    { "name": "length_var", "min": 0, "max": 1, "default": 0.45, "type": "number" },
+    { "name": "sway_speed", "min": 0, "max": 3, "default": 0.7, "type": "number" },
+    { "name": "spread", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "curl", "min": -1, "max": 1, "default": 0.35, "type": "number" },
+    { "name": "ruffle", "default": 0, "type": "action" },
+    { "name": "fan_out", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Frame Ground", "defaultColor": "#1b2140" },
+    { "id": "quill", "name": "Quills", "defaultColor": "#ff7a2e" },
+    { "id": "vane", "name": "Vanes", "defaultColor": "#ffcf5c" },
+    { "id": "tip", "name": "Tips", "defaultColor": "#ffffff" }
+  ],
+  "uuid": "feather-fan-1"
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   }
 ];
 
@@ -2647,6 +3055,23 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'n-body-1': 'Science',
   'brownian-walk-1': 'Science',
   'lorenz-attractor-1': 'Science',
+
+  // Frames — a generative border with the middle left clear for the layer below
+  'tribal-dance-1': 'Frames',
+  'rune-border-1': 'Frames',
+  'vine-growth-1': 'Frames',
+  'flower-wreath-1': 'Frames',
+  'memphis-shards-1': 'Frames',
+  'bouncing-balls-1': 'Frames',
+  'celtic-serpents-1': 'Frames',
+  'knotwork-band-1': 'Frames',
+  'glyph-march-1': 'Frames',
+  'ticker-border-1': 'Frames',
+  'chain-links-1': 'Frames',
+  'circuit-border-1': 'Frames',
+  'wave-ribbon-1': 'Frames',
+  'paper-cut-1': 'Frames',
+  'feather-fan-1': 'Frames',
   'gray-scott-1': 'Science',
   'game-of-life-1': 'Science',
   'pendulum-wave-1': 'Science',
@@ -2659,7 +3084,7 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'ga-rovers-1': 'Science',
 };
 
-export const GENERATIVE_CATEGORY_ORDER = ['Music', 'Science', 'Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];
+export const GENERATIVE_CATEGORY_ORDER = ['Frames', 'Music', 'Science', 'Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];
 
 export function parseGeneratives(): GenerativeDefinition[] {
   return GENERATIVES_DATA.map(g => {
