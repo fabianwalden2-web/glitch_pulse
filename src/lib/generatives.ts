@@ -121,6 +121,9 @@ export interface GenerativeDefinition {
   /** Assets meant to sit over another layer: the ground stays unpainted unless
    *  the operator picks a colour for it. */
   transparentBackground?: boolean;
+  /** Assets that stamp the operator's own vector marks, and so want the Marks
+   *  panel alongside their knobs. */
+  usesMarks?: boolean;
   fragmentShader: string;
 }
 
@@ -2980,6 +2983,37 @@ void main(void) {
   "uuid": "feather-fan-1"
 }*/`,
     code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
+  },
+  {
+    header: `/*{
+  "description": "Vector Mosaic",
+  "category": "Mosaic",
+  "color": "black",
+  "movement": true,
+  "defaultPaletteId": "bauhaus_primary",
+  "parameters": [
+    { "name": "grid", "min": 8, "max": 120, "default": 44, "type": "number" },
+    { "name": "contrast", "min": 0, "max": 1, "default": 0.5, "type": "number" },
+    { "name": "mark_scale", "min": 0.2, "max": 2, "default": 1, "type": "number" },
+    { "name": "size_by_tone", "min": 0, "max": 1, "default": 0.7, "type": "number" },
+    { "name": "recolour", "min": 0, "max": 1, "default": 1, "type": "number" },
+    { "name": "jitter", "min": 0, "max": 1, "default": 0, "type": "number" },
+    { "name": "reshuffle", "default": 0, "type": "action" },
+    { "name": "invert", "default": 0, "type": "action" }
+  ],
+  "elements": [
+    { "id": "background", "name": "Background", "defaultColor": "#0a0a0a" },
+    { "id": "mark_1", "name": "Mark 1 (darkest)", "defaultColor": "#e63946" },
+    { "id": "mark_2", "name": "Mark 2", "defaultColor": "#1d3557" },
+    { "id": "mark_3", "name": "Mark 3", "defaultColor": "#457b9d" },
+    { "id": "mark_4", "name": "Mark 4", "defaultColor": "#f1faee" },
+    { "id": "mark_5", "name": "Mark 5", "defaultColor": "#ffd166" },
+    { "id": "mark_6", "name": "Mark 6 (lightest)", "defaultColor": "#06d6a0" }
+  ],
+  "uuid": "vector-mosaic-1",
+  "usesMarks": true
+}*/`,
+    code: `// Custom Canvas 2D Implementation rendered natively via UUID interception`
   }
 ];
 
@@ -3072,6 +3106,9 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'wave-ribbon-1': 'Frames',
   'paper-cut-1': 'Frames',
   'feather-fan-1': 'Frames',
+
+  // Mosaic — the layer below, redrawn as a grid of vector marks
+  'vector-mosaic-1': 'Mosaic',
   'gray-scott-1': 'Science',
   'game-of-life-1': 'Science',
   'pendulum-wave-1': 'Science',
@@ -3084,7 +3121,7 @@ export const GENERATIVE_CATEGORIES: Record<string, string> = {
   'ga-rovers-1': 'Science',
 };
 
-export const GENERATIVE_CATEGORY_ORDER = ['Frames', 'Music', 'Science', 'Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];
+export const GENERATIVE_CATEGORY_ORDER = ['Frames', 'Mosaic', 'Music', 'Science', 'Geometric', 'Psychedelic', 'Text', 'Lines & Terrain', 'Retro', 'Other'];
 
 export function parseGeneratives(): GenerativeDefinition[] {
   return GENERATIVES_DATA.map(g => {
@@ -3118,6 +3155,7 @@ export function parseGeneratives(): GenerativeDefinition[] {
       elements: metadata.elements || defaultElements,
       defaultPaletteId: metadata.defaultPaletteId || (metadata.color === 'white' ? 'monochrome_duo_white' : 'monochrome_duo'),
       transparentBackground: !!metadata.transparentBackground,
+      usesMarks: !!metadata.usesMarks,
       fragmentShader: g.code
     };
   });

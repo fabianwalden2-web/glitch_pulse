@@ -67,6 +67,7 @@ import {
   Redo2
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
+import { BUILTIN_MARKS, MARK_ACCEPT, markStamp, readMarkFile, resolveMarkSlots, type MarkSlot } from './lib/markLibrary';
 import { parseGeneratives, WebGLGenerativeRenderer, GenerativeDefinition, BUILTIN_PALETTES, GenerativeElement, ColorPalettePreset, GENERATIVE_CATEGORY_ORDER, GENERATIVE_CATEGORIES } from './lib/generatives';
 
 /** Music visuals read the MIDI note stream directly. Their layer trigger picks
@@ -199,6 +200,10 @@ interface Layer {
   generativeLockedColors?: Record<string, boolean>;
   generativeActivePaletteId?: string;
   generativeColorCycleIndex?: number;
+  /** The operator's own vector marks, per slot; a hole means that slot is unused. */
+  markSlots?: (MarkSlot | null)[];
+  /** False keeps uploaded artwork in its own colours instead of tinting it. */
+  markRecolor?: boolean;
   triggerMapping: LayerTriggerMapping;
   mappings: EffectMapping[];
   missingMedia?: boolean;
@@ -710,13 +715,28 @@ function frameBand(w: number, h: number, thickness: number) {
     if (d <= bh) return { x: x1, y: y0 + d, nx: -1, ny: 0, ang: Math.PI / 2 };
     d -= bh;
     if (d <= bw) return { x: x1 - d, y: y1, nx: 0, ny: -1, ang: Math.PI };
-    d -= bh;
+    d -= bw;
     return { x: x0, y: y1 - d, nx: 1, ny: 0, ang: -Math.PI / 2 };
+  };
+  /**
+   * The inward normal, averaged over a short stretch of the walk, so a ribbon
+   * rounding a corner leans diagonally across it instead of snapping through 90
+   * degrees between one sample and the next. `spread` is the blend width as a
+   * fraction of the perimeter.
+   */
+  const nAt = (t: number, spread: number) => {
+    let nx = 0, ny = 0;
+    for (let k = -2; k <= 2; k++) {
+      const p = at(t + k * spread * 0.5);
+      nx += p.nx; ny += p.ny;
+    }
+    const L = Math.hypot(nx, ny) || 1;
+    return { nx: nx / L, ny: ny / L };
   };
   /** True while a point is still inside the band rather than out over the hole. */
   const inBand = (px: number, py: number) =>
     px < band || py < band || px > w - band || py > h - band;
-  return { band, mid, per, at, inBand,
+  return { band, mid, per, at, nAt, inBand,
            hole: { x: band, y: band, w: w - band * 2, h: h - band * 2 } };
 }
 
@@ -2708,7 +2728,9 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [undoLayers, redoLayers]);
   const [sidebarTab, setSidebarTab] = useState<'config' | 'triggers'>('config');
-  const [belowPanel, setBelowPanel] = useState<'params' | 'colours' | 'lines' | 'fx'>('params');
+  const [belowPanel, setBelowPanel] = useState<'params' | 'colours' | 'lines' | 'marks' | 'fx'>('params');
+  /** Why the last dropped mark was turned away, shown under the Marks slots. */
+  const [markError, setMarkError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isPanic, setIsPanic] = useState(false);
   const [dragOverLayerId, setDragOverLayerId] = useState<string | null>(null);
@@ -4080,7 +4102,7 @@ export default function App() {
       layer: Layer;
     }> = {};
 
-    layersToDraw.forEach(layer => {
+    layersToDraw.forEach((layer, layerDrawIndex) => {
       let audioVisualOpacity = 1.0;
       let audioIsActive = false;
       let audioIntensity = 0.0;
@@ -12608,6 +12630,149 @@ export default function App() {
                   ctx.restore();
               }
               element = canvas;
+          } else if (def.uuid === 'vector-mosaic-1') {
+              if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
+              const canvas = sphereCanvasRef.current[layer.id];
+              if (canvas.width !== targetW || canvas.height !== targetH) { canvas.width = targetW; canvas.height = targetH; }
+              const ctx = canvas.getContext('2d')!;
+              const ms = modifiedSettings;
+
+              const cBg = resolvedGenerativeColors['background'] || '#0a0a0a';
+              const slots = resolveMarkSlots(layer.markSlots);
+              const nSlot = slots.length;
+
+              const grid = Math.max(8, Math.min(120, Math.round(ms.grid ?? 44)));
+              const contrast = Math.max(0, Math.min(1, ms.contrast ?? 0.5));
+              const mScale = Math.max(0.2, Math.min(2, ms.mark_scale ?? 1));
+              const byTone = Math.max(0, Math.min(1, ms.size_by_tone ?? 0.7));
+              const recol = Math.max(0, Math.min(1, ms.recolour ?? 1));
+              const jitter = Math.max(0, Math.min(1, ms.jitter ?? 0));
+
+              const st = (frameStateRef.current[layer.id + ':mosaic'] ||= { acts: {}, order: null, inv: false, seed: 0 });
+              if (actionFired(st.acts, 'invert', Number(ms.invert ?? 0))) { st.inv = !st.inv; }
+              if (actionFired(st.acts, 'reshuffle', Number(ms.reshuffle ?? 0))) {
+                  st.seed = 1 + Math.floor(Math.random() * 9999); st.order = null;
+              }
+              // Which mark serves which tone band. `reshuffle` permutes it, so one
+              // set of marks can read as several different halftones.
+              if (!st.order || st.order.length !== nSlot) {
+                  const ord = Array.from({ length: nSlot }, (_, i) => i);
+                  for (let i = nSlot - 1; i > 0 && st.seed > 0; i--) {
+                      const j = Math.floor(fhash(i + st.seed, st.seed * 0.37) * (i + 1));
+                      const tmp = ord[i]; ord[i] = ord[j]; ord[j] = tmp;
+                  }
+                  st.order = ord;
+              }
+
+              // The tone this mosaic draws comes from the nearest layer underneath.
+              // Layers are walked bottom-first, so everything below this one has
+              // already rendered into its own output canvas by the time we get here.
+              let srcCanvas: HTMLCanvasElement | null = null;
+              for (let i = layerDrawIndex - 1; i >= 0; i--) {
+                  const c = layerOutputCanvasesRef.current[layersToDraw[i].id];
+                  if (c && c.width > 1 && c.height > 1) { srcCanvas = c; break; }
+              }
+
+              const gw = grid, gh = Math.max(2, Math.round(grid * targetH / Math.max(1, targetW)));
+              const samp = (frameStateRef.current[layer.id + ':mosaicSamp'] ||= { c: document.createElement('canvas') });
+              const small: HTMLCanvasElement = samp.c;
+              if (small.width !== gw || small.height !== gh) { small.width = gw; small.height = gh; }
+              const sg = small.getContext('2d', { willReadFrequently: true })!;
+              sg.clearRect(0, 0, gw, gh);
+              if (srcCanvas) sg.drawImage(srcCanvas, 0, 0, gw, gh);
+              // A layer that exists but has nothing on it yet reads as empty, and
+              // an empty source would leave this asset blank with no clue why.
+              if (srcCanvas) {
+                  const probe = sg.getImageData(0, 0, gw, gh).data;
+                  let lit = false;
+                  for (let i = 3; i < probe.length; i += 4) if (probe[i] > 10) { lit = true; break; }
+                  if (!lit) srcCanvas = null;
+              }
+              if (!srcCanvas) {
+                  // Nothing underneath to read: a slow plasma keeps the asset alive
+                  // on its own rather than leaving the operator staring at a blank.
+                  const img = sg.createImageData(gw, gh);
+                  for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+                      const v = 0.5 + 0.5 * Math.sin(x * 0.28 + nowSec * 0.9) * Math.cos(y * 0.31 - nowSec * 0.7);
+                      const i4 = (y * gw + x) * 4;
+                      img.data[i4] = 255 * v; img.data[i4 + 1] = 90 + 120 * v;
+                      img.data[i4 + 2] = 255 * (1 - v); img.data[i4 + 3] = 255;
+                  }
+                  sg.putImageData(img, 0, 0);
+              }
+              const px = sg.getImageData(0, 0, gw, gh).data;
+
+              // Marks are stamped either in their own colours, or as a silhouette
+              // that gets filled — once, for the whole grid — from the source, and
+              // as a flat palette tint. `recolour` cross-fades those two.
+              const keepOwn = layer.markRecolor === false;
+              const maskStamps = slots.map(sl => markStamp(sl, keepOwn ? null : '#ffffff'));
+              const tintStamps = slots.map((sl, i) => markStamp(sl, keepOwn ? null : (resolvedGenerativeColors['mark_' + (i + 1)] || '#ffffff')));
+
+              const cw = targetW / gw, ch = targetH / gh;
+              const cellPx = Math.min(cw, ch);
+              const drawGrid = (g2: CanvasRenderingContext2D, tinted: boolean) => {
+                  const set = tinted ? tintStamps : maskStamps;
+                  for (let y = 0; y < gh; y++) {
+                      for (let x = 0; x < gw; x++) {
+                          const i4 = (y * gw + x) * 4;
+                          const a = px[i4 + 3] / 255;
+                          if (a < 0.04) continue;
+                          let lum = (0.2126 * px[i4] + 0.7152 * px[i4 + 1] + 0.0722 * px[i4 + 2]) / 255;
+                          lum = Math.max(0, Math.min(1, 0.5 + (lum - 0.5) * (1 + contrast * 3)));
+                          const ink = (st.inv ? lum : 1 - lum) * a;
+                          if (ink < 0.045) continue;
+                          const stamp = set[st.order[Math.min(nSlot - 1, Math.floor((1 - ink) * nSlot))]];
+                          if (!stamp) continue;
+                          const size = cellPx * mScale * (1 - byTone * (1 - ink));
+                          if (size < 0.6) continue;
+                          let ox = 0, oy = 0, rot = 0;
+                          if (jitter > 0) {
+                              const h1 = fhash(x * 3 + 1, y * 5 + 2), h2 = fhash(x * 7 + 3, y * 11 + 4);
+                              ox = Math.sin(nowSec * 1.7 + h1 * 6.283) * jitter * cellPx * 0.35;
+                              oy = Math.cos(nowSec * 1.4 + h2 * 6.283) * jitter * cellPx * 0.35;
+                              rot = Math.sin(nowSec * 0.9 + h1 * 6.283) * jitter * 1.2;
+                          }
+                          const cx = x * cw + cw * 0.5 + ox, cy = y * ch + ch * 0.5 + oy;
+                          if (rot !== 0) {
+                              g2.save(); g2.translate(cx, cy); g2.rotate(rot);
+                              g2.drawImage(stamp, -size / 2, -size / 2, size, size);
+                              g2.restore();
+                          } else {
+                              g2.drawImage(stamp, cx - size / 2, cy - size / 2, size, size);
+                          }
+                      }
+                  }
+              };
+
+              ctx.clearRect(0, 0, targetW, targetH);
+              if (!isTransparentColor(cBg)) { ctx.fillStyle = cBg; ctx.fillRect(0, 0, targetW, targetH); }
+
+              if (keepOwn) {
+                  drawGrid(ctx, false);
+              } else {
+                  if (recol < 0.999) {
+                      const matte = (frameStateRef.current[layer.id + ':mosaicMatte'] ||= { c: document.createElement('canvas') });
+                      const mc: HTMLCanvasElement = matte.c;
+                      if (mc.width !== targetW || mc.height !== targetH) { mc.width = targetW; mc.height = targetH; }
+                      const mg = mc.getContext('2d')!;
+                      mg.clearRect(0, 0, targetW, targetH);
+                      mg.globalCompositeOperation = 'source-over';
+                      drawGrid(mg, false);
+                      // one composite fills every mark from the source, so each
+                      // stands in for the colour of what it replaced
+                      mg.globalCompositeOperation = 'source-in';
+                      mg.drawImage(srcCanvas || small, 0, 0, targetW, targetH);
+                      mg.globalCompositeOperation = 'source-over';
+                      ctx.drawImage(mc, 0, 0);
+                  }
+                  if (recol > 0.001) {
+                      ctx.globalAlpha = recol;
+                      drawGrid(ctx, true);
+                      ctx.globalAlpha = 1;
+                  }
+              }
+              element = canvas;
           } else if (def.uuid === 'bouncing-balls-1') {
               if (!sphereCanvasRef.current[layer.id]) sphereCanvasRef.current[layer.id] = document.createElement('canvas');
               const canvas = sphereCanvasRef.current[layer.id];
@@ -12650,23 +12815,44 @@ export default function App() {
 
               const hx0 = fb.hole.x + R, hy0 = fb.hole.y + R;
               const hx1 = fb.hole.x + fb.hole.w - R, hy1 = fb.hole.y + fb.hole.h - R;
+              // `speed` scales time rather than velocity, so gravity, travel and
+              // bounce all stay in step however fast the simulation is run.
+              const sdt = dt * speed;
+              const g = grav * st.gdir * 2600 * sc;
+              // With perfectly elastic walls gravity only ever pumps energy in and
+              // the balls rattle faster instead of falling, which is why it used to
+              // read as no gravity at all. Contact now sheds sideways speed, drifting
+              // air resistance bleeds the rest off, and a ball too slow to leave the
+              // wall it is being pressed into simply settles on it.
+              const drag = Math.exp(-sdt * 0.5 * Math.abs(grav));
+              const fric = 1 - (1 - bounce) * 0.7;
+              const settle = 26 * sc * Math.abs(grav);
               for (const o of st.b) {
                   o.px = o.x; o.py = o.y;
-                  o.vy += grav * st.gdir * 900 * sc * dt;
-                  o.x += o.vx * speed * dt; o.y += o.vy * speed * dt;
+                  o.vy += g * sdt;
+                  o.vx *= drag; o.vy *= drag;
+                  o.x += o.vx * sdt; o.y += o.vy * sdt;
+                  const hitX = (edge: number, dir: number) => {
+                      o.x = edge; o.vx = dir * Math.abs(o.vx) * bounce; o.vy *= fric;
+                      if (Math.abs(o.vx) < settle) o.vx = 0;
+                  };
+                  const hitY = (edge: number, dir: number) => {
+                      o.y = edge; o.vy = dir * Math.abs(o.vy) * bounce; o.vx *= fric;
+                      if (Math.abs(o.vy) < settle) o.vy = 0;
+                  };
                   // outer walls
-                  if (o.x < R) { o.x = R; o.vx = Math.abs(o.vx) * bounce; }
-                  if (o.x > targetW - R) { o.x = targetW - R; o.vx = -Math.abs(o.vx) * bounce; }
-                  if (o.y < R) { o.y = R; o.vy = Math.abs(o.vy) * bounce; }
-                  if (o.y > targetH - R) { o.y = targetH - R; o.vy = -Math.abs(o.vy) * bounce; }
+                  if (o.x < R) hitX(R, 1);
+                  if (o.x > targetW - R) hitX(targetW - R, -1);
+                  if (o.y < R) hitY(R, 1);
+                  if (o.y > targetH - R) hitY(targetH - R, -1);
                   // the hole is a wall too: a ball that wanders in is ejected the short way
                   if (hx1 > hx0 && hy1 > hy0 && o.x > hx0 && o.x < hx1 && o.y > hy0 && o.y < hy1) {
                       const dl = o.x - hx0, dr = hx1 - o.x, du = o.y - hy0, dd = hy1 - o.y;
                       const m = Math.min(dl, dr, du, dd);
-                      if (m === dl) { o.x = hx0; o.vx = -Math.abs(o.vx) * bounce; }
-                      else if (m === dr) { o.x = hx1; o.vx = Math.abs(o.vx) * bounce; }
-                      else if (m === du) { o.y = hy0; o.vy = -Math.abs(o.vy) * bounce; }
-                      else { o.y = hy1; o.vy = Math.abs(o.vy) * bounce; }
+                      if (m === dl) hitX(hx0, -1);
+                      else if (m === dr) hitX(hx1, 1);
+                      else if (m === du) hitY(hy0, -1);
+                      else hitY(hy1, 1);
                   }
               }
 
@@ -12723,6 +12909,8 @@ export default function App() {
               }
 
               const W = fb.band * 0.30 * bw;
+              // a corner is rounded over roughly one band width of travel
+              const cornerBlend = fb.band * 2 / fb.per;
               const span = 0.82 / nS;            // each serpent owns a stretch of the band
               const SEG = 90;
               ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -12733,17 +12921,20 @@ export default function App() {
                       const u = i / SEG;
                       const t = base + u * span;
                       const p = fb.at(t);
+                      // blended across the corners, or the body would jump a whole
+                      // band's width sideways the instant the walk turns
+                      const nn = fb.nAt(t, cornerBlend);
                       // the coil: a travelling wave across the band, tightening with `coil`
                       const amp = fb.band * (0.20 + 0.42 * (coil + st.coilBoost * 0.5));
                       const wig = Math.sin(u * (7 + coil * 9) * Math.PI + nowSec * 2.1 * (slither >= 0 ? 1 : -1) + s2) * amp;
                       // taper from a thick middle to a fine tail
                       const taper = Math.sin(Math.PI * Math.min(1, u * 1.06)) * 0.75 + 0.25;
-                      pts.push({ x: p.x + p.nx * wig, y: p.y + p.ny * wig, w: W * taper });
+                      pts.push({ x: p.x + nn.nx * wig, y: p.y + nn.ny * wig, w: W * taper });
                   }
                   // head darts over the hole when it strikes
                   if (strike > 0) {
                       const head = pts[SEG];
-                      const p = fb.at(base + span);
+                      const p = fb.nAt(base + span, cornerBlend);
                       head.x += p.nx * strike * fb.band * 2.6;
                       head.y += p.ny * strike * fb.band * 2.6;
                   }
@@ -13049,29 +13240,38 @@ export default function App() {
                   ctx.clearRect(fb.hole.x, fb.hole.y, fb.hole.w, fb.hole.h);
               }
 
-              const R = fb.band * 0.30 * lSize;
-              const lw = Math.max(1.5, R * 0.30);
+              // A chain only reads as a chain if neighbouring links overlap, so the
+              // link is sized from the spacing rather than set independently of it:
+              // `links` fixes the pitch, and every link is drawn long enough along
+              // the band to reach into the next one whatever the canvas shape.
+              const pitch = fb.per / nL;
+              const overlap = 0.62 - gap * 0.09 + st.tight * 0.10;
+              const RA = pitch * overlap;                         // half-length along the chain
+              const RB = Math.min(fb.band * 0.44, RA * 0.74) * lSize; // half-width across it
+              const lw = Math.max(1.5, Math.min(RB * 0.55, RA * 0.22));
               const drawLink = (x: number, y: number, rot: number, flat: boolean) => {
+                  const b = flat ? RB : RB * 0.42;
                   ctx.save();
                   ctx.translate(x, y); ctx.rotate(rot);
                   ctx.lineWidth = lw;
                   ctx.strokeStyle = cSh;
-                  ctx.beginPath(); ctx.ellipse(lw * 0.25, lw * 0.25, R, flat ? R * 0.42 : R * 0.72, 0, 0, 6.283); ctx.stroke();
+                  ctx.beginPath(); ctx.ellipse(lw * 0.25, lw * 0.25, RA, b, 0, 0, 6.283); ctx.stroke();
                   ctx.strokeStyle = cLink;
-                  ctx.beginPath(); ctx.ellipse(0, 0, R, flat ? R * 0.42 : R * 0.72, 0, 0, 6.283); ctx.stroke();
+                  ctx.beginPath(); ctx.ellipse(0, 0, RA, b, 0, 0, 6.283); ctx.stroke();
                   ctx.strokeStyle = cHi; ctx.lineWidth = lw * 0.38;
-                  ctx.beginPath(); ctx.ellipse(0, 0, R, flat ? R * 0.42 : R * 0.72, 0, -2.3, -0.9); ctx.stroke();
+                  ctx.beginPath(); ctx.ellipse(0, 0, RA, b, 0, -2.3, -0.9); ctx.stroke();
                   ctx.restore();
               };
 
-              // Alternating flat and edge-on links is what reads as a chain rather than
-              // a row of rings; the spacing closes up while `tighten` decays.
-              const spread = (1 - st.tight) * (0.55 + gap * 0.9) + 0.45;
+              // Alternating flat and edge-on links is what reads as a chain rather
+              // than a row of rings.
+              const cornerBlend = fb.band * 2 / fb.per;
               for (let i = 0; i < nL; i++) {
-                  const t = i / nL * spread % 1 + st.phase;
+                  const t = i / nL + st.phase;
                   const p = fb.at(t);
+                  const nn = fb.nAt(t, cornerBlend);
                   const rock = Math.sin(nowSec * 1.6 + i * 0.9) * swing * 0.5;
-                  drawLink(p.x, p.y, Math.atan2(p.ny, p.nx) + Math.PI / 2 + rock, i % 2 === 0);
+                  drawLink(p.x, p.y, Math.atan2(nn.ny, nn.nx) + Math.PI / 2 + rock, i % 2 === 0);
               }
               for (const o of st.loose) {
                   ctx.globalAlpha = Math.max(0, 1 - (nowSec - o.born) / 4);
@@ -18256,7 +18456,7 @@ return (
                    return [...params].sort((a, b) => (pushToEnd(a.type) ? 1 : 0) - (pushToEnd(b.type) ? 1 : 0));
                 };
 
-                const CollapseHead = ({ id, label }: { id: 'params' | 'colours' | 'lines' | 'fx'; label: string }) => (
+                const CollapseHead = ({ id, label }: { id: 'params' | 'colours' | 'lines' | 'marks' | 'fx'; label: string }) => (
                   <button
                     onClick={() => setBelowPanel(id)}
                     className={`w-full flex items-center justify-between text-[11px] font-bold uppercase tracking-widest border-b pb-2 transition-colors ${belowPanel === id ? 'text-red-400 border-white/10' : 'text-white/35 border-white/5 hover:text-white/70'}`}
@@ -18941,6 +19141,105 @@ return (
                         })()}
                         </>
                         )}
+                      </div>
+                    )}
+
+                    {/* Vector Marks — the operator's own artwork, stamped in place of pixels */}
+                    {activeLayer.type === 'generative' && generativesRef.current.find(g => g.uuid === activeLayer.generativeId)?.usesMarks && (
+                      <div className="space-y-4">
+                        <CollapseHead id="marks" label="Marks" />
+                        {belowPanel === 'marks' && (() => {
+                          const slots: (MarkSlot | null)[] = Array.from({ length: 6 }, (_, i) => activeLayer.markSlots?.[i] || null);
+                          const recolour = activeLayer.markRecolor !== false;
+                          const patch = (p: Partial<Layer>) =>
+                            setLayers(prev => prev.map(l => l.id === activeLayer.id ? { ...l, ...p } : l));
+                          // Reads the slots off the latest state rather than this
+                          // render's copy, so files that land together do not
+                          // overwrite one another.
+                          const writeSlot = (i: number, slot: MarkSlot | null) =>
+                            setLayers(prev => prev.map(l => {
+                              if (l.id !== activeLayer.id) return l;
+                              const next = Array.from({ length: 6 }, (_, k) => l.markSlots?.[k] || null);
+                              next[i] = slot;
+                              return { ...l, markSlots: next };
+                            }));
+                          const take = (i: number, file: File | undefined | null) => {
+                            if (!file) return;
+                            readMarkFile(file)
+                              .then(slot => { writeSlot(i, slot); setMarkError(null); })
+                              .catch((err: Error) => setMarkError(err.message));
+                          };
+                          return (
+                            <div className="space-y-2">
+                              <p className="text-[9px] text-white/40 leading-relaxed">
+                                Each mark stands in for a band of tone read off the layer below, slot 1 for
+                                the darkest. Leave a slot empty to skip that band. SVG, PNG or JPEG under 512 KB.
+                                Mark colours live in Colours &amp; Palette.
+                              </p>
+                              {slots.map((slot, i) => (
+                                <div
+                                  key={i}
+                                  onDragOver={e => e.preventDefault()}
+                                  onDrop={e => { e.preventDefault(); take(i, e.dataTransfer.files?.[0]); }}
+                                  className="flex items-center gap-2"
+                                >
+                                  <span className="w-3 text-[9px] font-mono text-white/30 flex-shrink-0">{i + 1}</span>
+                                  <label className="flex-1 flex items-center gap-2 px-2 py-1.5 rounded bg-white/5 hover:bg-white/10 border border-white/10 cursor-pointer min-w-0">
+                                    <Upload size={11} className="text-white/40 flex-shrink-0" />
+                                    <span className={`text-[10px] font-mono truncate ${slot ? 'text-white/80' : 'text-white/35'}`}>
+                                      {slot ? slot.name : 'Drop or choose file'}
+                                    </span>
+                                    <input
+                                      type="file"
+                                      accept={MARK_ACCEPT}
+                                      className="hidden"
+                                      onChange={e => { take(i, e.target.files?.[0]); e.currentTarget.value = ''; }}
+                                    />
+                                  </label>
+                                  <button
+                                    onClick={() => writeSlot(i, null)}
+                                    disabled={!slot}
+                                    title="Clear this slot"
+                                    className="p-1 rounded text-white/30 hover:text-white hover:bg-white/10 disabled:opacity-20 disabled:hover:bg-transparent disabled:cursor-default flex-shrink-0"
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </div>
+                              ))}
+                              {markError && (
+                                <p className="text-[9px] font-mono text-red-400">{markError}</p>
+                              )}
+                              <label className="flex items-center gap-2 pt-1 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={recolour}
+                                  onChange={e => patch({ markRecolor: e.target.checked })}
+                                  className="accent-red-500"
+                                />
+                                <span className="text-[10px] text-white/60">Replace uploaded mark colours</span>
+                              </label>
+                              <p className="text-[9px] text-white/30 leading-relaxed">
+                                {recolour
+                                  ? 'Marks are used as silhouettes: the Recolour knob fades them from the colour of what they replaced to their palette colour.'
+                                  : 'Marks keep the colours they were drawn with, and the Recolour knob does nothing.'}
+                              </p>
+                              <div className="flex gap-2 pt-1">
+                                <button
+                                  onClick={() => patch({ markSlots: BUILTIN_MARKS.slice(0, 6) })}
+                                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-[9px] uppercase tracking-widest text-white/60 hover:text-white"
+                                >
+                                  <RotateCcw size={11} /> Restore built-ins
+                                </button>
+                                <button
+                                  onClick={() => patch({ markSlots: [] })}
+                                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-[9px] uppercase tracking-widest text-white/60 hover:text-white"
+                                >
+                                  <Trash2 size={11} /> Clear all
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
 
@@ -20193,6 +20492,7 @@ return (
                                    if (uuid === 'wave-ribbon-1') return '🌊';
                                    if (uuid === 'paper-cut-1') return '✂';
                                    if (uuid === 'feather-fan-1') return '🪶';
+                                   if (uuid === 'vector-mosaic-1') return '🔳';
                                    if (uuid === 'gray-scott-1') return '🧫';
                                    if (uuid === 'game-of-life-1') return '🦠';
                                    if (uuid === 'pendulum-wave-1') return '🕰️';
